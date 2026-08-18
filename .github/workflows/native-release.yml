@@ -1,0 +1,183 @@
+name: Native mpv build and release
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  javascript:
+    name: ES5 runtime and portable UI
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx prettier --check "**/*.js"
+      - run: node scripts/build_mpv.js --check
+      - run: node scripts/run_tests.js --exclude-group native --exclude-group mpv-runtime
+
+  unix-native:
+    name: ${{ matrix.target }} executable gate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: macos-aarch64
+            runner: macos-14
+          - target: macos-x86_64
+            runner: macos-15-intel
+          - target: linux-x86_64
+            runner: ubuntu-22.04
+          - target: linux-aarch64
+            runner: ubuntu-22.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install build and runtime dependencies (macOS)
+        if: startsWith(matrix.target, 'macos-')
+        run: brew install autoconf automake libtool meson ninja pkgconf cmake ffmpeg mpv
+      - name: Install build and runtime dependencies (Linux)
+        if: startsWith(matrix.target, 'linux-')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y autoconf automake build-essential clang cmake curl ffmpeg fontconfig libcurl4-openssl-dev libfontconfig1-dev libssl-dev libtool meson ninja-build patch pkg-config python3 xz-utils
+      - run: npm ci
+      - name: Build pinned geometry/audio dependencies
+        run: bash scripts/build_native_geometry_dependencies.sh
+      - name: Build backend
+        run: cmake --preset release && cmake --build --preset release -j 2
+      - name: Execute version, import, lookup, layout, HTTP, audio, cancellation, and config gates
+        env:
+          IINATAN_BACKEND: ${{ github.workspace }}/build/native/release/iinatan-backend
+          IINATAN_FFMPEG: ffmpeg
+        run: |
+          node tests/native_portable_smoke.test.js
+          node tests/native_ass_geometry.test.js
+          node tests/native_config_transaction.test.js
+          node tests/native_worker_lifecycle.test.js
+          node tests/native_ocr_smoke.test.js
+      - name: Verify macOS deployment target
+        if: startsWith(matrix.target, 'macos-')
+        run: |
+          test "$(build/native/release/iinatan-backend version | tail -1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target"])')" = "${{ matrix.target }}"
+          otool -l build/native/release/iinatan-backend | grep -A3 LC_BUILD_VERSION
+      - name: Verify Linux glibc baseline
+        if: startsWith(matrix.target, 'linux-')
+        run: |
+          test "$(build/native/release/iinatan-backend version | tail -1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target"])')" = "${{ matrix.target }}"
+          python3 scripts/verify_glibc_baseline.py build/native/release/iinatan-backend 2.35
+      - name: Package and validate target archive
+        run: |
+          python3 scripts/package_mpv.py --target "${{ matrix.target }}" --backend build/native/release/iinatan-backend --ffmpeg "$(command -v ffmpeg)"
+          archive="dist/iinatan-3.0.0-${{ matrix.target }}.tar.gz"
+          python3 scripts/validate_mpv_release.py "$archive" --target "${{ matrix.target }}" --execute
+          install_test="$(mktemp -d)"
+          tar -xzf "$archive" -C "$install_test"
+          package_root="$(find "$install_test" -mindepth 1 -maxdepth 1 -type d)"
+          XDG_CONFIG_HOME="$install_test/config" sh "$package_root/install.sh"
+          test -x "$install_test/config/mpv/scripts/iinatan/bin/iinatan-backend"
+          test -x "$install_test/config/mpv/scripts/iinatan/bin/ffmpeg"
+          test -f "$install_test/config/mpv/scripts/iinatan.js"
+          test -f "$install_test/config/mpv/iinatan/config.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: iinatan-${{ matrix.target }}
+          path: dist/iinatan-3.0.0-${{ matrix.target }}.tar.gz
+
+  windows-native:
+    name: windows-x86_64 executable gate (MSVC 2022 static CRT)
+    runs-on: windows-2025
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: lukka/get-cmake@latest
+      - name: Bootstrap vcpkg
+        shell: pwsh
+        run: |
+          git clone --depth 1 https://github.com/microsoft/vcpkg "$env:RUNNER_TEMP\vcpkg"
+          & "$env:RUNNER_TEMP\vcpkg\bootstrap-vcpkg.bat" -disableMetrics
+          & "$env:RUNNER_TEMP\vcpkg\vcpkg.exe" install libass:x64-windows-static curl:x64-windows-static ffmpeg:x64-windows-static pkgconf:x64-windows-static --overlay-ports="$env:GITHUB_WORKSPACE\cmake\vcpkg-overlay-ports"
+      - name: Install ffmpeg executable
+        shell: pwsh
+        run: choco install ffmpeg -y --no-progress
+      - run: npm ci
+      - name: Configure and build with MSVC 2022
+        shell: pwsh
+        run: |
+          cmake -S . -B build/windows -A x64 -DCMAKE_BUILD_TYPE=Release -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DCMAKE_TOOLCHAIN_FILE="$env:RUNNER_TEMP\vcpkg\scripts\buildsystems\vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows-static -DVCPKG_OVERLAY_PORTS="$env:GITHUB_WORKSPACE\cmake\vcpkg-overlay-ports"
+          cmake --build build/windows --config Release --target iinatan-backend -j 2
+      - name: Execute native gates
+        shell: pwsh
+        env:
+          IINATAN_BACKEND: ${{ github.workspace }}\build\windows\Release\iinatan-backend.exe
+          IINATAN_FFMPEG: ffmpeg
+        run: |
+          node tests/native_portable_smoke.test.js
+          node tests/native_ass_geometry.test.js
+          node tests/native_config_transaction.test.js
+          node tests/native_worker_lifecycle.test.js
+          node tests/native_ocr_smoke.test.js
+      - name: Package and validate target archive
+        shell: pwsh
+        run: |
+          $ffmpeg = (Get-Command ffmpeg).Source
+          python scripts/package_mpv.py --target windows-x86_64 --backend build/windows/Release/iinatan-backend.exe --ffmpeg $ffmpeg
+          python scripts/validate_mpv_release.py dist/iinatan-3.0.0-windows-x86_64.zip --target windows-x86_64 --execute
+          $installTest = Join-Path $env:RUNNER_TEMP "iinatan-install"
+          Expand-Archive dist/iinatan-3.0.0-windows-x86_64.zip -DestinationPath $installTest
+          $packageRoot = (Get-ChildItem $installTest -Directory | Select-Object -First 1).FullName
+          $env:MPV_HOME = Join-Path $installTest "mpv"
+          & (Join-Path $packageRoot "install.ps1")
+          if (-not (Test-Path (Join-Path $env:MPV_HOME "scripts\iinatan.js"))) { throw "runtime was not installed" }
+          if (-not (Test-Path (Join-Path $env:MPV_HOME "scripts\iinatan\bin\iinatan-backend.exe"))) { throw "backend was not installed" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: iinatan-windows-x86_64
+          path: dist/iinatan-3.0.0-windows-x86_64.zip
+
+  release-set:
+    name: Complete five-platform release set
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [javascript, unix-native, windows-native]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: iinatan-*
+          path: release
+          merge-multiple: true
+      - name: Require all five archives and non-empty release notes
+        run: |
+          python3 scripts/validate_release_set.py release "${GITHUB_REF_NAME}"
+          python3 scripts/extract_release_notes.py "${GITHUB_REF_NAME}" > release-notes.md
+          test -s release-notes.md
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" release/* --verify-tag --notes-file release-notes.md

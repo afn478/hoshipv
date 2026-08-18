@@ -176,7 +176,7 @@ class DictionaryDocument {
           furigana: term.furigana || [],
           matched: String(item.matched || ""),
           rules: String(term.rules || ""),
-          tags: String(term.termTags || term.rules || "")
+          tags: (String(term.termTags || "") + " " + String(term.rules || ""))
             .split(/\s+/)
             .filter(Boolean),
           frequencies: term.frequencies || [],

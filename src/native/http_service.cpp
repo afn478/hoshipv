@@ -77,14 +77,19 @@ Response perform(const Request& request) {
   curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
   curl_easy_getinfo(curl, CURLINFO_EFFECTIVE_URL, &final_url);
   curl_easy_getinfo(curl, CURLINFO_CONTENT_TYPE, &content_type);
+  const std::string effective_url = final_url ? final_url : request.url;
+  const std::string effective_content_type = content_type ? content_type : "";
   if (headers) curl_slist_free_all(headers);
   curl_easy_cleanup(curl);
   if (sink.exceeded) throw std::runtime_error("HTTP response exceeded size limit");
   if (result != CURLE_OK) throw std::runtime_error(std::string("HTTP request failed: ") + curl_easy_strerror(result));
+  if (request.url.rfind("https://", 0) == 0 &&
+      effective_url.rfind("https://", 0) != 0)
+    throw std::runtime_error("HTTPS request redirected to an insecure URL");
   if (status < 200 || status >= 300)
     throw std::runtime_error("HTTP request returned status " + std::to_string(status));
-  return Response{status, final_url ? final_url : request.url,
-                  content_type ? content_type : "", std::move(sink.body)};
+  return Response{
+      status, effective_url, effective_content_type, std::move(sink.body)};
 #endif
 }
 

@@ -11,7 +11,7 @@ else
 fi
 install_root="$mpv_home/scripts/iinatan"
 mkdir -p "$install_root/bin" "$install_root/fonts" "$mpv_home/iinatan"
-cp "$archive_root/scripts/iinatan.js" "$install_root/iinatan.js"
+cp "$archive_root/scripts/iinatan.js" "$mpv_home/scripts/iinatan.js"
 cp "$archive_root/bin/iinatan-backend" "$install_root/bin/iinatan-backend"
 cp "$archive_root/bin/ffmpeg" "$install_root/bin/ffmpeg"
 cp "$archive_root/fonts/NotoSansCJKjp-Regular.otf" "$install_root/fonts/NotoSansCJKjp-Regular.otf"
@@ -19,4 +19,4 @@ chmod 755 "$install_root/bin/iinatan-backend" "$install_root/bin/ffmpeg"
 if [ ! -e "$mpv_home/iinatan/config.json" ]; then
   cp "$archive_root/config/config.example.json" "$mpv_home/iinatan/config.json"
 fi
-printf 'Installed iinatan in %s\n' "$install_root"
+printf 'Installed iinatan script at %s\n' "$mpv_home/scripts/iinatan.js"

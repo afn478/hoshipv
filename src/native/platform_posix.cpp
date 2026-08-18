@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 namespace iinatan::platform {
@@ -87,6 +88,31 @@ std::filesystem::path canonical_path(const std::filesystem::path& path) {
 }
 
 const char* adapter_name() { return "posix"; }
+
+bool open_external_url(const std::string& url, std::error_code& error) {
+  const pid_t child = ::fork();
+  if (child < 0) {
+    error = std::error_code(errno, std::generic_category());
+    return false;
+  }
+  if (child == 0) {
+#if defined(__APPLE__)
+    ::execl("/usr/bin/open", "open", url.c_str(), static_cast<char*>(nullptr));
+#else
+    ::execlp("xdg-open", "xdg-open", url.c_str(), static_cast<char*>(nullptr));
+#endif
+    ::_exit(127);
+  }
+  int status = 0;
+  if (::waitpid(child, &status, 0) < 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+    error = std::error_code(
+        WIFEXITED(status) ? WEXITSTATUS(status) : EIO,
+        std::generic_category());
+    return false;
+  }
+  error.clear();
+  return true;
+}
 
 }  // namespace iinatan::platform
 

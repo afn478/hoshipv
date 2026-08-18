@@ -3,7 +3,7 @@ IINATAN.DEFAULT_CONFIG = {
   schemaVersion: 2,
   global: {
     backendPath: "~~/scripts/iinatan/bin/iinatan-backend",
-    ffmpegPath: "ffmpeg",
+    ffmpegPath: "~~/scripts/iinatan/bin/ffmpeg",
     logPath: "~~state/iinatan/iinatan.log",
     lowRamImport: true,
     recommendedDictionaries: [

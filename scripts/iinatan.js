@@ -34,7 +34,7 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
     return this.indexOf(value, position || 0) >= 0;
   };
   var IINATAN = {
-    version: "3.0.0-dev",
+    version: "3.0.0",
     protocol: {
       lookup: 1,
       geometry: 1,
@@ -46,7 +46,8 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
       fileLoaded: false,
       popup: null,
       settingsOpen: false,
-      interactive: false
+      interactive: false,
+      lookupEnabled: true
     },
     timers: Object.create(null),
     processes: Object.create(null),
@@ -155,7 +156,7 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
     schemaVersion: 2,
     global: {
       backendPath: "~~/scripts/iinatan/bin/iinatan-backend",
-      ffmpegPath: "ffmpeg",
+      ffmpegPath: "~~/scripts/iinatan/bin/ffmpeg",
       logPath: "~~state/iinatan/iinatan.log",
       lowRamImport: true,
       recommendedDictionaries: [{
@@ -1797,6 +1798,7 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
     };
     IINATAN.emit("state", IINATAN.state);
     IINATAN.rebuildScene();
+    IINATAN.requestBitmapSubtitleOcr();
   };
   IINATAN.mediaSource = function () {
     var props = IINATAN.state.properties;
@@ -1832,7 +1834,7 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
     var padding = IINATAN.clamp(paddingMs, 0, 2000, 250) / 1000;
     var start = context.subtitleStart;
     var end = context.subtitleEnd;
-    if (!isFinite(start) || !isFinite(end)) {
+    if (typeof start !== "number" || typeof end !== "number" || !isFinite(start) || !isFinite(end)) {
       start = Math.max(0, context.timeFallback - 1.5);
       end = context.timeFallback + 1.5;
     } else {
@@ -2924,7 +2926,7 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
             furigana: term.furigana || [],
             matched: String(item.matched || ""),
             rules: String(term.rules || ""),
-            tags: String(term.termTags || term.rules || "").split(/\s+/).filter(Boolean),
+            tags: (String(term.termTags || "") + " " + String(term.rules || "")).split(/\s+/).filter(Boolean),
             frequencies: term.frequencies || [],
             pitches: term.pitches || [],
             glossaries: [],
@@ -3275,12 +3277,10 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
       IINATAN.showStatus("Blocked unsafe URL", "error");
       return;
     }
-    var platform = IINATAN.platform;
-    var args = platform === "windows" ? ["cmd", "/d", "/c", "start", "", url] : platform === "macos" ? ["/usr/bin/open", url] : ["xdg-open", url];
-    IINATAN.subprocess(args, {
-      playbackOnly: false
-    }, function (error) {
+    IINATAN.backendCommand(["open-url", url], function (error) {
       if (error) IINATAN.showStatus("Could not open URL: " + error.message, "error");
+    }, {
+      playbackOnly: false
     });
   };
   IINATAN.http = function (request, callback) {
@@ -3450,46 +3450,156 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
     };
     mp.osd_message("iinatan: " + message, 5);
   };
-  IINATAN.updateSubtitleGeometry = function () {
-    var sub = IINATAN.state.subtitle || {},
-      text = sub.text,
-      osd = IINATAN.state.osd || {};
-    if (!text || !osd.w || !osd.h) {
-      IINATAN.state.subtitleUnits = [];
-      IINATAN.state.geometryKey = "";
+  IINATAN.ocrCache = {
+    values: Object.create(null),
+    order: []
+  };
+  IINATAN.bitmapSubtitleTrack = function () {
+    var track = IINATAN.subtitleTrack("primary");
+    if (!track) return null;
+    var codec = String(track.codec || track["codec-name"] || "").toLowerCase();
+    return /pgs|hdmv|dvd|vobsub|dvb|xsub/.test(codec) ? track : null;
+  };
+  IINATAN.applyBitmapOcr = function (key, response) {
+    if (!response || !response.ok || !response.text) return;
+    var text = String(response.text),
+      sub = {
+        surface: "primary",
+        text: text,
+        ass: "",
+        extradata: "",
+        start: Number(response.cueStartMs) / 1000,
+        end: Number(response.cueEndMs) / 1000,
+        delay: Number(IINATAN.state.properties["sub-delay"] || 0),
+        ocr: true
+      };
+    IINATAN.state.subtitle = sub;
+    IINATAN.state.subtitles = [sub];
+    IINATAN.state.subtitleUnits = (response.units || []).map(function (unit, index) {
+      return {
+        position: index,
+        surface: "primary",
+        text: text,
+        displayStartUtf16: unit.displayStartUtf16,
+        displayEndUtf16: unit.displayEndUtf16,
+        confidence: unit.confidence,
+        rects: unit.rects || []
+      };
+    });
+    var rects = [];
+    IINATAN.state.subtitleUnits.forEach(function (unit) {
+      rects = rects.concat(unit.rects);
+    });
+    IINATAN.state.subtitleRect = IINATAN.unionRects(rects);
+    IINATAN.state.ocrAppliedKey = key;
+    IINATAN.handleHover();
+  };
+  IINATAN.cacheBitmapOcr = function (key, response) {
+    if (!IINATAN.ocrCache.values[key]) IINATAN.ocrCache.order.push(key);
+    IINATAN.ocrCache.values[key] = response;
+    while (IINATAN.ocrCache.order.length > 32) delete IINATAN.ocrCache.values[IINATAN.ocrCache.order.shift()];
+  };
+  IINATAN.ocrScreenshot = function (flags, path, callback) {
+    var processId = "p" + ++IINATAN.processSerial;
+    var handle = mp.command_native_async({
+      name: "screenshot-to-file",
+      filename: path,
+      flags: flags
+    }, function (success, result, error) {
+      delete IINATAN.processes[processId];
+      callback(!success || error ? new Error(error || "OCR screenshot failed") : null);
+    });
+    if (handle) IINATAN.processes[processId] = {
+      handle: handle,
+      playbackOnly: true
+    };else callback(new Error(mp.last_error() || "OCR screenshot did not start"));
+  };
+  IINATAN.requestScreenshotOcr = function (base, callback) {
+    var cacheRoot = IINATAN.path("~~cache/iinatan"),
+      id = IINATAN.requestId(),
+      video = cacheRoot + "/ocr-video-" + id + ".png",
+      subtitles = cacheRoot + "/ocr-subtitles-" + id + ".png";
+    function cleanup() {
+      IINATAN.backendCommand(["safe-clean", cacheRoot, video, subtitles], function () {}, {
+        playbackOnly: true
+      });
+    }
+    IINATAN.ocrScreenshot("video", video, function (videoError) {
+      if (videoError) {
+        cleanup();
+        callback(videoError);
+        return;
+      }
+      IINATAN.ocrScreenshot("subtitles", subtitles, function (subtitleError) {
+        if (subtitleError) {
+          cleanup();
+          callback(subtitleError);
+          return;
+        }
+        var request = Object.assign({}, base, {
+          mode: "screenshot-diff",
+          images: {
+            video: video,
+            subtitles: subtitles
+          }
+        });
+        delete request.source;
+        delete request.timeMs;
+        delete request.cueStartMs;
+        delete request.cueEndMs;
+        IINATAN.workerRequest(request, function (error, response) {
+          cleanup();
+          callback(error, response);
+        });
+      });
+    });
+  };
+  IINATAN.requestBitmapSubtitleOcr = function () {
+    if (IINATAN.platform !== "macos" || !IINATAN.state.fileLoaded || (IINATAN.state.subtitles || []).length) return;
+    var profile = IINATAN.config.profiles[IINATAN.config.activeProfileId],
+      ocr = profile.ocr || {},
+      props = IINATAN.state.properties,
+      osd = IINATAN.state.osd || {},
+      track = IINATAN.bitmapSubtitleTrack();
+    if (!ocr.enabled || !track || !osd.w || !osd.h || !props.pause && !ocr.prefetch && !(IINATAN.state.mouse || {}).hover) return;
+    var source = IINATAN.mediaSource(),
+      external = track["external-filename"] || track.externalFilename,
+      sourcePath = external || source.primary,
+      ffIndex = Number(track["ff-index"]),
+      timeMs = Math.round(Number(props["time-pos"] || 0) * 1000),
+      startMs = isFinite(Number(props["sub-start"])) ? Math.round(Number(props["sub-start"]) * 1000) : timeMs - 1000,
+      endMs = isFinite(Number(props["sub-end"])) ? Math.round(Number(props["sub-end"]) * 1000) : timeMs + 1000,
+      key = JSON.stringify([IINATAN.mediaGeneration, sourcePath, track.id, startMs, endMs, profile.lookupLanguage, osd]);
+    if (!sourcePath) return;
+    if (IINATAN.ocrCache.values[key]) {
+      IINATAN.applyBitmapOcr(key, IINATAN.ocrCache.values[key]);
       return;
     }
-    var map = IINATAN.unicodeMap(text),
-      units = map.scalars.map(function (scalar, position) {
-        return {
-          position: position,
-          displayStartUtf16: scalar.utf16Start,
-          displayEndUtf16: scalar.utf16End
-        };
-      });
-    var props = IINATAN.state.properties,
-      source = IINATAN.mediaSource(),
-      isAss = !!(sub.ass && sub.extradata),
-      request;
-    if (isAss && source.primary) {
+    if (IINATAN.state.ocrRequestKey === key) return;
+    IINATAN.state.ocrRequestKey = key;
+    var languages = {
+        ja: "ja-JP",
+        en: "en-US",
+        de: "de-DE",
+        fr: "fr-FR",
+        ko: "ko-KR",
+        zh: "zh-Hans"
+      },
+      generation = IINATAN.generation,
       request = {
-        type: "ass-geometry",
+        type: "bitmap-subtitle-ocr",
         protocol: 1,
+        mode: "decoded-subtitle",
+        languages: [languages[profile.lookupLanguage] || "en-US"],
         source: {
-          path: source.primary,
-          ffIndex: 0,
-          external: false,
-          autoAssStream: true
+          path: sourcePath,
+          ffIndex: isFinite(ffIndex) ? ffIndex : -1,
+          autoBitmapStream: !isFinite(ffIndex),
+          cacheExcerpt: !external && /^https?:\/\//.test(sourcePath)
         },
-        cue: {
-          timeMs: Math.round(Number(props["time-pos"] || 0) * 1000),
-          startMs: Math.round(Number(sub.start || 0) * 1000),
-          endMs: Math.round(Number(sub.end || 0) * 1000),
-          assFull: sub.ass,
-          assExtradata: sub.extradata,
-          observedAss: sub.ass
-        },
-        units: units,
+        timeMs: timeMs,
+        cueStartMs: startMs,
+        cueEndMs: endMs,
         renderer: {
           width: osd.w,
           height: osd.h,
@@ -3498,73 +3608,18 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
           marginLeft: osd.ml || 0,
           marginRight: osd.mr || 0,
           marginTop: osd.mt || 0,
-          marginBottom: osd.mb || 0,
-          pixelAspect: osd.par || 1,
-          fontScale: Number(props["sub-scale"] || 1),
-          lineSpacing: 0,
-          forceMargins: false,
-          embeddedFonts: true,
-          useStorageSize: true,
-          overrideMode: String(props["sub-ass-override"] || "yes"),
-          defaultFamily: String(props["sub-font"] || "sans-serif"),
-          fontProvider: "auto",
-          assJustify: false,
-          linePosition: Number(props["sub-pos"] || 100),
-          hinting: "none",
-          shaper: "complex"
+          marginBottom: osd.mb || 0
         }
       };
-    } else request = {
-      type: "text-layout",
-      protocol: 1,
-      text: text,
-      font: {
-        family: String(props["sub-font"] || "sans-serif"),
-        size: Number(props["sub-font-size"] || 55) * Number(props["sub-scale"] || 1),
-        weight: props["sub-bold"] ? 700 : 400,
-        italic: !!props["sub-italic"],
-        spacing: Number(props["sub-spacing"] || 0)
-      },
-      wrapWidth: Math.max(1, osd.w - 2 * Number(props["sub-margin-x"] || 20)),
-      osdScale: 1,
-      fallbackFontPath: IINATAN.fallbackFontPath()
-    };
-    var geometryKey = JSON.stringify([text, sub.ass, sub.extradata, sub.start, sub.end, props["sid"], props["secondary-sid"], osd, props["video-out-params"], props["sub-font"], props["sub-font-size"], props["sub-bold"], props["sub-italic"], props["sub-spacing"], props["sub-margin-x"], props["sub-margin-y"], props["sub-pos"], props["sub-scale"], props["sub-ass-override"]]);
-    if (IINATAN.state.geometryKey === geometryKey) return;
-    IINATAN.state.geometryKey = geometryKey;
-    var generation = IINATAN.generation;
+    function finish(error, response) {
+      if (generation !== IINATAN.generation) return;
+      IINATAN.state.ocrRequestKey = "";
+      if (error || !response || !response.ok) return;
+      IINATAN.cacheBitmapOcr(key, response);
+      IINATAN.applyBitmapOcr(key, response);
+    }
     IINATAN.workerRequest(request, function (error, response) {
-      if (error || generation !== IINATAN.generation) return;
-      if (response.units) {
-        IINATAN.state.subtitleUnits = response.units;
-        var rects = [];
-        response.units.forEach(function (unit) {
-          (unit.rects || []).forEach(function (rect) {
-            rects.push(rect);
-          });
-        });
-        IINATAN.state.subtitleRect = IINATAN.unionRects(rects);
-      } else if (response.clusters) {
-        var x = (osd.w - response.width) / 2,
-          y = osd.h - Number(props["sub-margin-y"] || 22) - response.height;
-        IINATAN.state.subtitleUnits = response.clusters.map(function (cluster, index) {
-          return {
-            position: index,
-            rects: [{
-              x: x + cluster.x,
-              y: y + cluster.y,
-              w: cluster.width,
-              h: cluster.height
-            }]
-          };
-        });
-        IINATAN.state.subtitleRect = {
-          x: x,
-          y: y,
-          w: response.width,
-          h: response.height
-        };
-      }
+      if (error && ocr.screenshotFallback) IINATAN.requestScreenshotOcr(request, finish);else finish(error, response);
     });
   };
   IINATAN.unionRects = function (rects) {
@@ -3672,9 +3727,6 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
       fallbackFontPath: IINATAN.fallbackFontPath()
     };
   };
-
-  // The final implementation supersedes the single-surface compatibility
-  // routine above and measures both selected subtitle tracks independently.
   IINATAN.updateSubtitleGeometry = function () {
     var subtitles = IINATAN.state.subtitles || [],
       osd = IINATAN.state.osd || {};
@@ -4476,7 +4528,7 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
     return "linux";
   };
   IINATAN.handleHover = function () {
-    if (IINATAN.popupStack.length || IINATAN.state.settingsOpen) return;
+    if (!IINATAN.state.lookupEnabled || IINATAN.popupStack.length || IINATAN.state.settingsOpen) return;
     var profile = IINATAN.config.profiles[IINATAN.config.activeProfileId];
     if (profile.subtitleLookupMode === "shift-hover" && !IINATAN.state.shiftDown) return;
     var mouse = IINATAN.state.mouse || {};
@@ -4498,7 +4550,7 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
     IINATAN.state.hoverUnit = hoverKey;
     IINATAN.state.subtitleRect = IINATAN.unionRects(found.rects || []);
     var scalar = IINATAN.unicodeMap(found.text || "").scalars[found.position] || {};
-    IINATAN.openLookup(found.text, scalar.utf16Start || 0, false);
+    IINATAN.openLookup(found.text, found.displayStartUtf16 !== undefined ? found.displayStartUtf16 : scalar.utf16Start || 0, false);
   };
   IINATAN.initialize = function () {
     IINATAN.platform = IINATAN.detectPlatform();
@@ -4540,6 +4592,11 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
       if (IINATAN.overlay) IINATAN.overlay.remove();
     });
     mp.add_key_binding("Ctrl+d", "iinatan-settings", IINATAN.toggleSettings);
+    mp.add_key_binding("Ctrl+Shift+d", "iinatan-toggle", function () {
+      IINATAN.state.lookupEnabled = !IINATAN.state.lookupEnabled;
+      if (!IINATAN.state.lookupEnabled) IINATAN.closeAllPopups();
+      IINATAN.showStatus(IINATAN.state.lookupEnabled ? "lookup enabled" : "lookup disabled", "info");
+    });
     mp.add_key_binding("Shift", "iinatan-shift-state", function (event) {
       IINATAN.state.shiftDown = !!event && event.event === "down";
     }, {

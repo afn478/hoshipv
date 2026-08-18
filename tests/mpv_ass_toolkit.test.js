@@ -102,4 +102,18 @@ assert(
   /\\p1/.test(ass.build()) && /\\\{漢\\\}/.test(ass.build()),
   "ASS builder must emit vectors and escape text",
 );
+const wrapped = I.wrappedText("abcdef", {
+  clusters: [
+    { x: 0, y: 0, height: 20, utf16Range: [0, 1] },
+    { x: 15, y: 0, height: 20, utf16Range: [1, 2] },
+    { x: 0, y: 24, height: 20, utf16Range: [2, 3] },
+  ],
+});
+assert(wrapped === "ab\ncdef", "measured line breaks must drive ASS wrapping");
+ass.clip = { x: 10, y: 10, w: 40, h: 20 };
+ass.text(3, 0, 0, { font: "Noto Sans", size: 20, color: "ffffff" }, "clip");
+assert(
+  /\\clip\(10,10,50,30\)/.test(ass.build()),
+  "scroll content must emit ASS clipping",
+);
 console.log("mpv ASS toolkit tests passed");

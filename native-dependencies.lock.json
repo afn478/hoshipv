@@ -1,6 +1,12 @@
 {
-  "schema": 1,
-  "architecture": "arm64",
+  "schema": 2,
+  "targets": [
+    "macos-aarch64",
+    "macos-x86_64",
+    "linux-x86_64-glibc-2.35",
+    "linux-aarch64-glibc-2.35",
+    "windows-x86_64-msvc2022-static-crt"
+  ],
   "deploymentTarget": "11.0",
   "patches": [
     {
@@ -67,6 +73,20 @@
       "url": "https://ffmpeg.org/releases/ffmpeg-7.0.1.tar.xz",
       "sha256": "bce9eeb0f17ef8982390b1f37711a61b4290dc8c2a0c1a37b5857e85bfb0e4ff",
       "license": "LGPL-2.1-or-later"
+    },
+    {
+      "name": "miniaudio",
+      "version": "0.11.22",
+      "url": "https://github.com/mackron/miniaudio/archive/refs/tags/0.11.22.tar.gz",
+      "sha256": "bcb07bfb27e6fa94d34da73ba2d5642d4940b208ec2a660dbf4e52e6b7cd492f",
+      "license": "MIT-0 OR Unlicense"
+    },
+    {
+      "name": "Noto Sans CJK JP",
+      "version": "2.004",
+      "file": "assets/fonts/NotoSansCJKjp-Regular.otf",
+      "sha256": "68a3fc98800b2a27b371f2fb79991daf3633bd89309d4ffaa6946fd587f375b5",
+      "license": "OFL-1.1"
     }
   ]
 }

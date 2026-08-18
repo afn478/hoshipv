@@ -37,7 +37,7 @@ if (!String.prototype.includes)
   };
 
 var IINATAN = {
-  version: "3.0.0-dev",
+  version: "3.0.0",
   protocol: { lookup: 1, geometry: 1, textLayout: 1 },
   generation: 0,
   state: {
@@ -46,6 +46,7 @@ var IINATAN = {
     popup: null,
     settingsOpen: false,
     interactive: false,
+    lookupEnabled: true,
   },
   timers: Object.create(null),
   processes: Object.create(null),

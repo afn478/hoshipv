@@ -5,7 +5,12 @@ IINATAN.detectPlatform = function () {
   return "linux";
 };
 IINATAN.handleHover = function () {
-  if (IINATAN.popupStack.length || IINATAN.state.settingsOpen) return;
+  if (
+    !IINATAN.state.lookupEnabled ||
+    IINATAN.popupStack.length ||
+    IINATAN.state.settingsOpen
+  )
+    return;
   var profile = IINATAN.config.profiles[IINATAN.config.activeProfileId];
   if (profile.subtitleLookupMode === "shift-hover" && !IINATAN.state.shiftDown)
     return;
@@ -35,7 +40,13 @@ IINATAN.handleHover = function () {
   IINATAN.state.subtitleRect = IINATAN.unionRects(found.rects || []);
   var scalar =
     IINATAN.unicodeMap(found.text || "").scalars[found.position] || {};
-  IINATAN.openLookup(found.text, scalar.utf16Start || 0, false);
+  IINATAN.openLookup(
+    found.text,
+    found.displayStartUtf16 !== undefined
+      ? found.displayStartUtf16
+      : scalar.utf16Start || 0,
+    false,
+  );
 };
 
 IINATAN.initialize = function () {
@@ -78,6 +89,14 @@ IINATAN.initialize = function () {
     if (IINATAN.overlay) IINATAN.overlay.remove();
   });
   mp.add_key_binding("Ctrl+d", "iinatan-settings", IINATAN.toggleSettings);
+  mp.add_key_binding("Ctrl+Shift+d", "iinatan-toggle", function () {
+    IINATAN.state.lookupEnabled = !IINATAN.state.lookupEnabled;
+    if (!IINATAN.state.lookupEnabled) IINATAN.closeAllPopups();
+    IINATAN.showStatus(
+      IINATAN.state.lookupEnabled ? "lookup enabled" : "lookup disabled",
+      "info",
+    );
+  });
   mp.add_key_binding(
     "Shift",
     "iinatan-shift-state",

@@ -1,75 +1,33 @@
-# iinatan source layout
+# Architecture
 
-The package root still contains generated runtime files (`main.js`, `overlay.html`, `dictionary-manager.html`,
-`global.js`, `preferences.html`, and `Info.json`) because that is the most conservative IINA plugin loading path.
+iinatan is an mpv 0.41+ application with two runtime components:
 
-The maintainable source is split under `src/`:
-
-- `src/main/00_context_state_paths.js` — IINA API bindings, state, preferences, logging, paths.
-- `src/main/10_subtitle_text_style.js` — subtitle cleanup, IINA/mpv subtitle style extraction, overlay config.
-- `src/main/15_profile_settings.js` — profile/global setting defaults and pure preference normalization.
-- `src/main/20_dictionary_manifest.js` — dictionary manifest persistence, profiles, and menu helpers.
-- `src/main/30_backend_import_worker_lookup.js` — bundled backend install, committed worker-queue publication, dictionary import, and lookup.
-- `src/main/40_legacy_line_precompute.js` — legacy parser/precompute helpers kept while lookup flow is stabilized.
-- `src/main/50_overlay_bridge_pause.js` — validated local WebSocket dispatch, audio resolution, and pause/resume lifecycle.
-- `src/main/51_anki_connect.js` — AnkiConnect URL safety, JSON transport, retries, response parsing, and version caching.
-- `src/main/52_anki_card_context.js` — Pure Anki card context, glossary/structured-content formatting, escaping, metadata string shaping, and furigana helpers.
-- `src/main/52_anki_templates.js` — Anki marker definitions, template marker scanning, media needs, and field rendering.
-- `src/main/53_anki_duplicates.js` — Anki duplicate query/check-note/options shaping.
-- `src/main/54_anki_media_names.js` — Anki media filename, suffix, and document-stem normalization.
-- `src/main/54_anki_note_actions.js` — Anki note ID normalization, duplicate note lookup/opening, tag cleanup, and add-result note ID validation.
-- `src/main/60_overlay_lifecycle_toggle.js` — overlay initialization, polling, enable/disable, Shift+H.
-- `src/main/70_menu.js` — plugin menu and focused operational diagnostics. Unit tests and benchmarks live under `tests/` and are not shipped in `main.js`.
-- `src/main/99_bootstrap.js` — startup event registration.
-- `src/native/iina_hoshi.cpp` — native HoshiDicts wrapper source.
-- `scripts/build_native_backend.sh` — builds `bin/iina-hoshi-dicts` from the pinned `vendor/hoshidicts` submodule.
-- `vendor/hoshidicts` — pinned HoshiDicts submodule.
-- `src/overlay/overlay.css` — overlay styling.
-- `src/overlay/overlay.js` — overlay interaction/rendering logic.
-- `src/overlay/overlay.template.html` — generated overlay HTML template.
-
-Generated `main.js` is assembled from the explicit `MAIN_RUNTIME_PARTS` list in
-`scripts/build_plugin.py`; validation fails for missing, duplicate, undeclared,
-or stale generated modules. Source modules still share one generated runtime
-scope, so domain state should live in the narrowest source file that owns it.
-
-`15_profile_settings.js` owns profile/global defaults, focused normalizers, and
-the setting-to-runtime-effect table. Release validation checks its defaults
-against the static IINA representation in `Info.json`. `Info.json` owns the
-plugin release version; the build injects it into generated JavaScript and
-validates `package.json` and `ghVersion`.
-
-## Main Runtime Flow
-
-Startup enters through `99_bootstrap.js`, registers IINA events/menu items, applies the active dictionary profile, and delegates overlay lifecycle work to `60_overlay_lifecycle_toggle.js`. Subtitle polling reads and cleans the current subtitle in `10_subtitle_text_style.js`, sends subtitle/config messages to the HTML overlay, and warms the native lookup worker when dictionaries are available.
-
-Hover lookup starts in `src/overlay/overlay.js`: the overlay turns pointer position into a language-aware lookup request and sends it across the local bridge owned by `50_overlay_bridge_pause.js`. Main-side lookup orchestration then selects active dictionaries from the manifest/profile state in `20_dictionary_manifest.js`, coordinates the HoshiDicts worker in `30_backend_import_worker_lookup.js`, and returns shaped dictionary payloads for overlay rendering.
-
-Settings/profile state is split by responsibility. `15_profile_settings.js` owns the default values and coercion rules for profile preferences and global dictionary-import settings. `20_dictionary_manifest.js` owns manifest shape, active-profile selection, dictionary order/enablement, profile CRUD, and persistence. UI windows should consume normalized state rather than duplicating fallback behavior.
-
-## Current Risk Map
-
-- `src/overlay/overlay.js` remains the largest mixed-responsibility file: DOM event binding, popup placement, dictionary HTML rendering, audio controls, theme handling, and Anki button state all share one closure.
-- `src/main/55_anki_integration.js` still mixes Anki media capture, manager state, passive status, and overlay bridge handling; pure card-context/glossary rendering and note actions now live in narrower Anki modules.
-- `src/main/00_context_state_paths.js` still owns broad module-level mutable state for lifecycle, lookup cache/in-flight requests, bridge connections, pause state, diagnostics, task overlay state, and cached paths.
-- Boundary code has many intentionally best-effort `catch (_) {}` blocks around IINA/mpv/DOM APIs. These are useful for host compatibility, but future refactors should add context where failures affect user-visible behavior.
-- String contracts are still scattered across the overlay, settings manager HTML, main bridge messages, and `Info.json`. New settings and message types should be added through named constants or narrowly tested helpers where practical.
-
-Run this from the plugin root after editing source modules:
-
-```bash
-python3 scripts/build_plugin.py
+```text
+mpv properties
+  → normalized media/subtitle state
+  → language normalization + Unicode index map
+  → native ASS/text geometry
+  → spatial pointer hit
+  → latest-only lookup scheduler
+  → persistent HoshiDicts worker
+  → DictionaryDocument
+  → popup/settings reducers
+  → ASS layout + hit regions
+  → one ass-events OSD overlay
 ```
 
-To create an installable package:
+`scripts/iinatan.js` is an ES5 bundle generated from ordered modules in `src/mpv` and shared language code in `src/languages`. The source modules own the mpv adapter, config, Unicode mapping, media state, worker protocol, ASS primitives, dictionary model, popup controller, services, Anki domains, settings, and lifecycle respectively. The bundle is the only shipped UI/controller runtime.
 
-```bash
-python3 scripts/build_plugin.py --package /tmp/iinatan.iinaplgz
-```
+The UI toolkit provides stable widgets with measure/layout/render/event phases: Scene, Widget, TextRun, HitRegion, stacks, Button, Toggle, Chip, Link, List, ScrollView, Scrollbar, Expandable, Table, Callout, Modal, and PopupSurface. One ASS builder supplies text and vector commands to `mp.create_osd_overlay("ass-events")`. Measurement comes from the backend; hit handling never estimates character width or launches external work. A spatial index resolves reverse paint order and smallest containing region. Scene data is only updated when it changes.
 
-Build the bundled Apple Silicon lookup engine before packaging a release:
+`src/native` builds one `iinatan-backend` executable. Its portable boundaries are worker protocol, HoshiDicts command orchestration, ASS geometry/text shaping, FFmpeg demux, libcurl HTTP, FFmpeg/miniaudio audio preview, safe platform I/O, Apple Vision OCR, and a non-Apple OCR stub. The tracked CMake project and presets replace generated wrappers. Platform code is selected at build time; Apple frameworks are never linked on Linux or Windows.
 
-```bash
-git submodule update --init --recursive
-scripts/build_native_backend.sh
-```
+The persistent worker keeps dictionary objects in memory. Request publication remains `<id>.request` followed by `<id>.json`; responses use `responses/<id>.json`. It accepts one active lookup and one replaceable latest pending hover lookup. Layout uses a separate non-lookup operation, and macOS OCR has its own cancellable latest-only lane. Generation tokens, cancellation markers, acknowledgements, TTL cleanup, stop markers, owner monitoring, and a bounded shutdown grace prevent stale results and orphans.
+
+Configuration schema v2 lives at `~~home/iinatan/config.json`. Dictionaries/mutable state use `~~state/iinatan`; temporary/download data uses `~~cache/iinatan`. The backend supplies bounded file operations because MuJS lacks portable filesystem mutation. Imports preflight ZIP paths and expansion, stage uniquely, validate HoshiDicts output and `index.json`, resolve collisions, atomically install, transactionally update config, and restart the worker. Failed operations roll back logical state.
+
+The `DictionaryDocument` is independent of rendering and retains structured dictionary meaning. ASS popup rendering and Anki HTML glossary rendering are separate consumers. Anki is split into transport, immutable card context, templates, duplicate detection, and media/note actions. HTTP, encoding, hashing, and playback are async and cannot run inside pointer handling.
+
+Lifecycle begins at script load and observes file, subtitle, track, pause/time, OSD/video, mouse, and subtitle-style properties. Rebuilds coalesce at zero delay. `file-loaded`, `end-file`, and `shutdown` advance generations and cancel scoped work. Popup pause ownership is explicit: playback resumes only when the last popup closes and only when iinatan initiated the pause.
+
+Release archives are target-specific and contain the ES5 script, matching backend and FFmpeg executables, Noto fallback font, schema/example, installers, licenses, checksums, build metadata, changelog, documentation, and corresponding source. Validation verifies safe paths, checksums, target identity, capabilities, executability, and unexpected dynamic dependencies. CI runs native gates on macOS arm64/x86_64, Linux x86_64/aarch64, and Windows x86_64.

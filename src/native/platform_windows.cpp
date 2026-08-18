@@ -6,6 +6,7 @@
 #include <fcntl.h>
 #include <io.h>
 #include <windows.h>
+#include <shellapi.h>
 
 namespace iinatan::platform {
 
@@ -78,6 +79,29 @@ std::filesystem::path canonical_path(const std::filesystem::path& path) {
 }
 
 const char* adapter_name() { return "windows"; }
+
+bool open_external_url(const std::string& url, std::error_code& error) {
+  const int length = MultiByteToWideChar(
+      CP_UTF8, MB_ERR_INVALID_CHARS, url.data(), static_cast<int>(url.size()),
+      nullptr, 0);
+  if (length <= 0) {
+    error = std::error_code(
+        static_cast<int>(GetLastError()), std::system_category());
+    return false;
+  }
+  std::wstring wide(static_cast<size_t>(length), L'\0');
+  MultiByteToWideChar(
+      CP_UTF8, MB_ERR_INVALID_CHARS, url.data(), static_cast<int>(url.size()),
+      wide.data(), length);
+  const auto result = reinterpret_cast<intptr_t>(
+      ShellExecuteW(nullptr, L"open", wide.c_str(), nullptr, nullptr, SW_SHOWNORMAL));
+  if (result > 32) {
+    error.clear();
+    return true;
+  }
+  error = std::error_code(static_cast<int>(result), std::system_category());
+  return false;
+}
 
 }  // namespace iinatan::platform
 

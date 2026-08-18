@@ -87,6 +87,7 @@ IINATAN.rebuildFromProperties = function () {
   IINATAN.state.mouse = props["mouse-pos"] || { hover: false, x: 0, y: 0 };
   IINATAN.emit("state", IINATAN.state);
   IINATAN.rebuildScene();
+  IINATAN.requestBitmapSubtitleOcr();
 };
 
 IINATAN.mediaSource = function () {
@@ -131,7 +132,12 @@ IINATAN.sentenceAudioWindow = function (context, paddingMs) {
   var padding = IINATAN.clamp(paddingMs, 0, 2000, 250) / 1000;
   var start = context.subtitleStart;
   var end = context.subtitleEnd;
-  if (!isFinite(start) || !isFinite(end)) {
+  if (
+    typeof start !== "number" ||
+    typeof end !== "number" ||
+    !isFinite(start) ||
+    !isFinite(end)
+  ) {
     start = Math.max(0, context.timeFallback - 1.5);
     end = context.timeFallback + 1.5;
   } else {

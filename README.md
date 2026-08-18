@@ -1,167 +1,78 @@
 # iinatan
 
-iinatan adds dictionary popups to subtitles in IINA on macOS. Pause a video, hover a word, and look it up without leaving the player.
+iinatan is a native popup dictionary for mpv 0.41+. It turns visible text and ASS subtitles into selectable lookup targets and renders compact, structured dictionary results directly in mpv's ASS OSD. It supports Japanese, English, German, French, Korean, and Chinese Yomitan dictionaries through HoshiDicts.
 
-The plugin is still experimental, but the core workflow is usable today: install a dictionary, choose a lookup language, toggle iinatan on, and use it while watching subtitled video.
+The application has no browser, HTML, local socket, or companion GUI. Its controller and complete interface run in mpv's JavaScript runtime; one portable native backend owns dictionary work, text shaping, safe file operations, HTTP, and audio preview. Apple Vision OCR is available on macOS. Linux and Windows report bitmap OCR as unavailable while retaining full text/ASS lookup.
 
-Anki export is available through AnkiConnect when Anki is running in the background.
+## Install
 
-## Screenshots
+Download the archive matching the computer:
 
-![Japanese popup with Anki add confirmation](docs/screenshots/japanese-popup.png)
+- `macos-aarch64` for Apple Silicon
+- `macos-x86_64` for Intel Macs
+- `linux-x86_64`
+- `linux-aarch64`
+- `windows-x86_64`
 
-| German lookup | Anki setup |
-| --- | --- |
-| ![German popup over paused subtitles](docs/screenshots/german-popup.png) | ![Anki settings with popup add button enabled](docs/screenshots/anki-settings.png) |
-| Dictionary selection | Recommended dictionary downloads |
-| ![Dictionary settings with enabled Chinese dictionaries](docs/screenshots/dictionary-settings.png) | ![Recommended dictionaries dialog](docs/screenshots/recommended-dictionaries.png) |
+Extract it, then run `./install.sh` on macOS/Linux or `./install.ps1` in PowerShell on Windows. Existing `config.json` files are never replaced.
 
-## What You Get
+Manual installation uses this layout under mpv's config directory (`~/.config/mpv` on macOS/Linux, `%APPDATA%\mpv` on Windows):
 
-- Dictionary lookups directly on IINA subtitles.
-- Automatic pause on dictionary lookup and resume afterwards
-- Japanese, English, French, German, Chinese, and Korean lookup modes.
-- Built-in downloader for recommended dictionaries and frequency data.
-- Import support for local Yomitan-compatible dictionary ZIP files.
-- Frequency and pitch-accent dictionary support for Japanese
-- Compact popups with structured entries, tags, source links, collapsed long sections, and custom CSS.
-- One-click Anki card creation with duplicate detection, subtitle sentences, screenshots, and subtitle audio.
-- Profiles for keeping separate language, dictionary, popup, and anki export settings.
+```text
+scripts/iinatan.js
+scripts/iinatan/bin/iinatan-backend[.exe]
+scripts/iinatan/bin/ffmpeg[.exe]
+scripts/iinatan/fonts/NotoSansCJKjp-Regular.otf
+iinatan/config.json
+```
 
-## Installation
+The release supports macOS 11+, Linux with glibc 2.35+, and 64-bit Windows. mpv 0.41 or newer is required.
 
-For most users, the recommended option is the release package. Installing directly from GitHub follows the latest repository contents, so it can break temporarily when new commits are pushed.
+If mpv is started with `--no-config`, pass absolute bootstrap paths with `--script` and `--script-opts=iinatan-config=/absolute/config.json`; relative or unavailable config paths are rejected with an actionable OSD error.
 
-### Install a Release Package (Recommended)
+## First use
 
-Download `iinatan.iinaplgz` from the [latest version on GitHub](https://github.com/afn478/iinatan/releases/latest) and install it through IINA's plugin manager.
+1. Start a video in mpv and press `Ctrl+d` to open Settings.
+2. Import an absolute Yomitan dictionary ZIP path, or choose the recommended Jitendex download.
+3. Select a profile and lookup language, then enable and order its dictionaries.
+4. Pause over a subtitle and move the pointer over the desired word. Shift-hover is available as a profile mode.
 
-### Install From GitHub
-Use this only if you want the newest in-progress changes and are comfortable with occasional breakage.
+`Ctrl+Shift+d` toggles lookup. Escape closes the deepest nested popup, then the root popup, then Settings. Click, wheel, selection dragging, expandable sections, source links, audio, and Anki actions are handled inside the OSD. iinatan installs forced mouse bindings only while the pointer is over one of its interactive regions, leaving mpv and its OSC untouched elsewhere.
 
-1. Open IINA's plugin manager.
-2. Choose **Install from GitHub**.
-3. Enter `afn478/iinatan`.
-4. Enable the plugin.
-5. Open **Plugins -> iinatan -> Settings...**.
-6. Install the recommended dictionary, or import a Yomitan-compatible dictionary ZIP.
-7. Toggle iinatan with **Shift+H**.
+Available script messages are:
 
-## Customize the Popup
+```text
+script-message iinatan-settings
+script-message iinatan-import /absolute/dictionary.zip
+script-message iinatan-lookup "text" 0
+script-message iinatan-add-anyway
+script-message iinatan-open-last-note
+```
 
-Use the [custom popup CSS guide](docs/custom-popup-css.md) for ready-to-paste recipes that change fonts, text sizes, spacing, colors, dictionary sections, Jitendex content, buttons, and other popup details. It also explains how to test changes in the repository's browser preview before adding them to IINA.
+## Settings and files
 
-## Quick Start
+`~~home/iinatan/config.json` is authoritative and conforms to `config/config.schema.json`. Settings supports profile create/rename/delete/switch, lookup language, dictionary import/order/enable/remove, recommended downloads, subtitle and pause behavior, popup scale/theme, audio sources, Anki deck/model/preset, validation, reload, backup restore, and display of the advanced JSON path.
 
-1. Open **Plugins -> iinatan -> Settings...**.
-2. Choose the lookup language you want to use.
-3. Go to the dictionaries section
-3. Click `Get recommended Dictionaries...` and download the available dictionaries. Alternatively, import compatible dictionary ZIP files.
-4. Enable and move dictionaries into the order you prefer.
-5. Toggle iinatan with **Shift+H**.
-6. Pause playback and hover subtitle text.
+Mutable dictionaries and worker state live under `~~state/iinatan`; downloads and temporary files live under `~~cache/iinatan`. Config writes are staged, validated, atomically committed, read back, and backed up. Corrupt inputs are preserved with a timestamp. Version-1 settings are migrated non-destructively; custom CSS is archived under `migration.archivedCustomCss` and is never parsed or executed. Appearance is controlled only by validated theme tokens.
 
-If the popup does not appear, press **Shift+H** to toggle iinatan on.
+## Dictionaries, audio, and Anki
 
-## Dictionaries
+Dictionary order is profile-specific. Every result retains its full entry headword, source order, readings, tags, frequency, pitch, structured examples/notes/tables, sanitized attribution links, and dictionary-scoped Wiktionary cleanup. Long sections scroll or collapse; nested lookup and selected glossary text remain available.
 
-The dictionary panel lets you:
+Word audio is resolved with bounded HTTPS requests and previewed by the included backend using FFmpeg decoding and miniaudio output, including while mpv is paused. A new preview cancels the previous one. Sentence audio prefers mpv's cache dump and falls back to the selected audio source, with bounded MP3/Opus encoding and content-addressed media names.
 
-- Install Jitendex for Japanese.
-- Import local Yomitan-compatible dictionary ZIP files.
-- Enable or disable installed dictionaries.
-- Reorder dictionaries to choose which results appear first.
-
-Language support depends on the dictionaries you install. iinatan currently has lookup modes for:
-
-- Japanese
-- English
-- French
-- German
-- Chinese
-- Korean (Experimental)
-
-Some dictionary ZIP files do not label their language clearly. When that happens, iinatan may still let you import the file, but you may need to choose the right lookup language yourself.
-
-## Settings
-
-Open **Plugins -> iinatan -> Settings...** to manage the plugin.
-
-Common settings include:
-
-- Lookup language
-- Installed dictionaries and result priority
-- Subtitle and popup appearance
-- Playback behavior
-- AnkiConnect export fields, duplicate behavior, screenshots, and sentence audio
-- Advanced import and lookup options
-- Profiles for separate setups
-
-Bitmap subtitles such as Blu-ray PGS can be recognized for lookup with the
-Apple Vision framework built into macOS. The code ships in the existing native
-helper, recognition stays on-device, and the setting is enabled by default only
-when Vision supports the active profile language. Direct subtitle decoding
-preserves authored placement; streamed or protected sources can use the pixels
-already rendered by mpv through a separately warned, default-off screenshot
-fallback. By default, pausing or briefly moving the mouse anywhere over the
-player recognizes the current bitmap cue; successful results remain cached for
-the usual hover-to-pause lookup flow. Continuously recognizing every cue during
-playback is available as a separately warned, default-off profile option, while
-consecutive streamed cues reuse the active native media session instead of
-reopening the movie. OCR can still misrecognize stylized or low-resolution text,
-so Settings shows a permanent accuracy warning and an explicit opt-out.
-
-The experimental native-subtitle layer supports ordinary ASS/SSA dialogue in
-Japanese, English, French, German, Chinese, and Korean without replacing mpv's
-visible subtitle rendering. Its invisible hit boxes come from the packaged
-native helper. Complex override-tagged or ambiguous text cues are intentionally
-skipped; SubRip and the existing force/strip ASS compatibility modes keep their
-previous behavior. Full original-versus-instrumented ASS alpha validation is
-available as an expensive Advanced diagnostic and is disabled during normal
-playback.
-
-## Anki Export
-
-Install the AnkiConnect add-on, open Anki, then configure export from the **Anki** tab in **Plugins -> iinatan -> Settings...**. Anki settings are stored per profile, including the AnkiConnect URL, deck, note type, field templates, duplicate behavior, JPEG screenshot quality, and sentence audio format/bitrate.
-
-To add cards from the popup:
-
-1. Keep Anki open and make sure AnkiConnect shows as reachable in the **Anki** tab.
-2. Choose the deck, note type, and field mappings for the active profile.
-3. Enable **Show Anki add button in popups**. Without this checkbox, the popup will not show the add-card button even when AnkiConnect is configured.
-4. Press **Shift+H** to turn iinatan on, pause playback, hover subtitle text, then click the add-card button in the popup.
-
-The IINA plugin menu also includes **Settings...** and quick profile switching.
+For Anki, install AnkiConnect, keep Anki open, then configure the active profile. iinatan supports discovery, field templates, structured glossary HTML, deck/collection duplicate scopes, prevent/allow/add-anyway behavior, note opening, screenshots, sentence audio, and selected word audio.
 
 ## Troubleshooting
 
-- If no popup appears, press **Shift+H** and try again while playback is paused.
-- If a dictionary does not return results, check that it is enabled and that the current lookup language matches it.
-- If the plugin stalls, restart IINA.
+- Run `iinatan-backend version` from the installed `scripts/iinatan/bin` directory to inspect target, dependency versions, and capabilities.
+- Check `~~state/iinatan/iinatan.log` when a lookup or import fails.
+- Confirm the active profile's language and dictionary enablement if there are no results.
+- On Linux/Windows, bitmap OCR being unavailable is expected. Text and ASS subtitles still work.
+- Use Settings → Validate or Restore backup for configuration errors.
 
-## Development / Contributing
+Development and release instructions are in [CONTRIBUTING.md](CONTRIBUTING.md); subsystem boundaries are in [ARCHITECTURE.md](ARCHITECTURE.md).
 
-### Browser popup preview
+## License and acknowledgements
 
-Open [`dev/popup-preview.html`](dev/popup-preview.html) directly in a browser to render real dictionary entries without starting IINA. The preview imports `src/overlay/overlay.css` and `src/overlay/overlay.js` directly, so changes to the production popup UI appear after refreshing the page. Its sidebar switches between representative words, dark and light themes, popup dimensions, result limits, and persistent temporary CSS overrides.
-
-The bundled lookup payloads are hardcoded in `dev/popup-preview-data.js`. To refresh them from the locally installed dictionaries with `iina-hoshi-dicts`, run:
-
-```sh
-npm run preview:data
-```
-
-Set `IINATAN_DATA_ROOT` first if the plugin data lives outside IINA's standard application-support directory.
-
-Development notes, build commands, test commands, packaging details, and release steps live in [CONTRIBUTING.md](CONTRIBUTING.md).
-
-## License
-
-iinatan is licensed under the GNU General Public License v3.0 only (`GPL-3.0-only`). See `LICENSE` for the full license text.
-
-## Thanks
-
-- [Yomipv](https://github.com/BrenoAqua/Yomipv) for the original idea of bringing Yomitan-style lookup into mpv.
-- [Yomitan](https://github.com/yomidevs/yomitan) for the inspiration behind the popup dictionary experience.
-- [HoshiDicts](https://github.com/Manhhao/hoshidicts/) for the dictionary engine used by iinatan.
-- [Chimahon](https://github.com/sohilsayed/chimahon) and [Hoshi Reader Android](https://github.com/HuangAntimony/Hoshi-Reader-Android) for examples of compact, reader-friendly lookup design.
+iinatan is GPL-3.0-only. Release archives include licenses, checksums, and corresponding native source. HoshiDicts provides the dictionary engine; Yomitan, Yomipv, Chimahon, Hoshi Reader, and Rougo informed the reading experience.

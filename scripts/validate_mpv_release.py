@@ -7,11 +7,15 @@ import argparse
 import hashlib
 import json
 import os
+import platform
 import subprocess
 import tarfile
 import tempfile
 import zipfile
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+VERSION = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["version"]
 
 TARGETS = {
     "macos-aarch64",
@@ -37,12 +41,35 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def detect_target() -> str:
+    operating_system = {
+        "Darwin": "macos",
+        "Linux": "linux",
+        "Windows": "windows",
+    }.get(platform.system())
+    machine = platform.machine().lower()
+    architecture = (
+        "aarch64"
+        if machine in ("arm64", "aarch64")
+        else "x86_64"
+        if machine in ("x86_64", "amd64")
+        else None
+    )
+    if not operating_system or not architecture:
+        raise SystemExit("cannot infer release target")
+    return f"{operating_system}-{architecture}"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("archive", type=Path)
-    parser.add_argument("--target", required=True, choices=sorted(TARGETS))
+    parser.add_argument("archive", type=Path, nargs="?")
+    parser.add_argument("--target", choices=sorted(TARGETS))
     parser.add_argument("--execute", action="store_true")
     options = parser.parse_args()
+    options.target = options.target or detect_target()
+    if options.archive is None:
+        extension = ".zip" if options.target.startswith("windows-") else ".tar.gz"
+        options.archive = ROOT / "dist" / f"iinatan-{VERSION}-{options.target}{extension}"
     if not options.archive.is_file():
         raise SystemExit(f"missing release archive: {options.archive}")
     with tempfile.TemporaryDirectory(prefix="iinatan-validate-") as temporary:
@@ -54,7 +81,7 @@ def main() -> None:
         else:
             with tarfile.open(options.archive, "r:gz") as archive:
                 safe_members(archive.getnames())
-                archive.extractall(temporary_path, filter="data")
+                archive.extractall(temporary_path)
         roots = [item for item in temporary_path.iterdir() if item.is_dir()]
         if len(roots) != 1:
             raise SystemExit("release must contain exactly one top-level directory")
@@ -70,6 +97,8 @@ def main() -> None:
         info = json.loads((root / "BUILD-INFO.json").read_text(encoding="utf-8"))
         if info.get("target") != options.target:
             raise SystemExit("release target metadata does not match its target")
+        if info.get("wrapperVersion") != VERSION:
+            raise SystemExit("release wrapper version is stale")
         required = [
             "scripts/iinatan.js",
             "fonts/NotoSansCJKjp-Regular.otf",
@@ -79,6 +108,9 @@ def main() -> None:
             "licenses/THIRD_PARTY_NOTICES.md",
             "licenses/OFL.txt",
             "source/iinatan-native-source.tar.gz",
+            "docs/README.md",
+            "docs/ARCHITECTURE.md",
+            "docs/CHANGELOG.md",
         ]
         required.extend(
             ["bin/iinatan-backend.exe", "bin/ffmpeg.exe", "install.ps1"]
@@ -94,6 +126,12 @@ def main() -> None:
                 raise SystemExit("corresponding source lacks CMakeLists.txt")
             if not any("src/native/" in name for name in source_names):
                 raise SystemExit("corresponding native source is missing")
+            if not any("vendor/hoshidicts/" in name for name in source_names):
+                raise SystemExit("corresponding HoshiDicts source is missing")
+            if not any(name.endswith("upstream/ffmpeg-7.0.1.tar.xz") for name in source_names):
+                raise SystemExit("corresponding FFmpeg source is missing")
+            if not any(name.endswith("upstream/0.11.22.tar.gz") for name in source_names):
+                raise SystemExit("corresponding miniaudio source is missing")
         if options.execute:
             backend_name = "iinatan-backend.exe" if options.target.startswith("windows-") else "iinatan-backend"
             output = subprocess.check_output([str(root / "bin" / backend_name), "version"], text=True)

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 3.0.0 - 2026-08-19
+
+### Breaking changes
+
+- Replaced the IINA/WebKit plugin with a native, cross-platform mpv 0.41+ application. Installations now use target-specific mpv archives and schema-v2 JSON; the former plugin package cannot update to this release in place.
+- Removed executable custom CSS and archived legacy CSS as inert migration data. Validated ASS theme tokens now control appearance.
+
 ### Added
 
 - Began the native mpv 0.41+ cutover with a MuJS-compatible bundled runtime, config schema v2 migration, observed media/subtitle state, persistent-worker scheduling, a reusable ASS widget toolkit, UI-neutral dictionary documents, native popup/settings controllers, direct Anki orchestration, tracked CMake presets, additive text-layout and filesystem protocols, and real mpv runtime coverage.
@@ -9,6 +16,12 @@
 - Added schema-v2 examples, native mpv installers and archive tooling, corresponding-source and checksum generation, and executable native import/lookup/layout/audio/config smoke gates.
 - Added a per-profile minimum popup width setting so compact dictionary results, including CEDICT entries, can retain a balanced layout.
 - Added optional Yomitan-style Shift-hover lookup triggers for subtitle text and nested popup definitions.
+- Added a five-target native release matrix for macOS arm64/x86_64, Linux x86_64/aarch64, and Windows x86_64, including target execution, clean-install, checksum, source, dependency, and complete-release-set gates.
+
+### Changed
+
+- Made native mpv JavaScript the sole lifecycle, UI, lookup, settings, popup, audio, and Anki controller; removed the legacy HTML, preferences, local socket, standalone-window, generated plugin, and checked-in backend artifacts from the primary branch.
+- Retained the final IINA implementation on `archive/iina-v2.1.4` for historical maintenance and migration reference.
 
 ### Fixed
 

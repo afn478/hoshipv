@@ -3,6 +3,8 @@ const path = require("path");
 const vm = require("vm");
 
 const root = path.resolve(__dirname, "..");
+const forced = [],
+  removed = [];
 const context = {
   console,
   setTimeout,
@@ -20,8 +22,12 @@ const context = {
       return false;
     },
     set_property_bool() {},
-    remove_key_binding() {},
-    add_forced_key_binding() {},
+    remove_key_binding(name) {
+      removed.push(name);
+    },
+    add_forced_key_binding(_key, name) {
+      forced.push(name);
+    },
   },
 };
 vm.createContext(context);
@@ -52,6 +58,46 @@ assert(
   placed.y + placed.h <= 700 - 0.12 * 700 - 8,
   "popup must account for OSC margins",
 );
+I.state.osd = { w: 700, h: 1000, ml: 30, mr: 20, mt: 60, mb: 40 };
+I.state.properties["user-data/osc/margins"] = { b: 0, l: 0, r: 0, t: 0 };
+I.state.mouse = { hover: true, x: 350, y: 500 };
+const resized = I.placePopup(
+  { x: 310, y: 600, w: 80, h: 30 },
+  { w: 500, h: 420 },
+);
+assert(
+  resized.x >= 38 && resized.y >= 68,
+  "letterbox margins form the safe area",
+);
+assert(
+  resized.x + resized.w <= 700 - 20 - 8 &&
+    resized.y + resized.h <= 1000 - 40 - 8,
+  "resized fullscreen/windowed placement remains clamped",
+);
+assert(
+  resized.x < 700 && resized.y < 1000,
+  "OSD coordinates remain unscaled on HiDPI displays",
+);
+I.scene = { index: new I.SpatialIndex(50) };
+I.scene.index.add(
+  new I.HitRegion(
+    "interactive",
+    { x: 0, y: 0, w: 100, h: 100 },
+    {},
+    "pointer",
+    1,
+  ),
+);
+I.state.mouse = { hover: true, x: 10, y: 10 };
+I.state.interactive = false;
+I.updateBindings();
+assert(
+  forced.length === 3,
+  "interactive hover installs click and wheel bindings",
+);
+I.state.mouse = { hover: true, x: 200, y: 200 };
+I.updateBindings();
+assert(removed.length === 3, "leaving iinatan releases all forced bindings");
 I.pauseOwner = true;
 I.popupStack = [{}, {}];
 I.cancelAudioPreview = function () {};

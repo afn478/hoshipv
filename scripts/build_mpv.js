@@ -65,7 +65,20 @@ const result = babel.transformSync(input, {
   ],
 });
 const output = path.join(root, "scripts", "iinatan.js");
-fs.writeFileSync(output, `${result.code}\n`);
-console.log(
-  `built ${path.relative(root, output)} from ${sources.length} sources`,
-);
+const generated = `${result.code}\n`;
+if (process.argv.includes("--check")) {
+  const current = fs.existsSync(output) ? fs.readFileSync(output, "utf8") : "";
+  if (current !== generated) {
+    console.error(
+      `${path.relative(root, output)} is stale; run node scripts/build_mpv.js`,
+    );
+    process.exitCode = 1;
+  } else {
+    console.log(`verified ${path.relative(root, output)}`);
+  }
+} else {
+  fs.writeFileSync(output, generated);
+  console.log(
+    `built ${path.relative(root, output)} from ${sources.length} sources`,
+  );
+}

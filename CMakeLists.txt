@@ -13,7 +13,7 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 add_subdirectory(vendor/hoshidicts)
 
 set(IINATAN_NATIVE_SOURCES
-  src/native/iina_hoshi.cpp
+  src/native/backend_main.cpp
   src/native/worker_protocol.cpp
   src/native/media_demux.cpp
   src/native/ass_geometry.cpp
@@ -33,9 +33,13 @@ else()
 endif()
 
 add_executable(iinatan-backend ${IINATAN_NATIVE_SOURCES})
+if(WIN32)
+  target_link_libraries(iinatan-backend PRIVATE shell32)
+endif()
 target_include_directories(iinatan-backend PRIVATE
   src/native
   vendor/hoshidicts/src
+  vendor/hoshidicts/external/zstd/lib
 )
 target_link_libraries(iinatan-backend PRIVATE hoshidicts)
 
@@ -52,7 +56,13 @@ if(IINATAN_ENABLE_ASS)
     message(FATAL_ERROR "libass and utf8proc development files are required")
   endif()
   target_compile_definitions(iinatan-backend PRIVATE IINATAN_ASS_GEOMETRY=1)
-  target_include_directories(iinatan-backend PRIVATE ${LIBASS_INCLUDE_DIR} ${UTF8PROC_INCLUDE_DIR} "${IINATAN_GEOMETRY_STAGE}/include")
+  target_include_directories(iinatan-backend PRIVATE
+    ${LIBASS_INCLUDE_DIR}
+    ${UTF8PROC_INCLUDE_DIR}
+    "${IINATAN_GEOMETRY_STAGE}/include"
+    "${IINATAN_GEOMETRY_STAGE}/include/freetype2"
+    "${IINATAN_GEOMETRY_STAGE}/include/harfbuzz"
+  )
   target_link_libraries(iinatan-backend PRIVATE utf8proc)
   if(WIN32)
     find_package(PkgConfig REQUIRED)
@@ -87,9 +97,9 @@ endif()
 if(IINATAN_ENABLE_AUDIO)
   FetchContent_Declare(
     miniaudio
-    GIT_REPOSITORY https://github.com/mackron/miniaudio.git
-    GIT_TAG 0.11.22
-    GIT_SHALLOW TRUE
+    URL https://github.com/mackron/miniaudio/archive/refs/tags/0.11.22.tar.gz
+    URL_HASH SHA256=bcb07bfb27e6fa94d34da73ba2d5642d4940b208ec2a660dbf4e52e6b7cd492f
+    DOWNLOAD_EXTRACT_TIMESTAMP FALSE
   )
   FetchContent_MakeAvailable(miniaudio)
   target_include_directories(iinatan-backend PRIVATE ${miniaudio_SOURCE_DIR})

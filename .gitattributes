@@ -1,4 +1,2 @@
-main.js linguist-generated=true
-overlay.html linguist-generated=true
-bin/iina-hoshi-dicts binary
-*.iinaplgz binary
+scripts/iinatan.js linguist-generated=true
+assets/fonts/*.otf binary

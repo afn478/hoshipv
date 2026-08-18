@@ -14,7 +14,7 @@ try {
   const backup = `${target}.backup`;
   const next = `${target}.next`;
   fs.writeFileSync(target, "not-json\n");
-  fs.writeFileSync(next, '{"schemaVersion":2,"profiles":{}}\n');
+  fs.copyFileSync(path.join(root, "config", "config.example.json"), next);
   execFileSync(backend, ["fs-commit", next, target, backup]);
   assert.strictEqual(JSON.parse(fs.readFileSync(target)).schemaVersion, 2);
   assert.ok(
@@ -24,6 +24,14 @@ try {
     "corrupt input must be preserved with a timestamp",
   );
   assert.strictEqual(JSON.parse(fs.readFileSync(backup)).schemaVersion, 2);
+
+  fs.writeFileSync(next, '{"schemaVersion":2,"profiles":{}}\n');
+  const malformed = spawnSync(backend, ["fs-commit", next, target, backup], {
+    encoding: "utf8",
+  });
+  assert.notStrictEqual(malformed.status, 0);
+  assert.match(malformed.stdout + malformed.stderr, /config is missing global/);
+  assert.strictEqual(JSON.parse(fs.readFileSync(target)).schemaVersion, 2);
 
   fs.writeFileSync(next, '{"schemaVersion":1}\n');
   const invalid = spawnSync(backend, ["fs-commit", next, target, backup], {

@@ -13,10 +13,12 @@ import stat
 import subprocess
 import tarfile
 import tempfile
+import urllib.request
 import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+VERSION = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["version"]
 TARGETS = {
     "macos-aarch64",
     "macos-x86_64",
@@ -60,7 +62,7 @@ def validate_backend(path: Path, target: str) -> dict:
     return data
 
 
-def validate_ffmpeg(path: Path) -> None:
+def validate_ffmpeg(path: Path, target: str) -> None:
     if not path.is_file():
         raise SystemExit(f"missing ffmpeg: {path}")
     try:
@@ -69,6 +71,30 @@ def validate_ffmpeg(path: Path) -> None:
         raise SystemExit(f"ffmpeg did not execute: {error}") from error
     if not output.startswith("ffmpeg version"):
         raise SystemExit("unexpected ffmpeg version output")
+    data = path.read_bytes()[:4096]
+    expected = target.rsplit("-", 1)[-1]
+    if target.startswith("windows-"):
+        if data[:2] != b"MZ" or len(data) < 64:
+            raise SystemExit("ffmpeg is not a PE executable")
+        pe_offset = int.from_bytes(data[60:64], "little")
+        with path.open("rb") as stream:
+            stream.seek(pe_offset)
+            header = stream.read(6)
+        if header[:4] != b"PE\0\0" or int.from_bytes(header[4:6], "little") != 0x8664:
+            raise SystemExit("ffmpeg architecture does not match windows-x86_64")
+    elif target.startswith("linux-"):
+        if data[:4] != b"\x7fELF" or len(data) < 20:
+            raise SystemExit("ffmpeg is not an ELF executable")
+        byteorder = "little" if data[5] == 1 else "big"
+        machine = int.from_bytes(data[18:20], byteorder)
+        required_machine = 183 if expected == "aarch64" else 62
+        if machine != required_machine:
+            raise SystemExit(f"ffmpeg architecture does not match {target}")
+    else:
+        architectures = run("lipo", "-archs", str(path)).split()
+        required_architecture = "arm64" if expected == "aarch64" else "x86_64"
+        if required_architecture not in architectures:
+            raise SystemExit(f"ffmpeg architecture does not match {target}")
 
 
 def validate_dynamic(path: Path, target: str, allow_dynamic: bool) -> None:
@@ -79,7 +105,14 @@ def validate_dynamic(path: Path, target: str, allow_dynamic: bool) -> None:
         forbidden = [line for line in output.splitlines()[1:] if "/opt/homebrew/" in line or "/usr/local/" in line]
     else:
         output = run("ldd", str(path))
-        allowed = ("linux-vdso", "libc.so", "libm.so", "libpthread.so", "libdl.so", "ld-linux", "libgcc_s.so")
+        allowed = (
+            "linux-vdso", "libc.so", "libm.so", "libpthread.so", "libdl.so",
+            "ld-linux", "libgcc_s.so", "libstdc++.so", "libcurl.so", "libssl.so",
+            "libcrypto.so", "libzstd.so", "libbrotli", "libidn2.so", "libunistring.so",
+            "libpsl.so", "libnghttp2.so", "libssh2.so", "libldap", "liblber",
+            "libgnutls.so", "libnettle.so", "libhogweed.so", "libgmp.so", "libresolv.so",
+            "libkrb5", "libk5crypto", "libcom_err", "libkeyutils", "libsasl2", "libgssapi",
+        )
         forbidden = [line for line in output.splitlines() if not any(name in line for name in allowed)]
     if forbidden:
         raise SystemExit(f"unexpected dynamic dependencies for {path.name}: " + "; ".join(forbidden))
@@ -92,16 +125,42 @@ def corresponding_source(destination: Path) -> None:
         "native-dependencies.lock.json",
         "scripts/build_native_geometry_dependencies.sh",
         "src/native",
-        "vendor/HoshiDicts",
+        "vendor/hoshidicts",
+        "cmake",
+        "patches",
         ".gitmodules",
         "LICENSE",
         "THIRD_PARTY_NOTICES.md",
     ]
+    lock = json.loads((ROOT / "native-dependencies.lock.json").read_text(encoding="utf-8"))
+    source_cache = ROOT / "build" / "native-source-downloads"
+    source_cache.mkdir(parents=True, exist_ok=True)
     with tarfile.open(destination, "w:gz", format=tarfile.PAX_FORMAT) as archive:
         for relative in members:
             source = ROOT / relative
             if source.exists():
                 archive.add(source, arcname=f"iinatan-native-source/{relative}")
+        for dependency in lock["dependencies"]:
+            url = dependency.get("url")
+            if not url:
+                continue
+            filename = url.rsplit("/", 1)[-1]
+            cached = source_cache / filename
+            build_cached = ROOT / "build" / "native-geometry-deps" / "downloads" / filename
+            source = build_cached if build_cached.is_file() else cached
+            if not source.is_file():
+                staged = cached.with_suffix(cached.suffix + ".part")
+                request = urllib.request.Request(url, headers={"User-Agent": "iinatan-source-packager/3"})
+                with urllib.request.urlopen(request, timeout=120) as response, staged.open("wb") as output:
+                    shutil.copyfileobj(response, output, length=1024 * 1024)
+                staged.replace(cached)
+                source = cached
+            if sha256(source) != dependency["sha256"]:
+                raise SystemExit(f"source checksum mismatch: {dependency['name']}")
+            archive.add(
+                source,
+                arcname=f"iinatan-native-source/upstream/{filename}",
+            )
 
 
 def write_checksums(root: Path) -> None:
@@ -125,6 +184,9 @@ def validate_layout(root: Path, target: str) -> None:
         root / "licenses/LICENSE",
         root / "licenses/THIRD_PARTY_NOTICES.md",
         root / "licenses/OFL.txt",
+        root / "docs/README.md",
+        root / "docs/ARCHITECTURE.md",
+        root / "docs/CHANGELOG.md",
         root / "source/iinatan-native-source.tar.gz",
         root / "SHA256SUMS",
     ]
@@ -168,15 +230,15 @@ def main() -> None:
         print(f"validated {options.validate_directory}")
         return
     backend_info = validate_backend(options.backend.resolve(), options.target)
-    validate_ffmpeg(options.ffmpeg.resolve())
+    validate_ffmpeg(options.ffmpeg.resolve(), options.target)
     validate_dynamic(options.backend.resolve(), options.target, options.allow_dynamic)
     destination = options.output or ROOT / "dist" / (
-        f"iinatan-3.0.0-{options.target}.zip" if options.target.startswith("windows-") else f"iinatan-3.0.0-{options.target}.tar.gz"
+        f"iinatan-{VERSION}-{options.target}.zip" if options.target.startswith("windows-") else f"iinatan-{VERSION}-{options.target}.tar.gz"
     )
     destination.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="iinatan-package-") as temporary:
-        package = Path(temporary) / f"iinatan-3.0.0-{options.target}"
-        for directory in ("scripts", "bin", "fonts", "config", "licenses", "source"):
+        package = Path(temporary) / f"iinatan-{VERSION}-{options.target}"
+        for directory in ("scripts", "bin", "fonts", "config", "licenses", "source", "docs"):
             (package / directory).mkdir(parents=True)
         shutil.copy2(ROOT / "scripts/iinatan.js", package / "scripts/iinatan.js")
         shutil.copy2(options.backend, package / "bin" / executable_name("iinatan-backend", options.target))
@@ -187,6 +249,9 @@ def main() -> None:
         shutil.copy2(ROOT / "LICENSE", package / "licenses")
         shutil.copy2(ROOT / "THIRD_PARTY_NOTICES.md", package / "licenses")
         shutil.copy2(ROOT / "assets/fonts/OFL.txt", package / "licenses")
+        shutil.copy2(ROOT / "README.md", package / "docs")
+        shutil.copy2(ROOT / "ARCHITECTURE.md", package / "docs")
+        shutil.copy2(ROOT / "CHANGELOG.md", package / "docs")
         installer = ROOT / ("install.ps1" if options.target.startswith("windows-") else "install.sh")
         shutil.copy2(installer, package / installer.name)
         corresponding_source(package / "source/iinatan-native-source.tar.gz")

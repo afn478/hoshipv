@@ -1,270 +1,39 @@
 # Contributing
 
-This guide covers source changes, local validation, package checks, and releases for iinatan.
+Clone recursively so `vendor/hoshidicts` is present. The supported toolchain is Node 24, Python 3, CMake 3.22+, a C++23 compiler, FFmpeg development libraries/executable, libcurl, and the dependency-build prerequisites listed in the native workflow.
 
-iinatan is a Yomitan-style popup dictionary for IINA/mpv on macOS. It is implemented as an IINA JavaScript plugin, with HoshiDicts as the native/backend dictionary layer. Current lookup and display work spans Japanese, English, German, French, Korean, and Chinese.
-
-## Repository Shape
-
-Primary source files live under `src/`. Generated plugin entrypoints live at the repository root:
-
-- `main.js`
-- `global.js`
-- `overlay.html`
-- `dictionary-manager.html`
-- `preferences.html`
-
-When changing source that feeds generated files, run the build and include the regenerated output with the source change. Do not hand-edit generated files as the primary fix unless the build system itself is being repaired.
-
-HoshiDicts is pinned as a git submodule under `vendor/hoshidicts`. Release packages exclude `vendor/` and include only the compiled runtime at `bin/iina-hoshi-dicts`.
-
-## Before Changing Files
-
-Start by checking the branch and worktree:
-
-```bash
-git status --short --branch
-```
-
-Keep unrelated local changes intact. Stage only the paths intentionally changed for the task.
-
-Prefer narrow display and formatting changes when working on visual popup issues. Do not alter lookup correctness, parser/deinflection behavior, dictionary import, IPC, backend schema, or language routing unless the task specifically requires it.
-
-Preserve these behaviors unless a task explicitly changes them:
-
-- Japanese, English, German, French, Korean, and Chinese lookup.
-- Dictionary import and HoshiDicts backend build.
-- Target language selection.
-- No-result termination behavior.
-- Pause-only popup behavior.
-- Direct worker IPC performance.
-- Popup hover/click behavior.
-- Clickable source links and custom CSS support.
-- Installed dictionary settings management.
-
-For Wiktionary/Kaikki formatting, prefer source/dictionary-scoped fixes when structures differ. For example, tuple-style non-lemma cleanup for `wty-en-de` and `wty-de-en` should not silently change unrelated Wiktionary dictionaries.
-
-For Japanese dictionary display, keep each dictionary entry's headword prominent. Later entries should not look like minor metadata when Hoshi Reader/Yomitan-style layouts would show them as full entries.
-
-## Setup
-
-Clone with submodules:
-
-```bash
-git clone --recurse-submodules https://github.com/afn478/iinatan.git
-cd iinatan
-```
-
-If the clone already exists or was created without `--recurse-submodules`, initialize the submodule:
-
-```bash
+```sh
 git submodule update --init --recursive
-```
-
-Build the native lookup engine:
-
-```bash
-scripts/build_native_backend.sh
-```
-
-To build the arm64 helper with native ASS/SSA hit-box geometry, including the
-pinned static FFmpeg/libass dependency stack and the verified private libass
-patch:
-
-```bash
-scripts/build_native_backend.sh --with-ass-geometry
-node tests/native_ass_geometry.test.js
-```
-
-The dependency versions, upstream checksums, deployment target, and patch hash
-are locked in `native-dependencies.lock.json`. Do not substitute IINA-private
-dynamic libraries. Release builds that include this helper must also publish
-the corresponding-source archive from `scripts/package_native_source.sh`.
-
-## Build And Validation
-
-Regenerate runtime files after source edits:
-
-```bash
+npm ci
+bash scripts/build_native_geometry_dependencies.sh
 npm run build
 ```
 
-Format project JavaScript files:
+`npm run build` regenerates `scripts/iinatan.js` and builds `build/native/release/iinatan-backend`. Do not hand-edit the generated bundle. JavaScript must stay MuJS/ES5-compatible after Babel. Native dependencies and checksums are pinned in `native-dependencies.lock.json`.
 
-```bash
+Before any change, inspect `git status --short --branch` and preserve unrelated work. Keep shared language/normalization logic independent of mpv, and keep dictionary documents independent of ASS and Anki renderers. Visual fixes should stay in the document/layout layer unless lookup correctness actually requires a pipeline change. Preserve all six languages and scope Wiktionary/Kaikki special cases to their source dictionaries.
+
+Format and validate with:
+
+```sh
 npm run format:js
-```
-
-Run `npm run format:js` after JavaScript edits and before the final build/test pass. The formatter covers project source and test `.js` files while ignoring dependency, vendor, build, dist, binary output, and generated root runtime files.
-
-Run the standard test suite:
-
-```bash
+node scripts/build_mpv.js
+node scripts/build_mpv.js --check
 npm test
+node tests/mpv_041_runtime.test.js
 ```
 
-Run the focused overlay dictionary formatting test:
+Native tests expect `build/native/release/iinatan-backend`; some also require `ffmpeg` and mpv 0.41+ on `PATH`. Use focused groups with `npm run test:group -- mpv-ui`, `native`, or another group listed by `node scripts/run_tests.js --list`.
 
-```bash
-node tests/overlay_dictionary_formatting.test.js
+For release work, create the local target archive and execute its validator:
+
+```sh
+python3 scripts/package_mpv.py
+python3 scripts/validate_mpv_release.py dist/iinatan-3.0.0-<target>.tar.gz --target <target> --execute
 ```
 
-Validate release layout and required backend files:
+Windows produces a ZIP. The five-platform GitHub workflow builds on each target, runs version/import/lookup/layout/HTTP/audio/config/worker gates, performs a clean installer test, uploads the artifact, and validates the complete set on release tags. Linux is based on glibc 2.35; macOS targets deployment version 11; Windows uses MSVC 2022 with the static CRT. A target compile without executing its backend is not an acceptable release gate.
 
-```bash
-npm run validate:release
-```
+Release archives must include matching executables, config files, Noto OFL assets, all notices, checksums, `BUILD-INFO.json`, changelog/docs, and corresponding source. `scripts/validate_mpv_release.py` must reject missing, unsafe, checksum-mismatched, stale-version, wrong-target, incompatible, or unexpectedly dynamic artifacts. Release notes are extracted from the matching `CHANGELOG.md` version and missing sections fail.
 
-Create an installable package:
-
-```bash
-npm run package
-```
-
-For overlay/display work, use this pre-commit verification:
-
-```bash
-npm run format:js && npm run build && node tests/overlay_dictionary_formatting.test.js && npm test
-```
-
-For backend, package, submodule, or layout-sensitive work, also run:
-
-```bash
-npm run validate:release
-npm run package
-```
-
-Documentation-only changes usually do not need the full app test suite. Inspect the diff and report that tests were skipped because the change was documentation-only.
-
-## Local IINA Testing
-
-Link the working tree into IINA:
-
-```bash
-/Applications/IINA.app/Contents/MacOS/iina-plugin link .
-```
-
-The equivalent npm script is:
-
-```bash
-npm run link
-```
-
-Pack with IINA's plugin tooling:
-
-```bash
-npm run pack
-```
-
-## Package Layout
-
-`scripts/build_plugin.py --package dist/iinatan.iinaplgz` packages only runtime files, not the whole source tree. The package validator requires:
-
-- `Info.json`
-- `main.js`
-- `global.js`
-- `overlay.html`
-- `dictionary-manager.html`
-- `preferences.html`
-- `README.md`
-- `LICENSE`
-- `package.json`
-- `CHANGELOG.md`
-- `bin/iina-hoshi-dicts`
-
-Optional documentation files included in release packages:
-
-- `ARCHITECTURE.md`
-- `MAINTAINABILITY_AUDIT.md`
-- `SETTINGS_AUDIT.md`
-
-The build script uses explicit ordered source manifests to generate the root
-runtime files and fails validation when a source is missing, duplicated,
-undeclared, or stale.
-
-## Diagnostics
-
-Diagnostic logs are available from **Plugins -> iinatan -> Debug**:
-
-- JavaScript diagnostics: `Plugin Data Folder/debug.log`
-- Lookup process diagnostics: `Plugin Data Folder/worker/worker.log`
-
-Useful debug actions:
-
-- **Test File Picker API** opens the same picker used by manual dictionary import and reports success, cancellation, or API failure.
-- **Test Dictionary Lookup** verifies that the active dictionary worker returns a result.
-- **Restart Dictionary Lookup** and **Stop Dictionary Lookup** provide focused worker-lifecycle recovery controls.
-- **Log Runtime Diagnostics** records a redacted lifecycle, worker, queue, cache, timer, subtitle-track, and bridge snapshot.
-- **Reveal Debug Log File** and **Reveal Plugin Data Folder** open troubleshooting files in Finder.
-
-If lookups fail, first confirm that at least one dictionary is installed and enabled, then reveal `worker.log`. For development builds, run `scripts/build_native_backend.sh` if `bin/iina-hoshi-dicts` is missing.
-
-If dictionary import does nothing or cannot open the picker, run **Debug -> Test File Picker API** and check `debug.log`.
-
-If an experimental language mode cannot confidently identify a compatible dictionary, it will warn but still try the dictionaries explicitly enabled. Import or enable a Yomitan dictionary whose metadata/path identifies that language, such as an English-headword `en-*`, French-headword `fr-*`, German-headword `de-*`, Chinese-headword `zh-*`/CC-CEDICT, or Korean-headword `ko-*` dictionary. Japanese mode continues to use the existing Jitendex/HoshiDicts path.
-
-For Wiktionary/Kaikki-style dictionaries, the popup separates grammar, inflection/non-lemma rows, etymology, source/backlink rows, tags, and core glossary text where the dictionary data exposes those sections. Etymology is collapsed by default, source links open in the default browser, and custom CSS is injected only when the setting is non-empty.
-
-## Release Workflow
-
-Release builds produce `dist/iinatan.iinaplgz`.
-
-The manual GitHub Actions workflow **macOS Apple Silicon build** regenerates runtime files, runs tests, compiles the bundled lookup engine, validates the installable root layout, packages `dist/iinatan.iinaplgz`, and uploads it as an artifact.
-
-To publish a release package from the workflow, set `publish_release=true` and provide a `release_tag`, such as `v1.6.0`. The workflow extracts the matching version section from `CHANGELOG.md` and uses it as the GitHub Release notes. Missing or empty changelog sections fail the release job.
-
-When cutting a release, update `Info.json`:
-
-- `version`
-- `ghVersion`
-
-Also move the relevant `CHANGELOG.md` entries into the versioned section that matches the release tag without the leading `v`.
-
-IINA uses `ghRepo` and `ghVersion` for GitHub plugin update checks.
-
-## Regression Guidance
-
-When adding regressions for UI bugs, prefer assertions that lock the intended behavior narrowly:
-
-- Header divider removed while `.entry + .entry` separators remain.
-- Pitch accent group starts on a new metadata row while the tag and accent display remain side by side.
-- Pitch display sizing changes do not resize unrelated tags.
-- Source links remain sanitized and clickable.
-- Dictionary-specific formatting fixes remain scoped to the affected dictionaries.
-
-## Version Control Checklist
-
-Before committing, inspect the final diff:
-
-```bash
-git diff --stat
-git diff -- <changed-files>
-```
-
-Stage explicit paths:
-
-```bash
-git add <file1> <file2> ...
-```
-
-Use a focused commit message that describes the user-visible change. Keep generated files in the same commit as the source change that produced them.
-
-Push the current branch when requested or when continuing an already-pushed feature branch:
-
-```bash
-git push origin <branch-name>
-```
-
-Confirm the final state:
-
-```bash
-git status --short --branch
-```
-
-Final reports should include:
-
-- Commit hash and commit message when a commit was made.
-- Whether the branch was pushed.
-- Files or areas changed.
-- Test/build commands run and their result.
-- Any skipped tests, with the reason.
+Use explicit staging paths and focused commits. Generated `scripts/iinatan.js` belongs in the same commit as its source. Never commit binaries from `build`, `bin`, or `dist`; release automation creates them. Do not push unless explicitly requested.

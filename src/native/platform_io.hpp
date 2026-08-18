@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <string>
 
 namespace iinatan::platform {
 
@@ -27,5 +28,6 @@ bool atomic_replace(
     std::error_code& error);
 std::filesystem::path canonical_path(const std::filesystem::path& path);
 const char* adapter_name();
+bool open_external_url(const std::string& url, std::error_code& error);
 
 }  // namespace iinatan::platform

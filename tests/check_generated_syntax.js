@@ -1,54 +1,32 @@
 const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
+const { spawnSync } = require("child_process");
 
 const root = path.resolve(__dirname, "..");
+const runtime = path.join(root, "scripts", "iinatan.js");
+new vm.Script(fs.readFileSync(runtime, "utf8"), { filename: runtime });
 
-function checkScript(label, source) {
-  try {
-    new vm.Script(source, { filename: label });
-  } catch (error) {
-    error.message = label + ": " + error.message;
-    throw error;
-  }
+const generated = spawnSync(
+  process.execPath,
+  [path.join(root, "scripts", "build_mpv.js"), "--check"],
+  { cwd: root, encoding: "utf8" },
+);
+if (generated.status !== 0)
+  throw new Error(generated.stderr || generated.stdout || "stale mpv runtime");
+
+const source = fs.readFileSync(runtime, "utf8");
+for (const forbidden of [
+  /^\s*const\s/gm,
+  /^\s*let\s/gm,
+  /=>/,
+  /^\s*class\s+/gm,
+  /\?\./,
+  /\?\?/,
+  /mp\.create_assdraw/,
+]) {
+  if (forbidden.test(source))
+    throw new Error(`generated MuJS runtime contains ${forbidden}`);
 }
 
-checkScript("main.js", fs.readFileSync(path.join(root, "main.js"), "utf8"));
-checkScript("global.js", fs.readFileSync(path.join(root, "global.js"), "utf8"));
-
-const overlayHtml = fs.readFileSync(path.join(root, "overlay.html"), "utf8");
-const scripts = Array.from(
-  overlayHtml.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi),
-).map((match) => match[1]);
-if (!scripts.length) throw new Error("overlay.html: no script tag found");
-scripts.forEach((script, index) =>
-  checkScript("overlay.html script #" + (index + 1), script),
-);
-
-const preferencesHtml = fs.readFileSync(
-  path.join(root, "preferences.html"),
-  "utf8",
-);
-const preferenceScripts = Array.from(
-  preferencesHtml.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi),
-).map((match) => match[1]);
-if (!preferenceScripts.length)
-  throw new Error("preferences.html: no script tag found");
-preferenceScripts.forEach((script, index) =>
-  checkScript("preferences.html script #" + (index + 1), script),
-);
-
-const managerHtml = fs.readFileSync(
-  path.join(root, "dictionary-manager.html"),
-  "utf8",
-);
-const managerScripts = Array.from(
-  managerHtml.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi),
-).map((match) => match[1]);
-if (!managerScripts.length)
-  throw new Error("dictionary-manager.html: no script tag found");
-managerScripts.forEach((script, index) =>
-  checkScript("dictionary-manager.html script #" + (index + 1), script),
-);
-
-console.log("generated syntax checks passed");
+console.log("generated ES5 runtime syntax checks passed");

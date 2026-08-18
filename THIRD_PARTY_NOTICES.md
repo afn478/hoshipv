@@ -1,22 +1,26 @@
 # Third-party notices
 
-iinatan ships a single macOS arm64 native helper. The helper includes
-statically linked open-source components in addition to HoshiDicts. Exact
-versions, archive URLs, checksums, and the arm64 deployment target are recorded
-in `native-dependencies.lock.json`.
+iinatan release archives contain a native backend, an FFmpeg executable, and
+the Noto Sans CJK JP fallback font. The backend combines the components below.
+Pinned source URLs and checksums are recorded in
+`native-dependencies.lock.json`; exact linked versions and capabilities are
+reported by `iinatan-backend version` in every release.
 
 | Component | Version | License |
 | --- | ---: | --- |
-| FFmpeg libraries | 7.0.1 | LGPL-2.1-or-later |
-| libass | 0.17.2 | ISC |
+| FFmpeg libraries and executable | 7.0.1 or target release build | LGPL-2.1-or-later |
+| libass (iinatan lookup-unit patch) | 0.17.2 | ISC |
 | HarfBuzz | 8.5.0 | MIT |
-| FreeType | 2.13.2 | FreeType License or GPL-2.0-or-later |
+| FreeType | 2.13.2 | FTL or GPL-2.0-or-later |
 | FriBidi | 1.0.13 | LGPL-2.1-or-later |
 | libunibreak | 6.1 | Zlib |
 | zlib | 1.3.1 | Zlib |
-| HoshiDicts | pinned Git submodule revision | GPL-3.0-only |
+| libcurl | platform build reported at runtime | curl license |
+| miniaudio | 0.11.22 | MIT-0 or Unlicense |
+| Noto Sans CJK JP | 2.004 | OFL-1.1 |
+| HoshiDicts | pinned Git submodule | GPL-3.0-only |
 | glaze | HoshiDicts pinned source | MIT |
-| kanji-processor | HoshiDicts pinned source | See bundled license |
+| kanji-processor | HoshiDicts pinned source | bundled upstream license |
 | libdeflate | HoshiDicts pinned source | MIT |
 | unordered_dense | HoshiDicts pinned source | MIT |
 | utf8proc | HoshiDicts pinned source | MIT |
@@ -24,21 +28,12 @@ in `native-dependencies.lock.json`.
 | xxHash | HoshiDicts pinned source | BSD-2-Clause |
 | zstd | HoshiDicts pinned source | BSD-3-Clause |
 
-The helper uses FFmpeg only for local file demuxing and libass only for
-subtitle rendering. The pinned libass source is modified by
-`patches/libass-0.17.2-iinatan-unit-ids.patch`, whose checksum is recorded in
-the dependency lock. It does not use IINA's private dynamic libraries.
+The libass changes are in
+`patches/libass-0.17.2-iinatan-unit-ids.patch`, with a pinned checksum. Apple
+Vision and CoreText are used only through system frameworks on macOS. The
+backend uses only the public dependencies listed here and operating-system frameworks.
 
-The project license remains GPL-3.0-only. The full corresponding native source
-bundle, including the exact verified upstream archives and the relink/build
-scripts, is produced as `dist/iina-hoshi-dicts-native-source.tar.gz` by
-`scripts/package_native_source.sh`. Upstream license files are preserved inside
-those unmodified source archives. The same source bundle must be published
-beside every release that contains the static helper.
-
-The installable plugin package includes the complete applicable license texts
-under `THIRD_PARTY_LICENSES/`.
-
-No warranty is provided by the upstream authors or by iinatan. See each
-component's license file in the corresponding-source bundle for the complete
-terms.
+Every platform archive includes the project license, these notices, the font's
+OFL text, checksums, and a corresponding native-source archive. Upstream
+license files remain in that source archive. The project as a whole is
+GPL-3.0-only. No warranty is provided by upstream authors or iinatan.

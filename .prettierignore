@@ -3,9 +3,5 @@ vendor/
 build/
 dist/
 bin/
-main.js
-global.js
-overlay.html
-dictionary-manager.html
-preferences.html
+scripts/iinatan.js
 dev/popup-preview-data.js
