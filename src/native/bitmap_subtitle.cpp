@@ -6,11 +6,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
-#include <fcntl.h>
-#include <limits.h>
 #include <memory>
-#include <sys/stat.h>
-#include <unistd.h>
+
+#include "platform_io.hpp"
 
 #ifdef IINATAN_ASS_GEOMETRY
 extern "C" {
@@ -60,7 +58,7 @@ constexpr int64_t kLocalForwardWindowMs = 30000;
 struct FileHandle {
   int fd = -1;
   ~FileHandle() {
-    if (fd >= 0) close(fd);
+    if (fd >= 0) platform::close_file(fd);
   }
 };
 
@@ -132,7 +130,7 @@ bool safe_network(const std::string& path) {
 int read_packet(void* opaque, uint8_t* buffer, int size) {
   const int fd = *static_cast<int*>(opaque);
   while (true) {
-    const ssize_t count = read(fd, buffer, static_cast<size_t>(size));
+    const int count = platform::read_file(fd, buffer, static_cast<size_t>(size));
     if (count > 0) return static_cast<int>(count);
     if (count == 0) return AVERROR_EOF;
     if (errno != EINTR) return AVERROR(errno);
@@ -142,14 +140,14 @@ int read_packet(void* opaque, uint8_t* buffer, int size) {
 int64_t seek_file(void* opaque, int64_t offset, int whence) {
   const int fd = *static_cast<int*>(opaque);
   if (whence == AVSEEK_SIZE) {
-    struct stat status {};
-    return fstat(fd, &status) == 0 ? status.st_size : AVERROR(errno);
+    platform::FileInfo info;
+    return platform::file_info(fd, info) ? info.size : AVERROR(errno);
   }
   const int base = whence & ~AVSEEK_FORCE;
   if (base != SEEK_SET && base != SEEK_CUR && base != SEEK_END)
     return AVERROR(EINVAL);
-  const off_t result = lseek(fd, static_cast<off_t>(offset), base);
-  return result < 0 ? AVERROR(errno) : static_cast<int64_t>(result);
+  const int64_t result = platform::seek_file(fd, offset, base);
+  return result < 0 ? AVERROR(errno) : result;
 }
 
 std::string av_error(int code) {
@@ -221,18 +219,20 @@ std::unique_ptr<DecoderSession> open_decoder_session(
         &session->format.value, source.path.c_str(), nullptr, &options);
     av_dict_free(&options);
   } else {
-    char resolved[PATH_MAX] = {};
-    if (!realpath(source.path.c_str(), resolved)) {
-      error = failure("media-open-failed", std::strerror(errno), metrics);
+    std::filesystem::path resolved;
+    try {
+      resolved = platform::canonical_path(source.path);
+    } catch (const std::exception& open_error) {
+      error = failure("media-open-failed", open_error.what(), metrics);
       return nullptr;
     }
-    session->file.fd = open(resolved, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    session->file.fd = platform::open_readonly(resolved);
     if (session->file.fd < 0) {
       error = failure("media-open-failed", std::strerror(errno), metrics);
       return nullptr;
     }
-    struct stat status {};
-    if (fstat(session->file.fd, &status) != 0 || !S_ISREG(status.st_mode)) {
+    platform::FileInfo status;
+    if (!platform::file_info(session->file.fd, status) || !status.regular) {
       error = failure("unsafe-media-path", "", metrics);
       return nullptr;
     }

@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdint>
 #include <fstream>
+#include <iterator>
 #include <limits>
 #include <sstream>
 #include <string>
@@ -137,6 +138,7 @@ struct TextLayoutService::State {
 #ifdef IINATAN_ASS_GEOMETRY
   ASS_Library* library = nullptr;
   ASS_Renderer* renderer = nullptr;
+  std::string fallback_path;
 
   State() {
     library = ass_library_init();
@@ -192,6 +194,22 @@ Json TextLayoutService::handle(const Json& request) {
   const std::vector<Cluster> clusters = graphemes(scalars);
   if (clusters.size() > 256)
     return failure(request_id, "text-layout-cluster-limit");
+  const Json* fallback_value = field(request, "fallbackFontPath");
+  if (fallback_value && fallback_value->is_string() &&
+      fallback_value->string() != state_->fallback_path) {
+    const std::filesystem::path fallback = fallback_value->string();
+    std::error_code error;
+    const auto bytes = std::filesystem::file_size(fallback, error);
+    if (error || bytes == 0 || bytes > 64 * 1024 * 1024)
+      return failure(request_id, "fallback-font-unavailable");
+    std::ifstream input(fallback, std::ios::binary);
+    std::string data((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    if (!input || data.size() != bytes)
+      return failure(request_id, "fallback-font-unavailable");
+    ass_add_font(state_->library, fallback.filename().string().c_str(),
+                 data.data(), static_cast<int>(data.size()));
+    state_->fallback_path = fallback.string();
+  }
   const std::string family =
       field(*font_value, "family")
           ? field(*font_value, "family")->string_or("Noto Sans")

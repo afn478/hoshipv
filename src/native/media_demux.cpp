@@ -5,12 +5,10 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
-#include <fcntl.h>
-#include <limits.h>
 #include <memory>
 #include <string_view>
-#include <sys/stat.h>
-#include <unistd.h>
+
+#include "platform_io.hpp"
 
 #ifdef IINATAN_ASS_GEOMETRY
 extern "C" {
@@ -47,7 +45,7 @@ DemuxResult failure(const std::string& reason, const std::string& detail = "") {
 struct FileHandle {
   int fd = -1;
   ~FileHandle() {
-    if (fd >= 0) close(fd);
+    if (fd >= 0) platform::close_file(fd);
   }
 };
 
@@ -163,7 +161,7 @@ int interrupt_after_deadline(void* opaque) {
 int read_packet(void* opaque, uint8_t* buffer, int size) {
   const int fd = *static_cast<int*>(opaque);
   while (true) {
-    const ssize_t count = read(fd, buffer, static_cast<size_t>(size));
+    const int count = platform::read_file(fd, buffer, static_cast<size_t>(size));
     if (count > 0) return static_cast<int>(count);
     if (count == 0) return AVERROR_EOF;
     if (errno != EINTR) return AVERROR(errno);
@@ -173,14 +171,14 @@ int read_packet(void* opaque, uint8_t* buffer, int size) {
 int64_t seek_file(void* opaque, int64_t offset, int whence) {
   const int fd = *static_cast<int*>(opaque);
   if (whence == AVSEEK_SIZE) {
-    struct stat status {};
-    return fstat(fd, &status) == 0 ? status.st_size : AVERROR(errno);
+    platform::FileInfo info;
+    return platform::file_info(fd, info) ? info.size : AVERROR(errno);
   }
   const int base = whence & ~AVSEEK_FORCE;
   if (base != SEEK_SET && base != SEEK_CUR && base != SEEK_END)
     return AVERROR(EINVAL);
-  const off_t result = lseek(fd, static_cast<off_t>(offset), base);
-  return result < 0 ? AVERROR(errno) : static_cast<int64_t>(result);
+  const int64_t result = platform::seek_file(fd, offset, base);
+  return result < 0 ? AVERROR(errno) : result;
 }
 
 std::string av_error(int code) {
@@ -269,7 +267,7 @@ DemuxResult demux_ass_source(
   }
 
   FileHandle file;
-  struct stat status {};
+  platform::FileInfo status;
   AvioOwner avio;
   FormatOwner format;
   format.context = avformat_alloc_context();
@@ -293,16 +291,18 @@ DemuxResult demux_ass_source(
         &format.context, source.path.c_str(), nullptr, &options);
     av_dict_free(&options);
   } else {
-    char resolved[PATH_MAX] = {};
-    if (!realpath(source.path.c_str(), resolved))
-      return failure("media-open-failed", std::strerror(errno));
-    canonical = resolved;
-    file.fd = open(canonical.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    try {
+      canonical = platform::canonical_path(source.path).string();
+    } catch (const std::exception& error) {
+      return failure("media-open-failed", error.what());
+    }
+    file.fd = platform::open_readonly(canonical);
     if (file.fd < 0)
       return failure("media-open-failed", std::strerror(errno));
-    if (fstat(file.fd, &status) != 0)
+    platform::FileInfo status;
+    if (!platform::file_info(file.fd, status))
       return failure("media-stat-failed", std::strerror(errno));
-    if (!S_ISREG(status.st_mode))
+    if (!status.regular)
       return failure("unsafe-media-path", "source is not a regular file");
     uint8_t* avio_buffer = static_cast<uint8_t*>(av_malloc(64 * 1024));
     if (!avio_buffer) return failure("out-of-memory");
@@ -316,7 +316,7 @@ DemuxResult demux_ass_source(
     format.context->pb = avio.context;
     format.context->flags |= AVFMT_FLAG_CUSTOM_IO;
     format.context->probesize =
-        std::min<int64_t>(8 * 1024 * 1024, status.st_size);
+        std::min<int64_t>(8 * 1024 * 1024, status.size);
     format.custom_io = true;
     code = avformat_open_input(&format.context, nullptr, nullptr, nullptr);
   }
@@ -326,18 +326,10 @@ DemuxResult demux_ass_source(
   DemuxedAss media;
   media.canonical_path = canonical;
   media.network_source = network;
-  media.device = static_cast<uint64_t>(status.st_dev);
-  media.inode = static_cast<uint64_t>(status.st_ino);
-  media.size = static_cast<uint64_t>(status.st_size);
-#if defined(__APPLE__)
-  media.modified_ns =
-      static_cast<int64_t>(status.st_mtimespec.tv_sec) * 1'000'000'000 +
-      status.st_mtimespec.tv_nsec;
-#else
-  media.modified_ns =
-      static_cast<int64_t>(status.st_mtim.tv_sec) * 1'000'000'000 +
-      status.st_mtim.tv_nsec;
-#endif
+  media.device = status.device;
+  media.inode = status.inode;
+  media.size = static_cast<uint64_t>(status.size);
+  media.modified_ns = status.modified_ns;
   media.stream_index = source.ff_index;
   if (observed_network_ass &&
       !observed_ass_packets(media, ass_extradata, ass_full))
@@ -595,26 +587,20 @@ bool demuxed_source_unchanged(
   if (network_source(source.path))
     return media.network_source && media.canonical_path == source.path;
   if (source.path[0] != '/' || media.network_source) return false;
-  char resolved[PATH_MAX] = {};
-  if (!realpath(source.path.c_str(), resolved) ||
-      media.canonical_path != resolved)
+  std::filesystem::path resolved;
+  try {
+    resolved = platform::canonical_path(source.path);
+  } catch (...) {
     return false;
-  struct stat status {};
-  if (stat(resolved, &status) != 0 || !S_ISREG(status.st_mode))
+  }
+  if (media.canonical_path != resolved.string())
     return false;
-#if defined(__APPLE__)
-  const int64_t modified_ns =
-      static_cast<int64_t>(status.st_mtimespec.tv_sec) * 1'000'000'000 +
-      status.st_mtimespec.tv_nsec;
-#else
-  const int64_t modified_ns =
-      static_cast<int64_t>(status.st_mtim.tv_sec) * 1'000'000'000 +
-      status.st_mtim.tv_nsec;
-#endif
-  return media.device == static_cast<uint64_t>(status.st_dev) &&
-      media.inode == static_cast<uint64_t>(status.st_ino) &&
-      media.size == static_cast<uint64_t>(status.st_size) &&
-      media.modified_ns == modified_ns;
+  platform::FileInfo status;
+  if (!platform::path_info(resolved, status) || !status.regular)
+    return false;
+  return media.device == status.device && media.inode == status.inode &&
+      media.size == static_cast<uint64_t>(status.size) &&
+      media.modified_ns == status.modified_ns;
 #endif
 }
 

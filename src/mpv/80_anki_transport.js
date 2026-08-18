@@ -1,4 +1,5 @@
 IINATAN.ankiCache = Object.create(null);
+IINATAN.ankiPending = Object.create(null);
 IINATAN.ankiInvoke = function (action, params, callback, attempt) {
   var profile = IINATAN.config.profiles[IINATAN.config.activeProfileId],
     options = profile.anki,

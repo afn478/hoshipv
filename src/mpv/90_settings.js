@@ -130,36 +130,53 @@ IINATAN.importDictionary = function (zipPath) {
         );
         return;
       }
-      var imported;
-      try {
-        imported = JSON.parse(result.stdout);
-      } catch (_) {
-        IINATAN.showStatus("Dictionary import returned invalid data", "error");
-        return;
-      }
-      if (!imported.ok || !imported.dictionary) {
-        IINATAN.showStatus(
-          imported.error || "Dictionary import failed",
-          "error",
-        );
-        return;
-      }
-      IINATAN.config.dictionaries.push(imported.dictionary);
-      IINATAN.activeProfile().dictionaries.push(imported.dictionary.id);
-      IINATAN.worker.generation++;
-      IINATAN.stopWorker();
-      IINATAN.saveConfig(function (saveError) {
-        IINATAN.showStatus(
-          saveError
-            ? saveError.message
-            : "Imported " + imported.dictionary.title,
-          saveError ? "error" : "info",
-        );
-        IINATAN.invalidateScene("import");
-      });
+      IINATAN.commitImportedDictionary(result);
     },
     { playbackOnly: false, captureSize: 4 * 1024 * 1024 },
   );
+};
+IINATAN.commitImportedDictionary = function (result) {
+  var imported;
+  try {
+    imported = JSON.parse(result.stdout);
+  } catch (_) {
+    IINATAN.showStatus("Dictionary import returned invalid data", "error");
+    return;
+  }
+  if (!imported.ok || !imported.dictionary) {
+    IINATAN.showStatus(imported.error || "Dictionary import failed", "error");
+    return;
+  }
+  var dictionary = imported.dictionary,
+    profile = IINATAN.activeProfile();
+  IINATAN.config.dictionaries.push(dictionary);
+  profile.dictionaries.push(dictionary.id);
+  IINATAN.saveConfig(function (saveError) {
+    if (saveError) {
+      IINATAN.config.dictionaries = IINATAN.config.dictionaries.filter(
+        function (item) {
+          return item.id !== dictionary.id;
+        },
+      );
+      profile.dictionaries = profile.dictionaries.filter(function (id) {
+        return id !== dictionary.id;
+      });
+      IINATAN.backendCommand(
+        [
+          "remove-dictionary",
+          IINATAN.path("~~state/iinatan/dictionaries"),
+          dictionary.path,
+        ],
+        function () {},
+      );
+      IINATAN.showStatus(saveError.message, "error");
+      return;
+    }
+    IINATAN.worker.generation++;
+    IINATAN.stopWorker();
+    IINATAN.showStatus("Imported " + dictionary.title, "info");
+    IINATAN.invalidateScene("import");
+  });
 };
 IINATAN.promptImport = function () {
   mp.input.get({
@@ -167,12 +184,224 @@ IINATAN.promptImport = function () {
     submit: IINATAN.importDictionary,
   });
 };
-IINATAN.downloadRecommended = function () {
+IINATAN.manageDictionaries = function () {
+  var profile = IINATAN.activeProfile(),
+    registry = Object.create(null);
+  IINATAN.config.dictionaries.forEach(function (dictionary) {
+    registry[dictionary.id] = dictionary;
+  });
+  var ids = profile.dictionaries.slice(),
+    items = ids.map(function (id, index) {
+      var dictionary = registry[id] || { title: id, enabled: false };
+      return (
+        index +
+        1 +
+        ". " +
+        dictionary.title +
+        (dictionary.enabled === false ? " (disabled)" : "")
+      );
+    });
+  if (!items.length) {
+    IINATAN.showStatus("No dictionaries are registered", "info");
+    return;
+  }
+  mp.input.select({
+    prompt: "Manage dictionary",
+    items: items,
+    submit: function (index) {
+      if (index === undefined) return;
+      var id = ids[index],
+        dictionary = registry[id];
+      mp.input.select({
+        prompt: dictionary.title,
+        items: [
+          dictionary.enabled === false ? "Enable" : "Disable",
+          "Move up",
+          "Move down",
+          "Remove",
+        ],
+        submit: function (action) {
+          if (action === undefined) return;
+          if (action === 0) dictionary.enabled = dictionary.enabled === false;
+          else if (action === 1 && index > 0) {
+            profile.dictionaries.splice(index, 1);
+            profile.dictionaries.splice(index - 1, 0, id);
+          } else if (action === 2 && index + 1 < profile.dictionaries.length) {
+            profile.dictionaries.splice(index, 1);
+            profile.dictionaries.splice(index + 1, 0, id);
+          } else if (action === 3) {
+            var previousProfile = profile.dictionaries.slice(),
+              previousRegistry = IINATAN.config.dictionaries.slice();
+            profile.dictionaries = profile.dictionaries.filter(
+              function (value) {
+                return value !== id;
+              },
+            );
+            IINATAN.config.dictionaries = IINATAN.config.dictionaries.filter(
+              function (value) {
+                return value.id !== id;
+              },
+            );
+            IINATAN.saveConfig(function (saveError) {
+              if (saveError) {
+                profile.dictionaries = previousProfile;
+                IINATAN.config.dictionaries = previousRegistry;
+                IINATAN.showStatus(saveError.message, "error");
+                return;
+              }
+              IINATAN.backendCommand(
+                [
+                  "remove-dictionary",
+                  IINATAN.path("~~state/iinatan/dictionaries"),
+                  dictionary.path,
+                ],
+                function (removeError) {
+                  if (removeError) {
+                    profile.dictionaries = previousProfile;
+                    IINATAN.config.dictionaries = previousRegistry;
+                    IINATAN.saveConfig(function () {});
+                    IINATAN.showStatus(removeError.message, "error");
+                    return;
+                  }
+                  IINATAN.worker.generation++;
+                  IINATAN.stopWorker();
+                  IINATAN.invalidateScene("dictionary-remove");
+                },
+              );
+            });
+            return;
+          }
+          IINATAN.worker.generation++;
+          IINATAN.stopWorker();
+          IINATAN.saveConfig(function (error) {
+            if (error) IINATAN.showStatus(error.message, "error");
+            IINATAN.invalidateScene("dictionaries");
+          });
+        },
+      });
+    },
+  });
+};
+IINATAN.configurePopupSize = function () {
   mp.input.get({
-    prompt: "Recommended dictionary HTTPS URL",
-    submit: function (url) {
+    prompt: "Popup max width in OSD pixels",
+    default_text: String(IINATAN.activeProfile().popupMaxWidth),
+    submit: function (value) {
+      IINATAN.activeProfile().popupMaxWidth = IINATAN.clamp(
+        value,
+        IINATAN.activeProfile().popupMinWidth,
+        1600,
+        440,
+      );
+      IINATAN.saveConfig(function () {});
+      IINATAN.invalidateScene("popup-size");
+    },
+  });
+};
+IINATAN.configureSubtitleMode = function () {
+  var values = ["hover", "shift-hover"];
+  mp.input.select({
+    prompt: "Subtitle lookup trigger",
+    items: values,
+    submit: function (index) {
+      if (index === undefined) return;
+      IINATAN.activeProfile().subtitleLookupMode = values[index];
+      IINATAN.saveConfig(function () {});
+      IINATAN.invalidateScene("subtitle-mode");
+    },
+  });
+};
+IINATAN.configureAudioSources = function () {
+  mp.input.get({
+    prompt: "Audio sources JSON",
+    default_text: JSON.stringify(IINATAN.activeProfile().audio.sources),
+    submit: function (value) {
+      try {
+        var sources = JSON.parse(value);
+        if (!Array.isArray(sources)) throw new Error("expected an array");
+        sources.forEach(function (source) {
+          if (!source || !IINATAN.safeExternalUrl(source.url))
+            throw new Error("invalid audio source URL");
+        });
+        IINATAN.activeProfile().audio.sources = sources;
+        IINATAN.saveConfig(function () {});
+      } catch (error) {
+        IINATAN.showStatus("Audio source JSON: " + error.message, "error");
+      }
+    },
+  });
+};
+IINATAN.configureAnki = function () {
+  var options = IINATAN.activeProfile().anki;
+  IINATAN.ankiDiscover(function (error, discovery) {
+    if (error) {
+      IINATAN.showStatus("Anki discovery failed: " + error.message, "error");
+      return;
+    }
+    mp.input.select({
+      prompt: "Anki deck",
+      items: discovery.decks,
+      submit: function (deckIndex) {
+        if (deckIndex === undefined) return;
+        options.deck = discovery.decks[deckIndex];
+        mp.input.select({
+          prompt: "Anki model",
+          items: discovery.models,
+          submit: function (modelIndex) {
+            if (modelIndex === undefined) return;
+            options.model = discovery.models[modelIndex];
+            IINATAN.ankiInvoke(
+              "modelFieldNames",
+              { modelName: options.model },
+              function (fieldError, fields) {
+                if (fieldError) {
+                  IINATAN.showStatus(fieldError.message, "error");
+                  return;
+                }
+                if (!Object.keys(options.fields || {}).length) {
+                  options.fields = {};
+                  (fields || []).forEach(function (field, index) {
+                    options.fields[field] =
+                      index === 0
+                        ? "{expression}"
+                        : index === 1
+                          ? "{reading}"
+                          : index === 2
+                            ? "{glossary-html}"
+                            : "";
+                  });
+                }
+                IINATAN.saveConfig(function (saveError) {
+                  IINATAN.showStatus(
+                    saveError ? saveError.message : "Anki deck/model saved",
+                    saveError ? "error" : "info",
+                  );
+                  IINATAN.invalidateScene("anki-config");
+                });
+              },
+            );
+          },
+        });
+      },
+    });
+  });
+};
+IINATAN.downloadRecommended = function () {
+  var recommendations = IINATAN.config.global.recommendedDictionaries || [];
+  if (!recommendations.length) {
+    IINATAN.showStatus("No recommended dictionaries are configured", "error");
+    return;
+  }
+  mp.input.select({
+    prompt: "Download recommended dictionary",
+    items: recommendations.map(function (item) {
+      return item.title;
+    }),
+    submit: function (index) {
+      if (index === undefined) return;
+      var url = recommendations[index] && recommendations[index].url;
       if (!/^https:\/\//i.test(String(url || ""))) {
-        IINATAN.showStatus("Download URL must use HTTPS", "error");
+        IINATAN.showStatus("Dictionary URL must use HTTPS", "error");
         return;
       }
       IINATAN.backendCommand(
@@ -182,13 +411,11 @@ IINATAN.downloadRecommended = function () {
           IINATAN.path("~~cache/iinatan/downloads"),
           IINATAN.path("~~state/iinatan/dictionaries"),
         ],
-        function (error) {
-          IINATAN.showStatus(
-            error ? error.message : "Dictionary downloaded and imported",
-            error ? "error" : "info",
-          );
+        function (error, result) {
+          if (error) IINATAN.showStatus(error.message, "error");
+          else IINATAN.commitImportedDictionary(result);
         },
-        { playbackOnly: false },
+        { playbackOnly: false, captureSize: 8 * 1024 * 1024 },
       );
     },
   });
@@ -206,10 +433,38 @@ IINATAN.renderSettings = function () {
     ),
   );
   root.add(
+    IINATAN.settingsButton(
+      "manage-dictionaries",
+      "Enable / order / remove dictionaries…",
+      IINATAN.manageDictionaries,
+    ),
+  );
+  root.add(
     new TextRun(
       "settings-path",
       "Advanced JSON: " + IINATAN.path(IINATAN.configPath),
       IINATAN.scene.context().styles.tag,
+    ),
+  );
+  root.add(
+    IINATAN.settingsButton(
+      "subtitle-mode",
+      "Subtitle trigger: " + profile.subtitleLookupMode,
+      IINATAN.configureSubtitleMode,
+    ),
+  );
+  root.add(
+    IINATAN.settingsButton(
+      "popup-size",
+      "Popup max width: " + profile.popupMaxWidth,
+      IINATAN.configurePopupSize,
+    ),
+  );
+  root.add(
+    IINATAN.settingsButton(
+      "audio-sources",
+      "Audio sources…",
+      IINATAN.configureAudioSources,
     ),
   );
   root.add(
@@ -277,8 +532,11 @@ IINATAN.renderSettings = function () {
   root.add(
     new Button("settings-theme", "Theme: " + profile.theme.preset, function () {
       var values = ["dark", "light", "high-contrast"];
-      profile.theme.preset =
-        values[(values.indexOf(profile.theme.preset) + 1) % values.length];
+      profile.theme = IINATAN.clone(
+        IINATAN.THEME_PRESETS[
+          values[(values.indexOf(profile.theme.preset) + 1) % values.length]
+        ],
+      );
       IINATAN.saveConfig(function () {});
       IINATAN.invalidateScene("theme");
     }),
@@ -289,6 +547,13 @@ IINATAN.renderSettings = function () {
       IINATAN.saveConfig(function () {});
       IINATAN.invalidateScene("anki-setting");
     }),
+  );
+  root.add(
+    IINATAN.settingsButton(
+      "anki-config",
+      "Configure Anki deck/model…",
+      IINATAN.configureAnki,
+    ),
   );
   root.add(
     new Button("settings-reload", "Validate / reload JSON", function () {

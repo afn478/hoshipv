@@ -86,6 +86,102 @@ IINATAN.rectOverlap = function (a, b) {
     h = Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
   return w * h;
 };
+IINATAN.clusterSelected = function (widgetId, index) {
+  var selection = IINATAN.state.selection;
+  return (
+    !!selection &&
+    selection.widgetId === widgetId &&
+    index >= Math.min(selection.start, selection.end) &&
+    index <= Math.max(selection.start, selection.end)
+  );
+};
+IINATAN.beginSelection = function () {
+  var mouse = IINATAN.state.mouse || {},
+    cluster = IINATAN.scene.clusterAt(mouse.x, mouse.y);
+  if (!cluster) return false;
+  IINATAN.state.selection = {
+    widgetId: cluster.widgetId,
+    start: cluster.index,
+    end: cluster.index,
+    text: cluster.text,
+  };
+  return true;
+};
+IINATAN.updateSelection = function () {
+  var selection = IINATAN.state.selection,
+    mouse = IINATAN.state.mouse || {};
+  if (!selection || !selection.dragging) return;
+  var cluster = IINATAN.scene.clusterAt(mouse.x, mouse.y);
+  if (
+    cluster &&
+    cluster.widgetId === selection.widgetId &&
+    cluster.index !== selection.end
+  ) {
+    selection.end = cluster.index;
+    IINATAN.invalidateScene("selection");
+  }
+};
+IINATAN.finishSelection = function () {
+  var selection = IINATAN.state.selection;
+  if (!selection) return false;
+  var clusters = IINATAN.scene.clusterRegions.filter(function (cluster) {
+    return (
+      cluster.widgetId === selection.widgetId &&
+      cluster.index >= Math.min(selection.start, selection.end) &&
+      cluster.index <= Math.max(selection.start, selection.end)
+    );
+  });
+  if (clusters.length && IINATAN.popupStack.length) {
+    var start = clusters.reduce(function (value, cluster) {
+        return Math.min(value, cluster.range[0]);
+      }, Infinity),
+      end = clusters.reduce(function (value, cluster) {
+        return Math.max(value, cluster.range[1]);
+      }, 0);
+    IINATAN.popupStack[IINATAN.popupStack.length - 1].selectedText =
+      selection.text.substring(start, end);
+  }
+  var dragged = selection.start !== selection.end;
+  delete IINATAN.state.selection;
+  IINATAN.invalidateScene("selection-finish");
+  return dragged;
+};
+IINATAN.nestedTextAction = function (widgetId, text) {
+  var profile = IINATAN.config.profiles[IINATAN.config.activeProfileId];
+  if (profile.nestedPopupMode !== "click") return null;
+  return function () {
+    var mouse = IINATAN.state.mouse || {},
+      cluster = IINATAN.scene.clusterAt(mouse.x, mouse.y);
+    if (
+      !cluster ||
+      cluster.widgetId !== widgetId ||
+      IINATAN.popupStack.length >= profile.nestedPopupMaxDepth
+    )
+      return;
+    IINATAN.openLookup(text, cluster.range[0], true);
+  };
+};
+IINATAN.handleNestedHover = function () {
+  if (!IINATAN.popupStack.length || IINATAN.state.settingsOpen) return;
+  var profile = IINATAN.config.profiles[IINATAN.config.activeProfileId],
+    mode = profile.nestedPopupMode;
+  if (mode !== "hover" && !(mode === "shift-hover" && IINATAN.state.shiftDown))
+    return;
+  if (IINATAN.popupStack.length >= profile.nestedPopupMaxDepth) return;
+  var currentPopup = IINATAN.popupStack[IINATAN.popupStack.length - 1];
+  if ((IINATAN.state.mouseSerial || 0) <= currentPopup.openedMouseSerial)
+    return;
+  var mouse = IINATAN.state.mouse || {},
+    cluster = IINATAN.scene.clusterAt(mouse.x, mouse.y);
+  if (!cluster) {
+    IINATAN.state.nestedHoverKey = "";
+    return;
+  }
+  var key = cluster.widgetId + ":" + cluster.index;
+  if (key === IINATAN.state.nestedHoverKey) return;
+  IINATAN.state.nestedHoverKey = key;
+  IINATAN.openLookup(cluster.text, cluster.range[0], true);
+};
 
 IINATAN.openLookup = function (text, utf16Position, nested) {
   var profile = IINATAN.config.profiles[IINATAN.config.activeProfileId];
@@ -115,6 +211,7 @@ IINATAN.openLookup = function (text, utf16Position, nested) {
       document: document,
       rect: null,
       selectedText: "",
+      openedMouseSerial: IINATAN.state.mouseSerial || 0,
     });
     if (
       profile.pauseWhilePopupVisible &&
@@ -159,14 +256,21 @@ IINATAN.updateBindings = function () {
     mp.add_forced_key_binding(
       "MBTN_LEFT",
       "iinatan-click",
-      function () {
+      function (event) {
+        var kind = event && event.event ? event.event : "press";
+        if (kind === "down") {
+          if (IINATAN.beginSelection()) IINATAN.state.selection.dragging = true;
+          return;
+        }
+        if (kind !== "up" && kind !== "press") return;
+        if (IINATAN.finishSelection()) return;
         var current = IINATAN.scene.index.hit(
           IINATAN.state.mouse.x,
           IINATAN.state.mouse.y,
         );
         if (current && current.handler.click) current.handler.click();
       },
-      { complex: false },
+      { complex: true },
     );
     mp.add_forced_key_binding("WHEEL_UP", "iinatan-wheel-up", function () {
       var current = IINATAN.scene.index.hit(
@@ -225,4 +329,5 @@ IINATAN.rebuildScene = function () {
   current.rect = placed;
   IINATAN.scene.render(surface, placed);
   IINATAN.updateBindings();
+  IINATAN.handleNestedHover();
 };

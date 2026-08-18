@@ -84,10 +84,10 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
     }, 0);
   };
   IINATAN.abortProcess = function (id) {
-    var handle = IINATAN.processes[id];
-    if (!handle) return;
+    var entry = IINATAN.processes[id];
+    if (!entry) return;
     try {
-      mp.abort_async_command(handle);
+      mp.abort_async_command(entry.handle);
     } catch (_) {}
     delete IINATAN.processes[id];
   };
@@ -121,12 +121,17 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
       }, 0);
       return null;
     }
-    IINATAN.processes[id] = handle;
-    IINATAN.processes[id].playbackOnly = command.playback_only;
+    IINATAN.processes[id] = {
+      handle: handle,
+      playbackOnly: command.playback_only
+    };
     return id;
   };
   IINATAN.path = function (value) {
     return mp.utils.get_user_path(value);
+  };
+  IINATAN.fallbackFontPath = function () {
+    return mp.get_opt("fallback-font") || IINATAN.path("~~/scripts/iinatan/fonts/NotoSansCJKjp-Regular.otf");
   };
   IINATAN.readJson = function (path, fallback) {
     try {
@@ -152,7 +157,11 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
       backendPath: "~~/scripts/iinatan/bin/iinatan-backend",
       ffmpegPath: "ffmpeg",
       logPath: "~~state/iinatan/iinatan.log",
-      lowRamImport: true
+      lowRamImport: true,
+      recommendedDictionaries: [{
+        title: "Jitendex (Japanese → English)",
+        url: "https://github.com/stephenmk/stephenmk.github.io/releases/latest/download/jitendex-yomitan.zip"
+      }]
     },
     dictionaries: [],
     pendingDictionaries: [],
@@ -266,6 +275,19 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
     Object.keys(out.profiles).forEach(function (id) {
       IINATAN.normalizeProfile(out.profiles[id]);
     });
+    var installed = Object.create(null);
+    out.dictionaries.forEach(function (dictionary) {
+      if (dictionary && dictionary.id) installed[dictionary.id] = true;
+    });
+    out.pendingDictionaries = out.pendingDictionaries.filter(function (reference) {
+      var id = typeof reference === "string" ? reference : reference && reference.id;
+      if (!id || !installed[id]) return true;
+      Object.keys(out.profiles).forEach(function (profileId) {
+        var list = out.profiles[profileId].dictionaries;
+        if (list.indexOf(id) < 0) list.push(id);
+      });
+      return false;
+    });
     return out;
   };
   IINATAN.safeJsonArray = function (value) {
@@ -327,6 +349,32 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
       out[key] = /^[0-9a-fA-F]{6}$/.test(value) ? value.toLowerCase() : defaults[key];
     });
     return out;
+  };
+  IINATAN.THEME_PRESETS = {
+    dark: {
+      preset: "dark",
+      background: "181a20",
+      foreground: "f4f4f5",
+      accent: "8ab4f8",
+      muted: "a1a1aa",
+      border: "3f3f46"
+    },
+    light: {
+      preset: "light",
+      background: "fafafa",
+      foreground: "18181b",
+      accent: "2563eb",
+      muted: "52525b",
+      border: "d4d4d8"
+    },
+    "high-contrast": {
+      preset: "high-contrast",
+      background: "000000",
+      foreground: "ffffff",
+      accent: "ffff00",
+      muted: "d4d4d4",
+      border: "ffffff"
+    }
   };
   IINATAN.configPath = "~~home/iinatan/config.json";
   IINATAN.configBackupPath = "~~home/iinatan/config.json.backup";
@@ -1696,19 +1744,23 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
   };
 
   // ---- src/mpv/20_media.js ----
-  IINATAN.OBSERVED_PROPERTIES = [["path", "string"], ["stream-open-filename", "string"], ["sub-text", "string"], ["sub-text/ass-full", "string"], ["sub-ass-extradata", "string"], ["sub-start", "number"], ["sub-end", "number"], ["secondary-sub-text", "string"], ["secondary-sub-text/ass-full", "string"], ["secondary-sub-start", "number"], ["secondary-sub-end", "number"], ["sid", "native"], ["secondary-sid", "native"], ["track-list", "native"], ["sub-delay", "number"], ["pause", "bool"], ["time-pos", "number"], ["osd-dimensions", "native"], ["video-out-params", "native"], ["mouse-pos", "native"], ["user-data/osc/margins", "native"], ["sub-font", "string"], ["sub-font-size", "number"], ["sub-bold", "bool"], ["sub-italic", "bool"], ["sub-spacing", "number"], ["sub-margin-x", "number"], ["sub-margin-y", "number"], ["sub-pos", "number"], ["sub-scale", "number"], ["sub-ass-override", "string"]];
+  IINATAN.OBSERVED_PROPERTIES = [["path", "string"], ["stream-open-filename", "string"], ["sub-text", "string"], ["sub-text/ass-full", "string"], ["sub-ass-extradata", "string"], ["sub-start", "number"], ["sub-end", "number"], ["secondary-sub-text", "string"], ["secondary-sub-text/ass-full", "string"], ["secondary-sub-ass-extradata", "string"], ["secondary-sub-start", "number"], ["secondary-sub-end", "number"], ["sid", "native"], ["secondary-sid", "native"], ["track-list", "native"], ["sub-delay", "number"], ["secondary-sub-delay", "number"], ["pause", "bool"], ["time-pos", "number"], ["osd-dimensions", "native"], ["video-out-params", "native"], ["mouse-pos", "native"], ["user-data/osc/margins", "native"], ["sub-font", "string"], ["sub-font-size", "number"], ["sub-bold", "bool"], ["sub-italic", "bool"], ["sub-spacing", "number"], ["sub-margin-x", "number"], ["sub-margin-y", "number"], ["sub-pos", "number"], ["sub-scale", "number"], ["sub-ass-override", "string"]];
   IINATAN.mediaGeneration = 0;
   IINATAN.propertyChanged = function (name, value) {
     IINATAN.state.properties[name] = value;
+    if (name === "mouse-pos") {
+      IINATAN.state.mouseSerial = (IINATAN.state.mouseSerial || 0) + 1;
+      IINATAN.updateSelection();
+    }
     IINATAN.debounce("property-rebuild", IINATAN.rebuildFromProperties);
   };
   IINATAN.rebuildFromProperties = function () {
     if (!IINATAN.state.fileLoaded) return;
     var props = IINATAN.state.properties;
-    var subtitle = String(props["sub-text"] || props["secondary-sub-text"] || "");
-    IINATAN.state.subtitle = {
-      text: subtitle,
-      ass: String(props["sub-text/ass-full"] || props["secondary-sub-text/ass-full"] || ""),
+    var primary = {
+      surface: "primary",
+      text: String(props["sub-text"] || ""),
+      ass: String(props["sub-text/ass-full"] || ""),
       extradata: String(props["sub-ass-extradata"] || ""),
       start: Number(props["sub-start"]),
       end: Number(props["sub-end"]),
@@ -1716,6 +1768,20 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
       secondaryEnd: Number(props["secondary-sub-end"]),
       delay: Number(props["sub-delay"] || 0)
     };
+    IINATAN.state.subtitles = primary.text ? [primary] : [];
+    if (props["secondary-sub-text"]) {
+      var secondary = {
+        surface: "secondary",
+        text: String(props["secondary-sub-text"] || ""),
+        ass: String(props["secondary-sub-text/ass-full"] || ""),
+        extradata: String(props["secondary-sub-ass-extradata"] || props["sub-ass-extradata"] || ""),
+        start: Number(props["secondary-sub-start"]),
+        end: Number(props["secondary-sub-end"]),
+        delay: Number(props["secondary-sub-delay"] || 0)
+      };
+      IINATAN.state.subtitles.push(secondary);
+    }
+    IINATAN.state.subtitle = IINATAN.state.subtitles[0] || primary;
     IINATAN.state.osd = props["osd-dimensions"] || {
       w: 0,
       h: 0,
@@ -1796,7 +1862,7 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
     return mp.get_opt("backend") || IINATAN.config && IINATAN.config.global.backendPath || IINATAN.DEFAULT_CONFIG.global.backendPath;
   };
   IINATAN.backendCommand = function (args, callback, options) {
-    IINATAN.subprocess([IINATAN.path(IINATAN.backendPath())].concat(args), options || {}, callback);
+    return IINATAN.subprocess([IINATAN.path(IINATAN.backendPath())].concat(args), options || {}, callback);
   };
   IINATAN.workerPath = function (part) {
     return IINATAN.path(IINATAN.worker.root + (part ? "/" + part : ""));
@@ -1850,6 +1916,9 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
     });
   };
   IINATAN.stopWorker = function (callback) {
+    if (IINATAN.worker.active) IINATAN.backendCommand(["queue-cancel", IINATAN.workerPath(""), IINATAN.worker.active.id], function () {}, {
+      playbackOnly: false
+    });
     try {
       IINATAN.writeText(IINATAN.worker.root + "/stop", "stop\n");
     } catch (_) {}
@@ -1860,7 +1929,14 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
     }, 150);
   };
   IINATAN.pollResponse = function (job) {
-    if (!job || job.generation !== IINATAN.worker.generation) return;
+    if (!job) return;
+    if (job.generation !== IINATAN.worker.generation) {
+      IINATAN.cleanupRequest(job.id);
+      if (IINATAN.worker.active === job) IINATAN.worker.active = null;
+      job.callback(new Error("worker request generation expired"));
+      IINATAN.runPendingLookup();
+      return;
+    }
     var path = IINATAN.worker.root + "/responses/" + job.id + ".json";
     var response = IINATAN.readJson(path, null);
     if (response) {
@@ -1957,10 +2033,12 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
   var AssBuilder = /*#__PURE__*/function () {
     function AssBuilder() {
       this.events = [];
+      this.clip = null;
     }
     var _proto = AssBuilder.prototype;
     _proto.event = function event(layer, tags, text) {
-      this.events.push("{\\layer" + layer + tags + "}" + text);
+      var clip = this.clip ? "\\clip(" + Math.round(this.clip.x) + "," + Math.round(this.clip.y) + "," + Math.round(this.clip.x + this.clip.w) + "," + Math.round(this.clip.y + this.clip.h) + ")" : "";
+      this.events.push("{\\layer" + layer + clip + tags + "}" + text);
       return this;
     };
     _proto.text = function text(layer, x, y, style, _text) {
@@ -1983,6 +2061,33 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
     return AssBuilder;
   }();
   IINATAN.AssBuilder = AssBuilder;
+  IINATAN.intersectRect = function (a, b) {
+    if (!a) return b;
+    if (!b) return a;
+    var x = Math.max(a.x, b.x),
+      y = Math.max(a.y, b.y),
+      right = Math.min(a.x + a.w, b.x + b.w),
+      bottom = Math.min(a.y + a.h, b.y + b.h);
+    return {
+      x: x,
+      y: y,
+      w: Math.max(0, right - x),
+      h: Math.max(0, bottom - y)
+    };
+  };
+  IINATAN.wrappedText = function (text, metrics) {
+    var clusters = metrics && metrics.clusters || [];
+    if (clusters.length < 2) return text;
+    var breaks = [],
+      previous = clusters[0];
+    for (var index = 1; index < clusters.length; index++) {
+      var cluster = clusters[index];
+      if (cluster.y > previous.y + previous.height / 2 && cluster.x < previous.x) breaks.push(cluster.utf16Range[0]);
+      previous = cluster;
+    }
+    for (var offset = breaks.length - 1; offset >= 0; offset--) text = text.substring(0, breaks[offset]) + "\n" + text.substring(breaks[offset]);
+    return text;
+  };
   var HitRegion = /*#__PURE__*/function () {
     function HitRegion(id, rect, handler, cursor, order) {
       this.id = id;
@@ -2089,7 +2194,18 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
       };
     };
     _proto5.render = function render(ctx) {
-      ctx.ass.text(ctx.layer++, this.rect.x, this.rect.y, this.style, this.text);
+      if (this.metrics && this.metrics.clusters) {
+        var self = this;
+        this.metrics.clusters.forEach(function (cluster, index) {
+          if (IINATAN.clusterSelected(self.id, index)) ctx.ass.rect(ctx.layer++, {
+            x: self.rect.x + cluster.x,
+            y: self.rect.y + cluster.y,
+            w: cluster.width,
+            h: cluster.height
+          }, ctx.theme.accent, null, 2);
+        });
+      }
+      ctx.ass.text(ctx.layer++, this.rect.x, this.rect.y, this.style, IINATAN.wrappedText(this.text, this.metrics));
       if (this.action) ctx.hit(this.id, this.rect, {
         click: this.action
       }, "pointer");
@@ -2300,7 +2416,7 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
       });
     };
     _proto0.render = function render(ctx) {
-      this.child.render(ctx);
+      ctx.withClip(this.rect, this.child.render.bind(this.child, ctx));
       if (this.contentHeight > this.rect.h) this.scrollbar.render(ctx);
       ctx.hit(this.id, this.rect, {
         wheel: this.onWheel.bind(this)
@@ -2539,10 +2655,21 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
           return self.measure(text, style, wrap);
         },
         hit: function hit(id, rect, handler, cursor) {
-          self.index.add(new HitRegion(id, rect, handler, cursor, this.layer));
+          var clipped = IINATAN.intersectRect(rect, this.clipRect);
+          if (clipped.w > 0 && clipped.h > 0) self.index.add(new HitRegion(id, clipped, handler, cursor, this.layer));
         },
         clusters: function clusters(widget, _clusters) {
-          self.addClusters(widget, _clusters);
+          self.addClusters(widget, _clusters, this.clipRect);
+        },
+        clipRect: null,
+        withClip: function withClip(rect, callback) {
+          var oldContextClip = this.clipRect,
+            oldAssClip = this.ass.clip;
+          this.clipRect = IINATAN.intersectRect(oldContextClip, rect);
+          this.ass.clip = this.clipRect;
+          callback();
+          this.clipRect = oldContextClip;
+          this.ass.clip = oldAssClip;
         }
       };
     };
@@ -2565,7 +2692,8 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
             spacing: style.spacing || 0
           },
           wrapWidth: wrap || 0,
-          osdScale: 1
+          osdScale: 1,
+          fallbackFontPath: IINATAN.fallbackFontPath()
         }, function (error, response) {
           delete self.pendingMetrics[key];
           if (!error && response && response.ok) {
@@ -2580,7 +2708,7 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
         clusters: []
       };
     };
-    _proto12.addClusters = function addClusters(widget, clusters) {
+    _proto12.addClusters = function addClusters(widget, clusters, clip) {
       var self = this;
       clusters.forEach(function (cluster, index) {
         var rect = {
@@ -2589,13 +2717,23 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
           w: cluster.width,
           h: cluster.height
         };
+        rect = IINATAN.intersectRect(rect, clip);
+        if (rect.w <= 0 || rect.h <= 0) return;
         self.clusterRegions.push({
           widgetId: widget.id,
           index: index,
           rect: rect,
-          range: cluster.utf16Range
+          range: cluster.utf16Range,
+          text: widget.text
         });
       });
+    };
+    _proto12.clusterAt = function clusterAt(x, y) {
+      var matches = this.clusterRegions.filter(function (cluster) {
+        var rect = cluster.rect;
+        return x >= rect.x && y >= rect.y && x <= rect.x + rect.w && y <= rect.y + rect.h;
+      });
+      return matches.length ? matches[matches.length - 1] : null;
     };
     _proto12.render = function render(root, rect) {
       this.root = root;
@@ -2666,6 +2804,8 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
       }
       if (typeof node !== "object") return;
       var tag = String(node.tag || node.type || "").toLowerCase();
+      var attributes = node.attributes || {},
+        classes = String(attributes.class || node.class || "").toLowerCase();
       var content = node.content !== undefined ? node.content : node.children !== undefined ? node.children : node.text;
       if (tag === "a" || node.href) {
         var href = IINATAN.safeExternalUrl((node.attributes || {}).href || node.href);
@@ -2683,6 +2823,13 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
         });
         return;
       }
+      if (tag === "ruby" || tag === "rt" || tag === "rp") {
+        output.push({
+          type: tag === "rt" ? "furigana" : "paragraph",
+          text: IINATAN.structuredPlain(content)
+        });
+        return;
+      }
       if (tag === "ul" || tag === "ol" || tag === "list") {
         output.push({
           type: "list",
@@ -2690,15 +2837,37 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
         });
         return;
       }
-      if (tag === "details" || tag === "etymology" || tag === "grammar") {
+      if (tag === "details" || tag === "etymology" || tag === "grammar" || /(?:etymology|grammar|forms?)/.test(classes)) {
+        var sectionType = /etymology/.test(tag + " " + classes) ? "Etymology" : /grammar/.test(tag + " " + classes) ? "Grammar" : /forms?/.test(classes) ? "Forms" : "Details";
         output.push({
           type: "section",
-          title: tag === "details" ? String(node.title || "Details") : tag.charAt(0).toUpperCase() + tag.substring(1),
+          title: String(node.title || sectionType),
           content: [{
             type: "paragraph",
             text: IINATAN.structuredPlain(content)
           }],
           collapsed: true
+        });
+        return;
+      }
+      if (/example/.test(tag + " " + classes)) {
+        output.push({
+          type: "example",
+          text: IINATAN.structuredPlain(content)
+        });
+        return;
+      }
+      if (/note|warning/.test(tag + " " + classes) || tag === "blockquote") {
+        output.push({
+          type: "note",
+          text: IINATAN.structuredPlain(content)
+        });
+        return;
+      }
+      if (/cross.?reference|xref/.test(tag + " " + classes)) {
+        output.push({
+          type: "cross-reference",
+          text: IINATAN.structuredPlain(content)
         });
         return;
       }
@@ -2752,9 +2921,10 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
             id: "entry-" + index,
             headword: String(term.expression || item.matched || ""),
             reading: String(term.reading || ""),
+            furigana: term.furigana || [],
             matched: String(item.matched || ""),
             rules: String(term.rules || ""),
-            tags: [],
+            tags: String(term.termTags || term.rules || "").split(/\s+/).filter(Boolean),
             frequencies: term.frequencies || [],
             pitches: term.pitches || [],
             glossaries: [],
@@ -2763,11 +2933,20 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
           };
         if (!self.matched && entry.matched) self.matched = entry.matched;
         (term.glossaries || []).forEach(function (glossary, gi) {
+          String(glossary.termTags || "").split(/\s+/).filter(Boolean).forEach(function (tag) {
+            if (entry.tags.indexOf(tag) < 0) entry.tags.push(tag);
+          });
           entry.glossaries.push({
             id: entry.id + ":g" + gi,
             dictionary: String(glossary.dict || ""),
             tags: String(glossary.definitionTags || "").split(/\s+/).filter(Boolean),
             content: IINATAN.parseStructuredGlossary(glossary.glossary, glossary.dict)
+          });
+          entry.glossaries[entry.glossaries.length - 1].content.forEach(function (node) {
+            if (node.type === "link" && node.href) entry.sources.push({
+              text: node.text,
+              href: node.href
+            });
           });
         });
         self.entries.push(entry);
@@ -2782,6 +2961,13 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
       var block = new VStack(entry.id, 5);
       block.add(new TextRun(entry.id + ":headword", entry.headword, IINATAN.scene.context().styles.headword));
       if (entry.reading && entry.reading !== entry.headword) block.add(new TextRun(entry.id + ":reading", entry.reading, IINATAN.scene.context().styles.reading));
+      if (entry.tags.length) {
+        var tagRow = new HStack(entry.id + ":tags", 4);
+        entry.tags.forEach(function (tag, tagIndex) {
+          tagRow.add(new Chip(entry.id + ":tag:" + tagIndex, tag, null));
+        });
+        block.add(tagRow);
+      }
       var chips = new HStack(entry.id + ":meta", 5);
       entry.frequencies.forEach(function (group, fi) {
         (group.frequencies || []).forEach(function (frequency, fj) {
@@ -2796,9 +2982,9 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
         block.add(new TextRun(glossary.id + ":source", glossary.dictionary, IINATAN.scene.context().styles.tag));
         glossary.content.forEach(function (node, ni) {
           var id = glossary.id + ":" + ni;
-          if (node.type === "paragraph") block.add(new TextRun(id, node.text, IINATAN.scene.context().styles.body));else if (node.type === "link") block.add(new Link(id, node.text, node.href, IINATAN.scene.context().styles.body));else if (node.type === "list") node.items.forEach(function (text, li) {
+          if (node.type === "paragraph") block.add(new TextRun(id, node.text, IINATAN.scene.context().styles.body, IINATAN.nestedTextAction(id, node.text)));else if (node.type === "link") block.add(new Link(id, node.text, node.href, IINATAN.scene.context().styles.body));else if (node.type === "list") node.items.forEach(function (text, li) {
             block.add(new TextRun(id + ":" + li, "• " + text, IINATAN.scene.context().styles.body));
-          });else if (node.type === "table") block.add(new Table(id, node.rows));else if (node.type === "section") block.add(new Expandable(id, node.title, new TextRun(id + ":body", IINATAN.structuredPlain(node.content), IINATAN.scene.context().styles.body), !node.collapsed));
+          });else if (node.type === "table") block.add(new Table(id, node.rows));else if (node.type === "note" || node.type === "example" || node.type === "cross-reference" || node.type === "furigana") block.add(new Callout(id + ":callout", new TextRun(id, (node.type === "example" ? "Example: " : "") + node.text, IINATAN.scene.context().styles.body, IINATAN.nestedTextAction(id, node.text))));else if (node.type === "section") block.add(new Expandable(id, node.title, new TextRun(id + ":body", IINATAN.structuredPlain(node.content), IINATAN.scene.context().styles.body), !node.collapsed));
         });
       });
       var actions = new HStack(entry.id + ":actions", 6);
@@ -2885,6 +3071,81 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
       h = Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
     return w * h;
   };
+  IINATAN.clusterSelected = function (widgetId, index) {
+    var selection = IINATAN.state.selection;
+    return !!selection && selection.widgetId === widgetId && index >= Math.min(selection.start, selection.end) && index <= Math.max(selection.start, selection.end);
+  };
+  IINATAN.beginSelection = function () {
+    var mouse = IINATAN.state.mouse || {},
+      cluster = IINATAN.scene.clusterAt(mouse.x, mouse.y);
+    if (!cluster) return false;
+    IINATAN.state.selection = {
+      widgetId: cluster.widgetId,
+      start: cluster.index,
+      end: cluster.index,
+      text: cluster.text
+    };
+    return true;
+  };
+  IINATAN.updateSelection = function () {
+    var selection = IINATAN.state.selection,
+      mouse = IINATAN.state.mouse || {};
+    if (!selection || !selection.dragging) return;
+    var cluster = IINATAN.scene.clusterAt(mouse.x, mouse.y);
+    if (cluster && cluster.widgetId === selection.widgetId && cluster.index !== selection.end) {
+      selection.end = cluster.index;
+      IINATAN.invalidateScene("selection");
+    }
+  };
+  IINATAN.finishSelection = function () {
+    var selection = IINATAN.state.selection;
+    if (!selection) return false;
+    var clusters = IINATAN.scene.clusterRegions.filter(function (cluster) {
+      return cluster.widgetId === selection.widgetId && cluster.index >= Math.min(selection.start, selection.end) && cluster.index <= Math.max(selection.start, selection.end);
+    });
+    if (clusters.length && IINATAN.popupStack.length) {
+      var start = clusters.reduce(function (value, cluster) {
+          return Math.min(value, cluster.range[0]);
+        }, Infinity),
+        end = clusters.reduce(function (value, cluster) {
+          return Math.max(value, cluster.range[1]);
+        }, 0);
+      IINATAN.popupStack[IINATAN.popupStack.length - 1].selectedText = selection.text.substring(start, end);
+    }
+    var dragged = selection.start !== selection.end;
+    delete IINATAN.state.selection;
+    IINATAN.invalidateScene("selection-finish");
+    return dragged;
+  };
+  IINATAN.nestedTextAction = function (widgetId, text) {
+    var profile = IINATAN.config.profiles[IINATAN.config.activeProfileId];
+    if (profile.nestedPopupMode !== "click") return null;
+    return function () {
+      var mouse = IINATAN.state.mouse || {},
+        cluster = IINATAN.scene.clusterAt(mouse.x, mouse.y);
+      if (!cluster || cluster.widgetId !== widgetId || IINATAN.popupStack.length >= profile.nestedPopupMaxDepth) return;
+      IINATAN.openLookup(text, cluster.range[0], true);
+    };
+  };
+  IINATAN.handleNestedHover = function () {
+    if (!IINATAN.popupStack.length || IINATAN.state.settingsOpen) return;
+    var profile = IINATAN.config.profiles[IINATAN.config.activeProfileId],
+      mode = profile.nestedPopupMode;
+    if (mode !== "hover" && !(mode === "shift-hover" && IINATAN.state.shiftDown)) return;
+    if (IINATAN.popupStack.length >= profile.nestedPopupMaxDepth) return;
+    var currentPopup = IINATAN.popupStack[IINATAN.popupStack.length - 1];
+    if ((IINATAN.state.mouseSerial || 0) <= currentPopup.openedMouseSerial) return;
+    var mouse = IINATAN.state.mouse || {},
+      cluster = IINATAN.scene.clusterAt(mouse.x, mouse.y);
+    if (!cluster) {
+      IINATAN.state.nestedHoverKey = "";
+      return;
+    }
+    var key = cluster.widgetId + ":" + cluster.index;
+    if (key === IINATAN.state.nestedHoverKey) return;
+    IINATAN.state.nestedHoverKey = key;
+    IINATAN.openLookup(cluster.text, cluster.range[0], true);
+  };
   IINATAN.openLookup = function (text, utf16Position, nested) {
     var profile = IINATAN.config.profiles[IINATAN.config.activeProfileId];
     var payload = IINATAN.lookupRequestFor(profile.lookupLanguage, text, utf16Position, profile);
@@ -2903,7 +3164,8 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
       IINATAN.popupStack.push({
         document: document,
         rect: null,
-        selectedText: ""
+        selectedText: "",
+        openedMouseSerial: IINATAN.state.mouseSerial || 0
       });
       if (profile.pauseWhilePopupVisible && !mp.get_property_bool("pause", false)) {
         mp.set_property_bool("pause", true);
@@ -2937,11 +3199,18 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
     if (active === IINATAN.state.interactive) return;
     IINATAN.state.interactive = active;
     if (active) {
-      mp.add_forced_key_binding("MBTN_LEFT", "iinatan-click", function () {
+      mp.add_forced_key_binding("MBTN_LEFT", "iinatan-click", function (event) {
+        var kind = event && event.event ? event.event : "press";
+        if (kind === "down") {
+          if (IINATAN.beginSelection()) IINATAN.state.selection.dragging = true;
+          return;
+        }
+        if (kind !== "up" && kind !== "press") return;
+        if (IINATAN.finishSelection()) return;
         var current = IINATAN.scene.index.hit(IINATAN.state.mouse.x, IINATAN.state.mouse.y);
         if (current && current.handler.click) current.handler.click();
       }, {
-        complex: false
+        complex: true
       });
       mp.add_forced_key_binding("WHEEL_UP", "iinatan-wheel-up", function () {
         var current = IINATAN.scene.index.hit(IINATAN.state.mouse.x, IINATAN.state.mouse.y);
@@ -2996,6 +3265,7 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
     current.rect = placed;
     IINATAN.scene.render(surface, placed);
     IINATAN.updateBindings();
+    IINATAN.handleNestedHover();
   };
 
   // ---- src/mpv/70_services.js ----
@@ -3052,8 +3322,8 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
       IINATAN.showStatus("Invalid audio-source URL", "error");
       return;
     }
-    IINATAN.backendCommand(["audio-preview", "--source-list", url, "--term", entry.headword, "--reading", entry.reading, "--cache", IINATAN.path("~~cache/iinatan/audio")], function (error, result) {
-      IINATAN.audioPreviewId = null;
+    var previewId = IINATAN.backendCommand(["audio-preview", "--source-list", url, "--term", entry.headword, "--reading", entry.reading, "--cache", IINATAN.path("~~cache/iinatan/audio")], function (error, result) {
+      if (IINATAN.audioPreviewId === previewId) IINATAN.audioPreviewId = null;
       if (error) IINATAN.showStatus("Audio preview failed: " + error.message, "error");else if (context && result && result.stdout) {
         try {
           context.wordAudio = JSON.parse(result.stdout);
@@ -3063,25 +3333,37 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
       playbackOnly: true,
       captureSize: 1024 * 1024
     });
+    IINATAN.audioPreviewId = previewId;
   };
   IINATAN.exportSentenceAudio = function (context, callback) {
     var profile = IINATAN.config.profiles[IINATAN.config.activeProfileId],
       anki = profile.anki,
       window = IINATAN.sentenceAudioWindow(context, anki.sentenceAudioPaddingMs),
       ext = anki.audioFormat === "opus" ? "opus" : "mp3";
-    var temp = IINATAN.path("~~cache/iinatan/export-" + IINATAN.requestId() + "." + ext),
-      source = context.source.audio || context.source.primary;
-    var args = [String(mp.get_opt("ffmpeg") || IINATAN.config.global.ffmpegPath || "ffmpeg"), "-nostdin", "-v", "error", "-ss", String(window.start), "-t", String(window.duration), "-i", source, "-map", "0:a:0", "-vn", "-sn", "-dn", "-c:a", ext === "opus" ? "libopus" : "libmp3lame", "-b:a", anki.audioBitrateKbps + "k", "-y", temp];
-    IINATAN.subprocess(args, {
-      playbackOnly: true,
-      captureSize: 1024 * 1024
-    }, function (error) {
+    var exportId = IINATAN.requestId(),
+      temp = IINATAN.path("~~cache/iinatan/export-" + exportId + "." + ext),
+      cacheExcerpt = IINATAN.path("~~cache/iinatan/export-" + exportId + ".mkv"),
+      source = context.source.audio || context.source.primary,
+      exportGeneration = context.generation;
+    if (!source) {
+      callback(new Error("sentence audio has no media source"));
+      return;
+    }
+    function encode(input, seek, done) {
+      var args = [String(mp.get_opt("ffmpeg") || IINATAN.config.global.ffmpegPath || "ffmpeg"), "-nostdin", "-v", "error", "-ss", String(seek), "-t", String(window.duration), "-i", input, "-map", "0:a:0", "-vn", "-sn", "-dn", "-c:a", ext === "opus" ? "libopus" : "libmp3lame", "-b:a", anki.audioBitrateKbps + "k", "-y", temp];
+      IINATAN.subprocess(args, {
+        playbackOnly: true,
+        captureSize: 1024 * 1024
+      }, done);
+    }
+    function finish(error) {
       if (error) {
-        IINATAN.backendCommand(["safe-clean", IINATAN.path("~~cache/iinatan"), temp], function () {});
+        IINATAN.backendCommand(["safe-clean", IINATAN.path("~~cache/iinatan"), temp, cacheExcerpt], function () {});
         callback(error);
         return;
       }
       IINATAN.backendCommand(["hash-media", temp, IINATAN.path("~~state/iinatan/anki-media"), context.source.title || "video", ext], function (hashError, result) {
+        IINATAN.backendCommand(["safe-clean", IINATAN.path("~~cache/iinatan"), cacheExcerpt], function () {});
         if (hashError) {
           callback(hashError);
           return;
@@ -3092,15 +3374,53 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
           callback(new Error("invalid media hash response"));
         }
       });
-    });
+    }
+    function fallback() {
+      encode(source, window.start, finish);
+    }
+    if (context.source.audio !== context.source.primary) {
+      fallback();
+      return;
+    }
+    var dumpProcessId = "p" + ++IINATAN.processSerial,
+      dumpHandle = mp.command_native_async({
+        name: "dump-cache",
+        start: window.start,
+        end: window.end,
+        filename: cacheExcerpt
+      }, function (success, result, error) {
+        delete IINATAN.processes[dumpProcessId];
+        if (exportGeneration !== IINATAN.mediaGeneration) {
+          IINATAN.backendCommand(["safe-clean", IINATAN.path("~~cache/iinatan"), temp, cacheExcerpt], function () {});
+          callback(new Error("sentence audio cancelled by media change"));
+          return;
+        }
+        if (!success || error || !mp.utils.file_info(cacheExcerpt)) {
+          fallback();
+          return;
+        }
+        // dump-cache preserves source timestamps; seek to the immutable subtitle
+        // start so keyframe-aligned preroll never shifts the exported sentence.
+        encode(cacheExcerpt, window.start, function (encodeError) {
+          if (encodeError) fallback();else finish(null);
+        });
+      });
+    if (dumpHandle) {
+      IINATAN.processes[dumpProcessId] = {
+        handle: dumpHandle,
+        playbackOnly: true
+      };
+    }
   };
   IINATAN.captureScreenshot = function (context, callback) {
-    var output = IINATAN.path("~~cache/iinatan/screenshot-" + IINATAN.requestId() + ".jpg");
+    var processId = "p" + ++IINATAN.processSerial,
+      output = IINATAN.path("~~cache/iinatan/screenshot-" + IINATAN.requestId() + ".jpg");
     var handle = mp.command_native_async({
       name: "screenshot-to-file",
       filename: output,
       flags: "video"
     }, function (success, result, error) {
+      delete IINATAN.processes[processId];
       if (!success || error) {
         callback(new Error(error || "screenshot failed"));
         return;
@@ -3116,9 +3436,10 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
       });
     });
     if (handle) {
-      var id = "p" + ++IINATAN.processSerial;
-      IINATAN.processes[id] = handle;
-      IINATAN.processes[id].playbackOnly = true;
+      IINATAN.processes[processId] = {
+        handle: handle,
+        playbackOnly: true
+      };
     }
   };
   IINATAN.showStatus = function (message, level) {
@@ -3205,7 +3526,8 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
         spacing: Number(props["sub-spacing"] || 0)
       },
       wrapWidth: Math.max(1, osd.w - 2 * Number(props["sub-margin-x"] || 20)),
-      osdScale: 1
+      osdScale: 1,
+      fallbackFontPath: IINATAN.fallbackFontPath()
     };
     var geometryKey = JSON.stringify([text, sub.ass, sub.extradata, sub.start, sub.end, props["sid"], props["secondary-sid"], osd, props["video-out-params"], props["sub-font"], props["sub-font-size"], props["sub-bold"], props["sub-italic"], props["sub-spacing"], props["sub-margin-x"], props["sub-margin-y"], props["sub-pos"], props["sub-scale"], props["sub-ass-override"]]);
     if (IINATAN.state.geometryKey === geometryKey) return;
@@ -3264,9 +3586,160 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
       h: y2 - y1
     };
   };
+  IINATAN.subtitleTrack = function (surface) {
+    var props = IINATAN.state.properties,
+      selected = props[surface === "secondary" ? "secondary-sid" : "sid"],
+      tracks = Array.isArray(props["track-list"]) ? props["track-list"] : [];
+    for (var index = 0; index < tracks.length; index++) {
+      var track = tracks[index];
+      if (track && track.type === "sub" && String(track.id) === String(selected)) return track;
+    }
+    return null;
+  };
+  IINATAN.geometryRequestForSubtitle = function (sub) {
+    var props = IINATAN.state.properties,
+      osd = IINATAN.state.osd || {},
+      map = IINATAN.unicodeMap(sub.text),
+      track = IINATAN.subtitleTrack(sub.surface),
+      external = track && (track["external-filename"] || track.externalFilename),
+      sourcePath = external || IINATAN.mediaSource().primary,
+      ffIndex = track && Number(track["ff-index"]);
+    var units = map.scalars.map(function (scalar, position) {
+      return {
+        position: position,
+        displayStartUtf16: scalar.utf16Start,
+        displayEndUtf16: scalar.utf16End
+      };
+    });
+    if (sub.ass && sub.extradata && sourcePath) {
+      return {
+        type: "ass-geometry",
+        protocol: 1,
+        source: {
+          path: sourcePath,
+          ffIndex: isFinite(ffIndex) ? ffIndex : -1,
+          external: !!external,
+          autoAssStream: !isFinite(ffIndex),
+          cacheExcerpt: !external && /^https?:\/\//.test(sourcePath)
+        },
+        cue: {
+          timeMs: Math.round(Number(props["time-pos"] || 0) * 1000),
+          startMs: Math.round(Number(sub.start || 0) * 1000),
+          endMs: Math.round(Number(sub.end || 0) * 1000),
+          assFull: sub.ass,
+          assExtradata: sub.extradata,
+          observedAss: sub.ass
+        },
+        units: units,
+        renderer: {
+          width: osd.w,
+          height: osd.h,
+          storageWidth: (props["video-out-params"] || {}).w || osd.w,
+          storageHeight: (props["video-out-params"] || {}).h || osd.h,
+          marginLeft: osd.ml || 0,
+          marginRight: osd.mr || 0,
+          marginTop: osd.mt || 0,
+          marginBottom: osd.mb || 0,
+          pixelAspect: osd.par || 1,
+          fontScale: Number(props["sub-scale"] || 1),
+          lineSpacing: 0,
+          forceMargins: false,
+          embeddedFonts: true,
+          useStorageSize: true,
+          overrideMode: String(props["sub-ass-override"] || "yes"),
+          defaultFamily: String(props["sub-font"] || "sans-serif"),
+          fontProvider: "auto",
+          assJustify: false,
+          linePosition: Number(props["sub-pos"] || 100),
+          hinting: "none",
+          shaper: "complex"
+        }
+      };
+    }
+    return {
+      type: "text-layout",
+      protocol: 1,
+      text: sub.text,
+      font: {
+        family: String(props["sub-font"] || "sans-serif"),
+        size: Number(props["sub-font-size"] || 55) * Number(props["sub-scale"] || 1),
+        weight: props["sub-bold"] ? 700 : 400,
+        italic: !!props["sub-italic"],
+        spacing: Number(props["sub-spacing"] || 0)
+      },
+      wrapWidth: Math.max(1, osd.w - 2 * Number(props["sub-margin-x"] || 20)),
+      osdScale: 1,
+      fallbackFontPath: IINATAN.fallbackFontPath()
+    };
+  };
+
+  // The final implementation supersedes the single-surface compatibility
+  // routine above and measures both selected subtitle tracks independently.
+  IINATAN.updateSubtitleGeometry = function () {
+    var subtitles = IINATAN.state.subtitles || [],
+      osd = IINATAN.state.osd || {};
+    if (!subtitles.length || !osd.w || !osd.h) {
+      IINATAN.state.subtitleUnits = [];
+      IINATAN.state.geometryKey = "";
+      return;
+    }
+    var key = JSON.stringify([subtitles, IINATAN.state.properties["sid"], IINATAN.state.properties["secondary-sid"], IINATAN.state.properties["track-list"], osd, IINATAN.state.properties["video-out-params"], IINATAN.state.properties["sub-font"], IINATAN.state.properties["sub-font-size"], IINATAN.state.properties["sub-pos"], IINATAN.state.properties["sub-scale"]]);
+    if (key === IINATAN.state.geometryKey) return;
+    IINATAN.state.geometryKey = key;
+    var generation = IINATAN.generation,
+      geometryGeneration = (IINATAN.state.geometryGeneration || 0) + 1,
+      surfaces = Object.create(null);
+    IINATAN.state.geometryGeneration = geometryGeneration;
+    IINATAN.state.subtitleUnits = [];
+    subtitles.forEach(function (sub, surfaceIndex) {
+      IINATAN.workerRequest(IINATAN.geometryRequestForSubtitle(sub), function (error, response) {
+        if (error || generation !== IINATAN.generation || geometryGeneration !== IINATAN.state.geometryGeneration) return;
+        var units = [],
+          allRects = [];
+        if (response.units) units = response.units;else if (response.clusters) {
+          var x = (osd.w - response.width) / 2,
+            margin = Number(IINATAN.state.properties["sub-margin-y"] || 22),
+            lineOffset = surfaceIndex * (response.height + 8),
+            y = osd.h - margin - response.height - lineOffset;
+          units = response.clusters.map(function (cluster, index) {
+            return {
+              position: index,
+              rects: [{
+                x: x + cluster.x,
+                y: y + cluster.y,
+                w: cluster.width,
+                h: cluster.height
+              }]
+            };
+          });
+        }
+        units.forEach(function (unit) {
+          unit.surface = sub.surface;
+          unit.text = sub.text;
+          (unit.rects || []).forEach(function (rect) {
+            allRects.push(rect);
+          });
+        });
+        surfaces[sub.surface] = {
+          units: units,
+          rects: allRects
+        };
+        var combined = [],
+          rects = [];
+        ["primary", "secondary"].forEach(function (surface) {
+          if (!surfaces[surface]) return;
+          combined = combined.concat(surfaces[surface].units);
+          rects = rects.concat(surfaces[surface].rects);
+        });
+        IINATAN.state.subtitleUnits = combined;
+        IINATAN.state.subtitleRect = IINATAN.unionRects(rects);
+      }, 10000);
+    });
+  };
 
   // ---- src/mpv/80_anki_transport.js ----
   IINATAN.ankiCache = Object.create(null);
+  IINATAN.ankiPending = Object.create(null);
   IINATAN.ankiInvoke = function (action, params, callback, attempt) {
     var profile = IINATAN.config.profiles[IINATAN.config.activeProfileId],
       options = profile.anki,
@@ -3431,6 +3904,11 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
       callback(null, cached.ids);
       return;
     }
+    if (IINATAN.ankiPending[key]) {
+      IINATAN.ankiPending[key].push(callback);
+      return;
+    }
+    IINATAN.ankiPending[key] = [callback];
     IINATAN.ankiInvoke("findNotes", {
       query: IINATAN.ankiDuplicateQuery(first, fields[first], options.deck, options.duplicateScope)
     }, function (error, ids) {
@@ -3438,7 +3916,11 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
         time: Date.now(),
         ids: ids || []
       };
-      callback(error, ids || []);
+      var callbacks = IINATAN.ankiPending[key] || [];
+      delete IINATAN.ankiPending[key];
+      callbacks.forEach(function (pendingCallback) {
+        pendingCallback(error, ids || []);
+      });
     });
   };
 
@@ -3455,6 +3937,61 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
       callback(error, result || file.name);
     });
   };
+  IINATAN.captureAnkiMedia = function (templates, context, callback) {
+    var serialized = JSON.stringify(templates || {}),
+      nested = IINATAN.popupStack.length > 1;
+    var needs = {
+      screenshot: !nested && serialized.indexOf("{screenshot}") >= 0,
+      sentenceAudio: !nested && serialized.indexOf("{sentence-audio}") >= 0,
+      wordAudio: !nested && serialized.indexOf("{word-audio}") >= 0
+    };
+    var tasks = [],
+      captured = {};
+    function add(name, task) {
+      tasks.push(function (done) {
+        task(function (error, file) {
+          if (error) {
+            done(error);
+            return;
+          }
+          IINATAN.storeAnkiMedia(file, function (storeError, stored) {
+            if (!storeError) captured[name] = stored;
+            done(storeError);
+          });
+        });
+      });
+    }
+    if (needs.screenshot) add("screenshot", function (done) {
+      IINATAN.captureScreenshot(context.mediaContext, done);
+    });
+    if (needs.sentenceAudio) add("sentenceAudio", function (done) {
+      IINATAN.exportSentenceAudio(context.mediaContext, done);
+    });
+    if (needs.wordAudio && context.wordAudio && context.wordAudio.path) {
+      add("wordAudio", function (done) {
+        IINATAN.backendCommand(["hash-media", context.wordAudio.path, IINATAN.path("~~state/iinatan/anki-media"), context.expression, String(context.wordAudio.path).split(".").pop() || "audio"], function (error, result) {
+          if (error) {
+            done(error);
+            return;
+          }
+          try {
+            done(null, JSON.parse(result.stdout));
+          } catch (_) {
+            done(new Error("invalid word-audio media result"));
+          }
+        });
+      });
+    }
+    var index = 0;
+    function next(error) {
+      if (error || index >= tasks.length) {
+        callback(error, captured);
+        return;
+      }
+      tasks[index++](next);
+    }
+    next(null);
+  };
   IINATAN.addEntryToAnki = function (entry, document, addAnyway) {
     var profile = IINATAN.config.profiles[IINATAN.config.activeProfileId],
       options = profile.anki;
@@ -3462,39 +3999,44 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
       IINATAN.showStatus("Anki is disabled in this profile", "error");
       return;
     }
-    var context = IINATAN.ankiCardContext(entry, document),
-      media = {},
-      fields = IINATAN.renderAnkiFields(options.fields, context, media);
-    IINATAN.checkAnkiDuplicate(fields, options, function (duplicateError, ids) {
-      if (duplicateError) {
-        IINATAN.showStatus(duplicateError.message, "error");
+    var context = IINATAN.ankiCardContext(entry, document);
+    IINATAN.captureAnkiMedia(options.fields, context, function (mediaError, media) {
+      if (mediaError) {
+        IINATAN.showStatus("Anki media failed: " + mediaError.message, "error");
         return;
       }
-      if (ids.length && options.duplicateMode === "prevent" && !addAnyway) {
-        IINATAN.showStatus("Duplicate note exists (" + ids[0] + "). Use script-message iinatan-add-anyway to override.", "warn");
-        IINATAN.state.pendingDuplicate = {
-          entry: entry,
-          document: document,
-          ids: ids
-        };
-        return;
-      }
-      IINATAN.ankiInvoke("addNote", {
-        note: {
-          deckName: options.deck,
-          modelName: options.model,
-          fields: fields,
-          options: {
-            allowDuplicate: options.duplicateMode === "allow" || !!addAnyway,
-            duplicateScope: options.duplicateScope
-          },
-          tags: options.tags || ["iinatan"]
+      var fields = IINATAN.renderAnkiFields(options.fields, context, media);
+      IINATAN.checkAnkiDuplicate(fields, options, function (duplicateError, ids) {
+        if (duplicateError) {
+          IINATAN.showStatus(duplicateError.message, "error");
+          return;
         }
-      }, function (error, noteId) {
-        if (error) IINATAN.showStatus("Anki add failed: " + error.message, "error");else {
-          IINATAN.showStatus("Added Anki note " + noteId, "info");
-          IINATAN.state.lastNoteId = noteId;
+        if (ids.length && options.duplicateMode === "prevent" && !addAnyway) {
+          IINATAN.showStatus("Duplicate note exists (" + ids[0] + "). Use script-message iinatan-add-anyway to override.", "warn");
+          IINATAN.state.pendingDuplicate = {
+            entry: entry,
+            document: document,
+            ids: ids
+          };
+          return;
         }
+        IINATAN.ankiInvoke("addNote", {
+          note: {
+            deckName: options.deck,
+            modelName: options.model,
+            fields: fields,
+            options: {
+              allowDuplicate: options.duplicateMode === "allow" || !!addAnyway,
+              duplicateScope: options.duplicateScope
+            },
+            tags: options.tags || ["iinatan"]
+          }
+        }, function (error, noteId) {
+          if (error) IINATAN.showStatus("Anki add failed: " + error.message, "error");else {
+            IINATAN.showStatus("Added Anki note " + noteId, "info");
+            IINATAN.state.lastNoteId = noteId;
+          }
+        });
       });
     });
   };
@@ -3621,28 +4163,44 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
         IINATAN.showStatus("Dictionary import failed: " + error.message, "error");
         return;
       }
-      var imported;
-      try {
-        imported = JSON.parse(result.stdout);
-      } catch (_) {
-        IINATAN.showStatus("Dictionary import returned invalid data", "error");
-        return;
-      }
-      if (!imported.ok || !imported.dictionary) {
-        IINATAN.showStatus(imported.error || "Dictionary import failed", "error");
-        return;
-      }
-      IINATAN.config.dictionaries.push(imported.dictionary);
-      IINATAN.activeProfile().dictionaries.push(imported.dictionary.id);
-      IINATAN.worker.generation++;
-      IINATAN.stopWorker();
-      IINATAN.saveConfig(function (saveError) {
-        IINATAN.showStatus(saveError ? saveError.message : "Imported " + imported.dictionary.title, saveError ? "error" : "info");
-        IINATAN.invalidateScene("import");
-      });
+      IINATAN.commitImportedDictionary(result);
     }, {
       playbackOnly: false,
       captureSize: 4 * 1024 * 1024
+    });
+  };
+  IINATAN.commitImportedDictionary = function (result) {
+    var imported;
+    try {
+      imported = JSON.parse(result.stdout);
+    } catch (_) {
+      IINATAN.showStatus("Dictionary import returned invalid data", "error");
+      return;
+    }
+    if (!imported.ok || !imported.dictionary) {
+      IINATAN.showStatus(imported.error || "Dictionary import failed", "error");
+      return;
+    }
+    var dictionary = imported.dictionary,
+      profile = IINATAN.activeProfile();
+    IINATAN.config.dictionaries.push(dictionary);
+    profile.dictionaries.push(dictionary.id);
+    IINATAN.saveConfig(function (saveError) {
+      if (saveError) {
+        IINATAN.config.dictionaries = IINATAN.config.dictionaries.filter(function (item) {
+          return item.id !== dictionary.id;
+        });
+        profile.dictionaries = profile.dictionaries.filter(function (id) {
+          return id !== dictionary.id;
+        });
+        IINATAN.backendCommand(["remove-dictionary", IINATAN.path("~~state/iinatan/dictionaries"), dictionary.path], function () {});
+        IINATAN.showStatus(saveError.message, "error");
+        return;
+      }
+      IINATAN.worker.generation++;
+      IINATAN.stopWorker();
+      IINATAN.showStatus("Imported " + dictionary.title, "info");
+      IINATAN.invalidateScene("import");
     });
   };
   IINATAN.promptImport = function () {
@@ -3651,18 +4209,193 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
       submit: IINATAN.importDictionary
     });
   };
-  IINATAN.downloadRecommended = function () {
+  IINATAN.manageDictionaries = function () {
+    var profile = IINATAN.activeProfile(),
+      registry = Object.create(null);
+    IINATAN.config.dictionaries.forEach(function (dictionary) {
+      registry[dictionary.id] = dictionary;
+    });
+    var ids = profile.dictionaries.slice(),
+      items = ids.map(function (id, index) {
+        var dictionary = registry[id] || {
+          title: id,
+          enabled: false
+        };
+        return index + 1 + ". " + dictionary.title + (dictionary.enabled === false ? " (disabled)" : "");
+      });
+    if (!items.length) {
+      IINATAN.showStatus("No dictionaries are registered", "info");
+      return;
+    }
+    mp.input.select({
+      prompt: "Manage dictionary",
+      items: items,
+      submit: function submit(index) {
+        if (index === undefined) return;
+        var id = ids[index],
+          dictionary = registry[id];
+        mp.input.select({
+          prompt: dictionary.title,
+          items: [dictionary.enabled === false ? "Enable" : "Disable", "Move up", "Move down", "Remove"],
+          submit: function submit(action) {
+            if (action === undefined) return;
+            if (action === 0) dictionary.enabled = dictionary.enabled === false;else if (action === 1 && index > 0) {
+              profile.dictionaries.splice(index, 1);
+              profile.dictionaries.splice(index - 1, 0, id);
+            } else if (action === 2 && index + 1 < profile.dictionaries.length) {
+              profile.dictionaries.splice(index, 1);
+              profile.dictionaries.splice(index + 1, 0, id);
+            } else if (action === 3) {
+              var previousProfile = profile.dictionaries.slice(),
+                previousRegistry = IINATAN.config.dictionaries.slice();
+              profile.dictionaries = profile.dictionaries.filter(function (value) {
+                return value !== id;
+              });
+              IINATAN.config.dictionaries = IINATAN.config.dictionaries.filter(function (value) {
+                return value.id !== id;
+              });
+              IINATAN.saveConfig(function (saveError) {
+                if (saveError) {
+                  profile.dictionaries = previousProfile;
+                  IINATAN.config.dictionaries = previousRegistry;
+                  IINATAN.showStatus(saveError.message, "error");
+                  return;
+                }
+                IINATAN.backendCommand(["remove-dictionary", IINATAN.path("~~state/iinatan/dictionaries"), dictionary.path], function (removeError) {
+                  if (removeError) {
+                    profile.dictionaries = previousProfile;
+                    IINATAN.config.dictionaries = previousRegistry;
+                    IINATAN.saveConfig(function () {});
+                    IINATAN.showStatus(removeError.message, "error");
+                    return;
+                  }
+                  IINATAN.worker.generation++;
+                  IINATAN.stopWorker();
+                  IINATAN.invalidateScene("dictionary-remove");
+                });
+              });
+              return;
+            }
+            IINATAN.worker.generation++;
+            IINATAN.stopWorker();
+            IINATAN.saveConfig(function (error) {
+              if (error) IINATAN.showStatus(error.message, "error");
+              IINATAN.invalidateScene("dictionaries");
+            });
+          }
+        });
+      }
+    });
+  };
+  IINATAN.configurePopupSize = function () {
     mp.input.get({
-      prompt: "Recommended dictionary HTTPS URL",
-      submit: function submit(url) {
+      prompt: "Popup max width in OSD pixels",
+      default_text: String(IINATAN.activeProfile().popupMaxWidth),
+      submit: function submit(value) {
+        IINATAN.activeProfile().popupMaxWidth = IINATAN.clamp(value, IINATAN.activeProfile().popupMinWidth, 1600, 440);
+        IINATAN.saveConfig(function () {});
+        IINATAN.invalidateScene("popup-size");
+      }
+    });
+  };
+  IINATAN.configureSubtitleMode = function () {
+    var values = ["hover", "shift-hover"];
+    mp.input.select({
+      prompt: "Subtitle lookup trigger",
+      items: values,
+      submit: function submit(index) {
+        if (index === undefined) return;
+        IINATAN.activeProfile().subtitleLookupMode = values[index];
+        IINATAN.saveConfig(function () {});
+        IINATAN.invalidateScene("subtitle-mode");
+      }
+    });
+  };
+  IINATAN.configureAudioSources = function () {
+    mp.input.get({
+      prompt: "Audio sources JSON",
+      default_text: JSON.stringify(IINATAN.activeProfile().audio.sources),
+      submit: function submit(value) {
+        try {
+          var sources = JSON.parse(value);
+          if (!Array.isArray(sources)) throw new Error("expected an array");
+          sources.forEach(function (source) {
+            if (!source || !IINATAN.safeExternalUrl(source.url)) throw new Error("invalid audio source URL");
+          });
+          IINATAN.activeProfile().audio.sources = sources;
+          IINATAN.saveConfig(function () {});
+        } catch (error) {
+          IINATAN.showStatus("Audio source JSON: " + error.message, "error");
+        }
+      }
+    });
+  };
+  IINATAN.configureAnki = function () {
+    var options = IINATAN.activeProfile().anki;
+    IINATAN.ankiDiscover(function (error, discovery) {
+      if (error) {
+        IINATAN.showStatus("Anki discovery failed: " + error.message, "error");
+        return;
+      }
+      mp.input.select({
+        prompt: "Anki deck",
+        items: discovery.decks,
+        submit: function submit(deckIndex) {
+          if (deckIndex === undefined) return;
+          options.deck = discovery.decks[deckIndex];
+          mp.input.select({
+            prompt: "Anki model",
+            items: discovery.models,
+            submit: function submit(modelIndex) {
+              if (modelIndex === undefined) return;
+              options.model = discovery.models[modelIndex];
+              IINATAN.ankiInvoke("modelFieldNames", {
+                modelName: options.model
+              }, function (fieldError, fields) {
+                if (fieldError) {
+                  IINATAN.showStatus(fieldError.message, "error");
+                  return;
+                }
+                if (!Object.keys(options.fields || {}).length) {
+                  options.fields = {};
+                  (fields || []).forEach(function (field, index) {
+                    options.fields[field] = index === 0 ? "{expression}" : index === 1 ? "{reading}" : index === 2 ? "{glossary-html}" : "";
+                  });
+                }
+                IINATAN.saveConfig(function (saveError) {
+                  IINATAN.showStatus(saveError ? saveError.message : "Anki deck/model saved", saveError ? "error" : "info");
+                  IINATAN.invalidateScene("anki-config");
+                });
+              });
+            }
+          });
+        }
+      });
+    });
+  };
+  IINATAN.downloadRecommended = function () {
+    var recommendations = IINATAN.config.global.recommendedDictionaries || [];
+    if (!recommendations.length) {
+      IINATAN.showStatus("No recommended dictionaries are configured", "error");
+      return;
+    }
+    mp.input.select({
+      prompt: "Download recommended dictionary",
+      items: recommendations.map(function (item) {
+        return item.title;
+      }),
+      submit: function submit(index) {
+        if (index === undefined) return;
+        var url = recommendations[index] && recommendations[index].url;
         if (!/^https:\/\//i.test(String(url || ""))) {
-          IINATAN.showStatus("Download URL must use HTTPS", "error");
+          IINATAN.showStatus("Dictionary URL must use HTTPS", "error");
           return;
         }
-        IINATAN.backendCommand(["download-import", url, IINATAN.path("~~cache/iinatan/downloads"), IINATAN.path("~~state/iinatan/dictionaries")], function (error) {
-          IINATAN.showStatus(error ? error.message : "Dictionary downloaded and imported", error ? "error" : "info");
+        IINATAN.backendCommand(["download-import", url, IINATAN.path("~~cache/iinatan/downloads"), IINATAN.path("~~state/iinatan/dictionaries")], function (error, result) {
+          if (error) IINATAN.showStatus(error.message, "error");else IINATAN.commitImportedDictionary(result);
         }, {
-          playbackOnly: false
+          playbackOnly: false,
+          captureSize: 8 * 1024 * 1024
         });
       }
     });
@@ -3675,7 +4408,11 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
       },
       root = new VStack("settings-root", 8);
     root.add(new TextRun("settings-title", "iinatan settings", IINATAN.scene.context().styles.headword));
+    root.add(IINATAN.settingsButton("manage-dictionaries", "Enable / order / remove dictionaries…", IINATAN.manageDictionaries));
     root.add(new TextRun("settings-path", "Advanced JSON: " + IINATAN.path(IINATAN.configPath), IINATAN.scene.context().styles.tag));
+    root.add(IINATAN.settingsButton("subtitle-mode", "Subtitle trigger: " + profile.subtitleLookupMode, IINATAN.configureSubtitleMode));
+    root.add(IINATAN.settingsButton("popup-size", "Popup max width: " + profile.popupMaxWidth, IINATAN.configurePopupSize));
+    root.add(IINATAN.settingsButton("audio-sources", "Audio sources…", IINATAN.configureAudioSources));
     root.add(IINATAN.settingsButton("profile", "Profile: " + profile.name, IINATAN.selectProfile));
     var profiles = new HStack("settings-profile-actions", 6);
     profiles.add(IINATAN.settingsButton("create-profile", "Create", IINATAN.createProfile)).add(IINATAN.settingsButton("rename-profile", "Rename", IINATAN.renameProfile)).add(IINATAN.settingsButton("delete-profile", "Delete", IINATAN.deleteProfile));
@@ -3691,7 +4428,7 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
     }));
     root.add(new Button("settings-theme", "Theme: " + profile.theme.preset, function () {
       var values = ["dark", "light", "high-contrast"];
-      profile.theme.preset = values[(values.indexOf(profile.theme.preset) + 1) % values.length];
+      profile.theme = IINATAN.clone(IINATAN.THEME_PRESETS[values[(values.indexOf(profile.theme.preset) + 1) % values.length]]);
       IINATAN.saveConfig(function () {});
       IINATAN.invalidateScene("theme");
     }));
@@ -3700,6 +4437,7 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
       IINATAN.saveConfig(function () {});
       IINATAN.invalidateScene("anki-setting");
     }));
+    root.add(IINATAN.settingsButton("anki-config", "Configure Anki deck/model…", IINATAN.configureAnki));
     root.add(new Button("settings-reload", "Validate / reload JSON", function () {
       var raw = IINATAN.readJson(IINATAN.configPath, null);
       if (!raw) IINATAN.showStatus("Config JSON is invalid", "error");else {
@@ -3739,6 +4477,8 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
   };
   IINATAN.handleHover = function () {
     if (IINATAN.popupStack.length || IINATAN.state.settingsOpen) return;
+    var profile = IINATAN.config.profiles[IINATAN.config.activeProfileId];
+    if (profile.subtitleLookupMode === "shift-hover" && !IINATAN.state.shiftDown) return;
     var mouse = IINATAN.state.mouse || {};
     if (!mouse.hover) {
       IINATAN.state.hoverUnit = null;
@@ -3753,10 +4493,12 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
         break;
       }
     }
-    if (!found || found.position === IINATAN.state.hoverUnit) return;
-    IINATAN.state.hoverUnit = found.position;
-    var scalar = IINATAN.unicodeMap((IINATAN.state.subtitle || {}).text || "").scalars[found.position] || {};
-    IINATAN.openLookup(IINATAN.state.subtitle.text, scalar.utf16Start || 0, false);
+    var hoverKey = found ? found.surface + ":" + found.position : "";
+    if (!found || hoverKey === IINATAN.state.hoverUnit) return;
+    IINATAN.state.hoverUnit = hoverKey;
+    IINATAN.state.subtitleRect = IINATAN.unionRects(found.rects || []);
+    var scalar = IINATAN.unicodeMap(found.text || "").scalars[found.position] || {};
+    IINATAN.openLookup(found.text, scalar.utf16Start || 0, false);
   };
   IINATAN.initialize = function () {
     IINATAN.platform = IINATAN.detectPlatform();
@@ -3798,6 +4540,11 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
       if (IINATAN.overlay) IINATAN.overlay.remove();
     });
     mp.add_key_binding("Ctrl+d", "iinatan-settings", IINATAN.toggleSettings);
+    mp.add_key_binding("Shift", "iinatan-shift-state", function (event) {
+      IINATAN.state.shiftDown = !!event && event.event === "down";
+    }, {
+      complex: true
+    });
     mp.add_key_binding("ESC", "iinatan-escape", function () {
       if (IINATAN.popupStack.length) IINATAN.closePopup();else if (IINATAN.state.settingsOpen) IINATAN.toggleSettings();
     });

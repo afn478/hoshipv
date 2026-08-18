@@ -20,9 +20,21 @@ IINATAN.assColor = function (rgb, alpha) {
 class AssBuilder {
   constructor() {
     this.events = [];
+    this.clip = null;
   }
   event(layer, tags, text) {
-    this.events.push("{\\layer" + layer + tags + "}" + text);
+    var clip = this.clip
+      ? "\\clip(" +
+        Math.round(this.clip.x) +
+        "," +
+        Math.round(this.clip.y) +
+        "," +
+        Math.round(this.clip.x + this.clip.w) +
+        "," +
+        Math.round(this.clip.y + this.clip.h) +
+        ")"
+      : "";
+    this.events.push("{\\layer" + layer + clip + tags + "}" + text);
     return this;
   }
   text(layer, x, y, style, text) {
@@ -144,6 +156,31 @@ class AssBuilder {
   }
 }
 IINATAN.AssBuilder = AssBuilder;
+IINATAN.intersectRect = function (a, b) {
+  if (!a) return b;
+  if (!b) return a;
+  var x = Math.max(a.x, b.x),
+    y = Math.max(a.y, b.y),
+    right = Math.min(a.x + a.w, b.x + b.w),
+    bottom = Math.min(a.y + a.h, b.y + b.h);
+  return { x: x, y: y, w: Math.max(0, right - x), h: Math.max(0, bottom - y) };
+};
+IINATAN.wrappedText = function (text, metrics) {
+  var clusters = (metrics && metrics.clusters) || [];
+  if (clusters.length < 2) return text;
+  var breaks = [],
+    previous = clusters[0];
+  for (var index = 1; index < clusters.length; index++) {
+    var cluster = clusters[index];
+    if (cluster.y > previous.y + previous.height / 2 && cluster.x < previous.x)
+      breaks.push(cluster.utf16Range[0]);
+    previous = cluster;
+  }
+  for (var offset = breaks.length - 1; offset >= 0; offset--)
+    text =
+      text.substring(0, breaks[offset]) + "\n" + text.substring(breaks[offset]);
+  return text;
+};
 
 class HitRegion {
   constructor(id, rect, handler, cursor, order) {
@@ -243,7 +280,31 @@ class TextRun extends Widget {
     };
   }
   render(ctx) {
-    ctx.ass.text(ctx.layer++, this.rect.x, this.rect.y, this.style, this.text);
+    if (this.metrics && this.metrics.clusters) {
+      var self = this;
+      this.metrics.clusters.forEach(function (cluster, index) {
+        if (IINATAN.clusterSelected(self.id, index))
+          ctx.ass.rect(
+            ctx.layer++,
+            {
+              x: self.rect.x + cluster.x,
+              y: self.rect.y + cluster.y,
+              w: cluster.width,
+              h: cluster.height,
+            },
+            ctx.theme.accent,
+            null,
+            2,
+          );
+      });
+    }
+    ctx.ass.text(
+      ctx.layer++,
+      this.rect.x,
+      this.rect.y,
+      this.style,
+      IINATAN.wrappedText(this.text, this.metrics),
+    );
     if (this.action)
       ctx.hit(this.id, this.rect, { click: this.action }, "pointer");
     if (this.metrics && this.metrics.clusters)
@@ -418,7 +479,7 @@ class ScrollView extends Widget {
     });
   }
   render(ctx) {
-    this.child.render(ctx);
+    ctx.withClip(this.rect, this.child.render.bind(this.child, ctx));
     if (this.contentHeight > this.rect.h) this.scrollbar.render(ctx);
     ctx.hit(this.id, this.rect, { wheel: this.onWheel.bind(this) }, "scroll");
   }
@@ -638,10 +699,24 @@ class Scene {
         return self.measure(text, style, wrap);
       },
       hit: function (id, rect, handler, cursor) {
-        self.index.add(new HitRegion(id, rect, handler, cursor, this.layer));
+        var clipped = IINATAN.intersectRect(rect, this.clipRect);
+        if (clipped.w > 0 && clipped.h > 0)
+          self.index.add(
+            new HitRegion(id, clipped, handler, cursor, this.layer),
+          );
       },
       clusters: function (widget, clusters) {
-        self.addClusters(widget, clusters);
+        self.addClusters(widget, clusters, this.clipRect);
+      },
+      clipRect: null,
+      withClip: function (rect, callback) {
+        var oldContextClip = this.clipRect,
+          oldAssClip = this.ass.clip;
+        this.clipRect = IINATAN.intersectRect(oldContextClip, rect);
+        this.ass.clip = this.clipRect;
+        callback();
+        this.clipRect = oldContextClip;
+        this.ass.clip = oldAssClip;
       },
     };
   }
@@ -677,6 +752,7 @@ class Scene {
           },
           wrapWidth: wrap || 0,
           osdScale: 1,
+          fallbackFontPath: IINATAN.fallbackFontPath(),
         },
         function (error, response) {
           delete self.pendingMetrics[key];
@@ -696,7 +772,7 @@ class Scene {
     }
     return { width: 0, height: (style.size || 20) * 1.35, clusters: [] };
   }
-  addClusters(widget, clusters) {
+  addClusters(widget, clusters, clip) {
     var self = this;
     clusters.forEach(function (cluster, index) {
       var rect = {
@@ -705,13 +781,28 @@ class Scene {
         w: cluster.width,
         h: cluster.height,
       };
+      rect = IINATAN.intersectRect(rect, clip);
+      if (rect.w <= 0 || rect.h <= 0) return;
       self.clusterRegions.push({
         widgetId: widget.id,
         index: index,
         rect: rect,
         range: cluster.utf16Range,
+        text: widget.text,
       });
     });
+  }
+  clusterAt(x, y) {
+    var matches = this.clusterRegions.filter(function (cluster) {
+      var rect = cluster.rect;
+      return (
+        x >= rect.x &&
+        y >= rect.y &&
+        x <= rect.x + rect.w &&
+        y <= rect.y + rect.h
+      );
+    });
+    return matches.length ? matches[matches.length - 1] : null;
   }
   render(root, rect) {
     this.root = root;

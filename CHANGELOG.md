@@ -5,6 +5,8 @@
 ### Added
 
 - Began the native mpv 0.41+ cutover with a MuJS-compatible bundled runtime, config schema v2 migration, observed media/subtitle state, persistent-worker scheduling, a reusable ASS widget toolkit, UI-neutral dictionary documents, native popup/settings controllers, direct Anki orchestration, tracked CMake presets, additive text-layout and filesystem protocols, and real mpv runtime coverage.
+- Added portable POSIX and Windows native adapters, transactional config and dictionary operations, guarded ZIP imports, libcurl downloads, FFmpeg/miniaudio word preview, immutable sentence-media capture, dual-subtitle geometry, selectable ASS glossary text, and bundled Noto CJK fallback typography.
+- Added schema-v2 examples, native mpv installers and archive tooling, corresponding-source and checksum generation, and executable native import/lookup/layout/audio/config smoke gates.
 - Added a per-profile minimum popup width setting so compact dictionary results, including CEDICT entries, can retain a balanced layout.
 - Added optional Yomitan-style Shift-hover lookup triggers for subtitle text and nested popup definitions.
 

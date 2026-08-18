@@ -8,12 +8,14 @@ IINATAN.OBSERVED_PROPERTIES = [
   ["sub-end", "number"],
   ["secondary-sub-text", "string"],
   ["secondary-sub-text/ass-full", "string"],
+  ["secondary-sub-ass-extradata", "string"],
   ["secondary-sub-start", "number"],
   ["secondary-sub-end", "number"],
   ["sid", "native"],
   ["secondary-sid", "native"],
   ["track-list", "native"],
   ["sub-delay", "number"],
+  ["secondary-sub-delay", "number"],
   ["pause", "bool"],
   ["time-pos", "number"],
   ["osd-dimensions", "native"],
@@ -35,18 +37,20 @@ IINATAN.OBSERVED_PROPERTIES = [
 IINATAN.mediaGeneration = 0;
 IINATAN.propertyChanged = function (name, value) {
   IINATAN.state.properties[name] = value;
+  if (name === "mouse-pos") {
+    IINATAN.state.mouseSerial = (IINATAN.state.mouseSerial || 0) + 1;
+    IINATAN.updateSelection();
+  }
   IINATAN.debounce("property-rebuild", IINATAN.rebuildFromProperties);
 };
 
 IINATAN.rebuildFromProperties = function () {
   if (!IINATAN.state.fileLoaded) return;
   var props = IINATAN.state.properties;
-  var subtitle = String(props["sub-text"] || props["secondary-sub-text"] || "");
-  IINATAN.state.subtitle = {
-    text: subtitle,
-    ass: String(
-      props["sub-text/ass-full"] || props["secondary-sub-text/ass-full"] || "",
-    ),
+  var primary = {
+    surface: "primary",
+    text: String(props["sub-text"] || ""),
+    ass: String(props["sub-text/ass-full"] || ""),
     extradata: String(props["sub-ass-extradata"] || ""),
     start: Number(props["sub-start"]),
     end: Number(props["sub-end"]),
@@ -54,6 +58,24 @@ IINATAN.rebuildFromProperties = function () {
     secondaryEnd: Number(props["secondary-sub-end"]),
     delay: Number(props["sub-delay"] || 0),
   };
+  IINATAN.state.subtitles = primary.text ? [primary] : [];
+  if (props["secondary-sub-text"]) {
+    var secondary = {
+      surface: "secondary",
+      text: String(props["secondary-sub-text"] || ""),
+      ass: String(props["secondary-sub-text/ass-full"] || ""),
+      extradata: String(
+        props["secondary-sub-ass-extradata"] ||
+          props["sub-ass-extradata"] ||
+          "",
+      ),
+      start: Number(props["secondary-sub-start"]),
+      end: Number(props["secondary-sub-end"]),
+      delay: Number(props["secondary-sub-delay"] || 0),
+    };
+    IINATAN.state.subtitles.push(secondary);
+  }
+  IINATAN.state.subtitle = IINATAN.state.subtitles[0] || primary;
   IINATAN.state.osd = props["osd-dimensions"] || {
     w: 0,
     h: 0,

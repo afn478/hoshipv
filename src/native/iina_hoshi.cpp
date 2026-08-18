@@ -17,15 +17,15 @@
 #include <mutex>
 #include <optional>
 #include <sstream>
-#include <signal.h>
 #include <string>
-#include <sys/types.h>
 #include <thread>
 #include <vector>
 
+#ifdef __APPLE__
 #include <CoreFoundation/CoreFoundation.h>
 #include <CoreGraphics/CoreGraphics.h>
 #include <CoreText/CoreText.h>
+#endif
 #include <utf8.h>
 
 #include "hoshidicts/deinflector.hpp"
@@ -37,6 +37,9 @@
 #include "worker_protocol.hpp"
 #include "text_layout.hpp"
 #include "http_service.hpp"
+#include "audio_preview.hpp"
+#include "platform_io.hpp"
+#include "zip/zip.hpp"
 
 extern "C" {
 #include <libavutil/mem.h>
@@ -94,6 +97,7 @@ static bool to_bool(const std::string& s, bool fallback) {
   if (value == "no" || value == "false" || value == "0" || value == "off") return false;
   return fallback;
 }
+#ifdef __APPLE__
 static std::string cf_string_utf8(CFStringRef value) {
   if (!value) return "";
   CFIndex length = CFStringGetLength(value);
@@ -434,11 +438,7 @@ static std::vector<UniChar> coverage_characters(CFStringRef cue) {
   }
   return result;
 }
-static bool process_exists(int pid) {
-  if (pid <= 0) return true;
-  if (::kill(static_cast<pid_t>(pid), 0) == 0) return true;
-  return errno == EPERM;
-}
+#endif
 static std::string read_file(const fs::path& p) {
   std::ifstream in(p, std::ios::binary);
   if (!in) throw std::runtime_error("could not open " + p.string());
@@ -470,8 +470,7 @@ static void write_file_atomic(const fs::path& p, const std::string& data) {
     if (!out) throw std::runtime_error("could not write " + tmp.string());
   }
   std::error_code ec;
-  fs::rename(tmp, p, ec);
-  if (ec) { fs::remove(p, ec); fs::rename(tmp, p, ec); }
+  iinatan::platform::atomic_replace(tmp, p, ec);
   if (ec) throw std::runtime_error("could not write " + p.string() + ": " + ec.message());
 }
 static void copy_file_atomic(const fs::path& source, const fs::path& target) {
@@ -481,12 +480,7 @@ static void copy_file_atomic(const fs::path& source, const fs::path& target) {
   std::error_code error;
   fs::copy_file(source, temporary, fs::copy_options::overwrite_existing, error);
   if (error) throw std::runtime_error("could not stage " + target.string() + ": " + error.message());
-  fs::rename(temporary, target, error);
-  if (error) {
-    fs::remove(target, error);
-    error.clear();
-    fs::rename(temporary, target, error);
-  }
+  iinatan::platform::atomic_replace(temporary, target, error);
   if (error) throw std::runtime_error("could not commit " + target.string() + ": " + error.message());
 }
 static std::string sha256_file(const fs::path& path) {
@@ -975,10 +969,11 @@ static void cmd_worker(int argc, char** argv) {
   fs::path queue = root / "queue";
   fs::path responses = root / "responses";
   fs::path state = root / "state";
+  fs::path cancellations = root / "cancellations";
   fs::path mouse_activity = state / "mouse.json";
   fs::path stop = root / "stop";
   fs::path config_path = root / "config.tsv";
-  fs::create_directories(queue); fs::create_directories(responses); fs::create_directories(state);
+  fs::create_directories(queue); fs::create_directories(responses); fs::create_directories(state); fs::create_directories(cancellations); fs::create_directories(state / "acks");
   std::error_code state_ec;
   fs::remove(mouse_activity, state_ec);
   WorkerConfig cfg = read_worker_config(config_path);
@@ -989,13 +984,18 @@ static void cmd_worker(int argc, char** argv) {
   iinatan::ass::GeometryService geometry_service;
   iinatan::layout::TextLayoutService text_layout_service;
   BitmapOcrExecutor bitmap_ocr_executor(responses);
+#ifdef __APPLE__
+  const std::string mouse_capability = "{\"protocol\":1,\"source\":\"coregraphics-counter\"}";
+#else
+  const std::string mouse_capability = "{\"protocol\":1,\"source\":\"mpv-property\"}";
+#endif
   write_file_atomic(state / "ready.json", std::string("{\"ok\":true,\"worker\":true,\"wrapperVersion\":") + json_quote(WRAPPER_VERSION) + ",\"fingerprint\":" + json_quote(cfg.fingerprint) + ",\"dictCount\":" + std::to_string(cfg.dicts.size()) + ",\"assGeometry\":{\"protocol\":1,\"available\":" +
 #ifdef IINATAN_ASS_GEOMETRY
       "true"
 #else
       "false"
 #endif
-      ",\"patch\":" + json_quote(iinatan::ass::kAssGeometryPatch) + ",\"observedPlain\":true},\"textLayout\":" + text_layout_service.capability().dump() + ",\"mouseIntent\":{\"protocol\":1,\"source\":\"coregraphics-counter\"},\"bitmapOcr\":" + bitmap_ocr_executor.capability().dump() + "}\n");
+      ",\"patch\":" + json_quote(iinatan::ass::kAssGeometryPatch) + ",\"observedPlain\":true},\"textLayout\":" + text_layout_service.capability().dump() + ",\"mouseIntent\":" + mouse_capability + ",\"bitmapOcr\":" + bitmap_ocr_executor.capability().dump() + "}\n");
   const int active_sleep_ms = std::max(1, sleep_ms);
   const int idle_sleep_ms = std::max(active_sleep_ms, 16);
   int current_sleep_ms = active_sleep_ms;
@@ -1004,17 +1004,33 @@ static void cmd_worker(int argc, char** argv) {
             << "; idle_sleep_ms=" << idle_sleep_ms
             << "; owner_pid=" << owner_pid << "\n";
   auto next_owner_check = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  auto next_ttl_cleanup = std::chrono::steady_clock::now() + std::chrono::minutes(1);
+#ifdef __APPLE__
   auto next_mouse_check = std::chrono::steady_clock::now();
   uint32_t mouse_counter = CGEventSourceCounterForEventType(
       kCGEventSourceStateCombinedSessionState, kCGEventMouseMoved);
+#endif
   while (!fs::exists(stop)) {
     if (owner_pid > 0 && std::chrono::steady_clock::now() >= next_owner_check) {
-      if (!process_exists(owner_pid)) {
+      if (!iinatan::platform::process_exists(owner_pid)) {
         std::cerr << "iina-hoshi-dicts worker stopping because owner pid " << owner_pid << " exited\n";
         break;
       }
       next_owner_check = std::chrono::steady_clock::now() + std::chrono::seconds(1);
     }
+    if (std::chrono::steady_clock::now() >= next_ttl_cleanup) {
+      const auto cutoff = fs::file_time_type::clock::now() - std::chrono::minutes(10);
+      for (const fs::path directory : {responses, state / "acks", cancellations}) {
+        std::error_code cleanup_error;
+        for (const auto& entry : fs::directory_iterator(directory, cleanup_error)) {
+          if (!entry.is_regular_file()) continue;
+          const auto modified = entry.last_write_time(cleanup_error);
+          if (!cleanup_error && modified < cutoff) fs::remove(entry.path(), cleanup_error);
+        }
+      }
+      next_ttl_cleanup = std::chrono::steady_clock::now() + std::chrono::minutes(1);
+    }
+#ifdef __APPLE__
     if (std::chrono::steady_clock::now() >= next_mouse_check) {
       const uint32_t next_mouse_counter = CGEventSourceCounterForEventType(
           kCGEventSourceStateCombinedSessionState, kCGEventMouseMoved);
@@ -1028,6 +1044,7 @@ static void cmd_worker(int argc, char** argv) {
       next_mouse_check =
           std::chrono::steady_clock::now() + std::chrono::milliseconds(200);
     }
+#endif
     std::vector<fs::path> requests;
     std::error_code ec;
     for (const auto& entry : fs::directory_iterator(queue, ec)) {
@@ -1045,6 +1062,13 @@ static void cmd_worker(int argc, char** argv) {
       fs::path resp = responses / (request_id + ".json");
       fs::path committed_body = queue / (request_id + ".request");
       try {
+        if (fs::exists(cancellations / (request_id + ".cancel"))) {
+          write_file_atomic(resp, std::string("{\"ok\":false,\"requestId\":") + json_quote(request_id) + ",\"reason\":\"cancelled\"}\n");
+          fs::remove(cancellations / (request_id + ".cancel"), ec);
+          fs::remove(req, ec);
+          fs::remove(committed_body, ec);
+          continue;
+        }
         const fs::path body_path =
             fs::exists(committed_body) ? committed_body : req;
         std::string body = read_file_limited(body_path, 4 * 1024 * 1024);
@@ -1185,6 +1209,11 @@ static void cmd_client(int argc, char** argv) {
 }
 
 static void cmd_font_metrics(int argc, char** argv) {
+#ifndef __APPLE__
+  (void)argc;
+  (void)argv;
+  throw std::runtime_error("font-metrics is unavailable on this platform; use text-layout");
+#else
   std::string requested_font;
   std::string cue_file;
   std::string cue;
@@ -1430,6 +1459,7 @@ static void cmd_font_metrics(int argc, char** argv) {
   std::cout << output.str();
   if (resolved_font != base_font) CFRelease(resolved_font);
   CFRelease(base_font);
+#endif
 }
 
 static void cmd_version() {
@@ -1451,7 +1481,13 @@ static void cmd_version() {
 #else
   constexpr const char* target_os = "unknown";
 #endif
-  std::cout << "{\"ok\":true,\"name\":\"iinatan-backend\",\"backend\":\"Manhhao/hoshidicts\",\"wrapperVersion\":" << json_quote(WRAPPER_VERSION) << ",\"lookupProtocol\":1,\"geometryProtocol\":" << iinatan::ass::kAssGeometryProtocol << ",\"textLayoutProtocol\":" << iinatan::layout::kTextLayoutProtocol << ",\"target\":" << json_quote(std::string(target_os) + "-" + architecture) << ",\"architecture\":" << json_quote(architecture) << ",\"worker\":true,\"fontMetrics\":true,\"fontMetricResolverVersion\":" << FONT_METRIC_RESOLVER_VERSION << ",\"assGeometry\":{\"protocol\":" << iinatan::ass::kAssGeometryProtocol << ",\"available\":"
+  std::cout << "{\"ok\":true,\"name\":\"iinatan-backend\",\"backend\":\"Manhhao/hoshidicts\",\"wrapperVersion\":" << json_quote(WRAPPER_VERSION) << ",\"lookupProtocol\":1,\"geometryProtocol\":" << iinatan::ass::kAssGeometryProtocol << ",\"textLayoutProtocol\":" << iinatan::layout::kTextLayoutProtocol << ",\"target\":" << json_quote(std::string(target_os) + "-" + architecture) << ",\"architecture\":" << json_quote(architecture) << ",\"worker\":true,\"fontMetrics\":"
+#ifdef __APPLE__
+            << "true"
+#else
+            << "false"
+#endif
+            << ",\"fontMetricResolverVersion\":" << FONT_METRIC_RESOLVER_VERSION << ",\"assGeometry\":{\"protocol\":" << iinatan::ass::kAssGeometryProtocol << ",\"available\":"
 #ifdef IINATAN_ASS_GEOMETRY
             << "true"
 #else
@@ -1461,7 +1497,7 @@ static void cmd_version() {
             << ",\"observedPlain\":true"
             << ",\"ffmpeg\":" << json_quote(iinatan::ass::ffmpeg_geometry_version())
             << ",\"libass\":" << json_quote(iinatan::ass::libass_geometry_version())
-            << "},\"textLayout\":" << text_layout_service.capability().dump() << ",\"http\":{\"available\":true,\"libcurl\":" << json_quote(iinatan::http::version()) << "},\"audioPreview\":{\"available\":false},\"bitmapOcr\":"
+            << "},\"textLayout\":" << text_layout_service.capability().dump() << ",\"http\":{\"available\":true,\"libcurl\":" << json_quote(iinatan::http::version()) << "},\"audioPreview\":{\"available\":true,\"ffmpeg\":" << json_quote(iinatan::audio::ffmpeg_version()) << ",\"output\":" << json_quote(iinatan::audio::output_version()) << "},\"bitmapOcr\":"
             << bitmap_ocr_service.capability().dump()
             << ",\"modes\":[\"yomitan-japanese\",\"exact\",\"prefix\"]}\n";
 }
@@ -1509,6 +1545,7 @@ static void cmd_worker_prepare(int argc, char** argv) {
   fs::create_directories(root / "queue");
   fs::create_directories(root / "responses");
   fs::create_directories(root / "state" / "acks");
+  fs::create_directories(root / "cancellations");
   std::error_code error;
   fs::remove(root / "stop", error);
   std::cout << "{\"ok\":true}\n";
@@ -1531,6 +1568,14 @@ static void cmd_queue_clean(int argc, char** argv) {
   write_file_atomic(root / "state" / "acks" / (id + ".ack"), "acknowledged\n");
   std::cout << "{\"ok\":true}\n";
 }
+static void cmd_queue_cancel(int argc, char** argv) {
+  if (argc != 4 || !valid_worker_request_id(argv[3]))
+    throw std::runtime_error("usage: queue-cancel <worker_dir> <request_id>");
+  const fs::path root = fs::absolute(argv[2]).lexically_normal();
+  fs::create_directories(root / "cancellations");
+  write_file_atomic(root / "cancellations" / (std::string(argv[3]) + ".cancel"), "cancelled\n");
+  std::cout << "{\"ok\":true}\n";
+}
 static void cmd_fs_commit(int argc, char** argv) {
   if (argc != 5) throw std::runtime_error("usage: fs-commit <next> <target> <backup>");
   const fs::path next = fs::absolute(argv[2]).lexically_normal();
@@ -1541,13 +1586,24 @@ static void cmd_fs_commit(int argc, char** argv) {
   if (!schema || !schema->is_number() || schema->integer() != 2)
     throw std::runtime_error("config schemaVersion must be 2");
   fs::create_directories(target.parent_path());
-  std::error_code error;
-  fs::rename(next, target, error);
-  if (error) {
-    fs::remove(target, error);
-    error.clear();
-    fs::rename(next, target, error);
+  if (fs::exists(target)) {
+    try {
+      const auto current = iinatan::protocol::Json::parse(
+          read_file_limited(target, 8 * 1024 * 1024));
+      const auto* current_schema = current.find("schemaVersion");
+      if (!current_schema || !current_schema->is_number())
+        throw std::runtime_error("missing schema");
+      copy_file_atomic(target, backup);
+    } catch (...) {
+      const auto stamp = std::chrono::duration_cast<std::chrono::seconds>(
+          std::chrono::system_clock::now().time_since_epoch()).count();
+      copy_file_atomic(
+          target,
+          fs::path(target.string() + ".corrupt-" + std::to_string(stamp)));
+    }
   }
+  std::error_code error;
+  iinatan::platform::atomic_replace(next, target, error);
   if (error) throw std::runtime_error("could not atomically commit config: " + error.message());
   iinatan::protocol::Json::parse(read_file_limited(target, 8 * 1024 * 1024));
   copy_file_atomic(target, backup);
@@ -1618,6 +1674,19 @@ static void cmd_safe_clean(int argc, char** argv) {
   }
   std::cout << "{\"ok\":true}\n";
 }
+static void cmd_remove_dictionary(int argc, char** argv) {
+  if (argc != 4) throw std::runtime_error("usage: remove-dictionary <root> <path>");
+  const fs::path root = fs::absolute(argv[2]).lexically_normal();
+  const fs::path target = fs::absolute(argv[3]).lexically_normal();
+  const auto relative = target.lexically_relative(root);
+  if (relative.empty() || relative.is_absolute() ||
+      relative.native().rfind("..", 0) == 0 || relative.has_parent_path())
+    throw std::runtime_error("dictionary removal target escapes its root");
+  std::error_code error;
+  fs::remove_all(target, error);
+  if (error) throw std::runtime_error("dictionary removal failed: " + error.message());
+  std::cout << "{\"ok\":true}\n";
+}
 static std::string import_transaction(const fs::path& zip_input, const fs::path& dictionary_root) {
   const fs::path zip = fs::absolute(zip_input).lexically_normal();
   if (zip.extension() != ".zip" && zip.extension() != ".ZIP")
@@ -1626,6 +1695,25 @@ static std::string import_transaction(const fs::path& zip_input, const fs::path&
   const uintmax_t size = fs::file_size(zip, error);
   if (error || size == 0 || size > 2ULL * 1024 * 1024 * 1024)
     throw std::runtime_error("dictionary ZIP has an invalid size");
+  Zip archive;
+  if (!archive.open(zip)) throw std::runtime_error("dictionary ZIP is corrupt");
+  uint64_t expanded_bytes = 0;
+  for (const auto& entry : archive.entries) {
+    if (entry.name.empty() || entry.name.size() > 1024 ||
+        entry.name.find('\\') != std::string::npos ||
+        entry.name.find('\0') != std::string::npos)
+      throw std::runtime_error("dictionary ZIP contains an unsafe path");
+    const fs::path name(entry.name);
+    if (name.is_absolute() || name.has_root_name())
+      throw std::runtime_error("dictionary ZIP contains an absolute path");
+    for (const auto& component : name) {
+      if (component == "..")
+        throw std::runtime_error("dictionary ZIP contains path traversal");
+    }
+    expanded_bytes += entry.uncompressed_size;
+    if (expanded_bytes > 4ULL * 1024 * 1024 * 1024)
+      throw std::runtime_error("dictionary ZIP expands beyond the safe limit");
+  }
   fs::create_directories(dictionary_root);
   const std::string transaction = std::to_string(
       std::chrono::duration_cast<std::chrono::microseconds>(
@@ -1635,7 +1723,8 @@ static std::string import_transaction(const fs::path& zip_input, const fs::path&
   try {
     const auto imported = dictionary_importer::import(zip.string(), staging.string(), true);
     if (!imported.success) throw std::runtime_error(imported.error.empty() ? "HoshiDicts import failed" : imported.error);
-    if (!fs::is_regular_file(staging / "index.json"))
+    const fs::path imported_root = staging / imported.title;
+    if (!fs::is_regular_file(imported_root / "index.json"))
       throw std::runtime_error("HoshiDicts import did not create index.json");
     const std::string base = safe_file_component(imported.title, "dictionary");
     std::string id = base;
@@ -1644,8 +1733,9 @@ static std::string import_transaction(const fs::path& zip_input, const fs::path&
       id = base + "-" + std::to_string(suffix);
       target = dictionary_root / id;
     }
-    fs::rename(staging, target, error);
+    fs::rename(imported_root, target, error);
     if (error) throw std::runtime_error("could not atomically install dictionary: " + error.message());
+    fs::remove_all(staging, error);
     return iinatan::protocol::Json(iinatan::protocol::Json::Object{
         {"ok", true},
         {"dictionary", iinatan::protocol::Json::Object{
@@ -1687,6 +1777,79 @@ static void cmd_download_import(int argc, char** argv) {
     throw;
   }
 }
+static std::string resolve_http_url(const std::string& base, const std::string& candidate) {
+  if (candidate.rfind("http://", 0) == 0 || candidate.rfind("https://", 0) == 0)
+    return candidate;
+  if (candidate.empty() || candidate.front() != '/')
+    throw std::runtime_error("audio candidate URL must be absolute or origin-relative");
+  const size_t scheme = base.find("://");
+  const size_t path = scheme == std::string::npos ? std::string::npos : base.find('/', scheme + 3);
+  if (scheme == std::string::npos) throw std::runtime_error("invalid audio source-list URL");
+  return base.substr(0, path == std::string::npos ? base.size() : path) + candidate;
+}
+static void cmd_audio_preview(int argc, char** argv) {
+  std::string source_list;
+  fs::path cache;
+  for (int index = 2; index < argc; ++index) {
+    const std::string argument = argv[index];
+    if (argument == "--source-list" && index + 1 < argc) source_list = argv[++index];
+    else if (argument == "--cache" && index + 1 < argc) cache = argv[++index];
+    else if ((argument == "--term" || argument == "--reading") && index + 1 < argc) ++index;
+    else throw std::runtime_error("invalid audio-preview argument: " + argument);
+  }
+  if (source_list.empty() || cache.empty())
+    throw std::runtime_error("audio-preview requires --source-list and --cache");
+  iinatan::http::Request list_request;
+  list_request.url = source_list;
+  list_request.timeout_ms = 8000;
+  list_request.max_bytes = 4 * 1024 * 1024;
+  const auto list_response = iinatan::http::perform(list_request);
+  std::string candidate = source_list;
+  std::string audio_bytes = list_response.body;
+  try {
+    const auto document = iinatan::protocol::Json::parse(list_response.body);
+    const auto* sources = document.find("audioSources");
+    if (!sources || !sources->is_array() || sources->array().empty())
+      throw std::runtime_error("audio source list contains no candidates");
+    const auto* url = sources->array().front().find("url");
+    if (!url || !url->is_string()) throw std::runtime_error("audio candidate is missing a URL");
+    candidate = resolve_http_url(source_list, url->string());
+    iinatan::http::Request audio_request;
+    audio_request.url = candidate;
+    audio_request.timeout_ms = 15000;
+    audio_request.max_bytes = 32 * 1024 * 1024;
+    audio_bytes = iinatan::http::perform(audio_request).body;
+  } catch (const std::exception& error) {
+    const std::string content_type = list_response.content_type;
+    if (content_type.find("json") != std::string::npos)
+      throw;
+  }
+  fs::create_directories(cache);
+  std::string extension = "audio";
+  const size_t query = candidate.find_first_of("?#");
+  const fs::path candidate_path(candidate.substr(0, query));
+  if (!candidate_path.extension().empty())
+    extension = safe_file_component(candidate_path.extension().string().substr(1), "audio");
+  const fs::path audio_path = cache / ("preview." + extension);
+  write_file_atomic(audio_path, audio_bytes);
+  iinatan::audio::play_file(audio_path);
+  std::cout << iinatan::protocol::Json(iinatan::protocol::Json::Object{
+      {"ok", true}, {"source", source_list}, {"candidate", candidate},
+      {"path", audio_path.string()}}).dump() << "\n";
+}
+static void cmd_audio_preview_file(int argc, char** argv) {
+  if (argc != 3) throw std::runtime_error("usage: audio-preview-file <path>");
+  iinatan::audio::play_file(fs::absolute(argv[2]).lexically_normal());
+  std::cout << "{\"ok\":true}\n";
+}
+static void cmd_audio_probe(int argc, char** argv) {
+  if (argc != 3) throw std::runtime_error("usage: audio-probe <path>");
+  const auto probe = iinatan::audio::probe_file(
+      fs::absolute(argv[2]).lexically_normal());
+  std::cout << "{\"ok\":true,\"frames\":" << probe.frames
+            << ",\"sampleRate\":" << probe.sample_rate
+            << ",\"channels\":" << probe.channels << "}\n";
+}
 int main(int argc, char** argv) {
   try {
     if (argc < 2) { print_error("expected command: import, lookup, worker, client, font-metrics, ass-geometry, bitmap-subtitle-ocr, version"); return 2; }
@@ -1702,12 +1865,17 @@ int main(int argc, char** argv) {
     else if (command == "worker-prepare") cmd_worker_prepare(argc, argv);
     else if (command == "ensure-dir") cmd_ensure_dir(argc, argv);
     else if (command == "queue-clean") cmd_queue_clean(argc, argv);
+    else if (command == "queue-cancel") cmd_queue_cancel(argc, argv);
     else if (command == "fs-commit") cmd_fs_commit(argc, argv);
     else if (command == "hash-media") cmd_hash_media(argc, argv);
     else if (command == "http") cmd_http(argc, argv);
     else if (command == "safe-clean") cmd_safe_clean(argc, argv);
+    else if (command == "remove-dictionary") cmd_remove_dictionary(argc, argv);
     else if (command == "import-transaction") cmd_import_transaction(argc, argv);
     else if (command == "download-import") cmd_download_import(argc, argv);
+    else if (command == "audio-preview") cmd_audio_preview(argc, argv);
+    else if (command == "audio-preview-file") cmd_audio_preview_file(argc, argv);
+    else if (command == "audio-probe") cmd_audio_probe(argc, argv);
     else if (command == "version") cmd_version();
     else { print_error("unknown command: " + command); return 2; }
     return 0;

@@ -21,6 +21,11 @@ IINATAN.checkAnkiDuplicate = function (fields, options, callback) {
     callback(null, cached.ids);
     return;
   }
+  if (IINATAN.ankiPending[key]) {
+    IINATAN.ankiPending[key].push(callback);
+    return;
+  }
+  IINATAN.ankiPending[key] = [callback];
   IINATAN.ankiInvoke(
     "findNotes",
     {
@@ -33,7 +38,11 @@ IINATAN.checkAnkiDuplicate = function (fields, options, callback) {
     },
     function (error, ids) {
       if (!error) IINATAN.ankiCache[key] = { time: Date.now(), ids: ids || [] };
-      callback(error, ids || []);
+      var callbacks = IINATAN.ankiPending[key] || [];
+      delete IINATAN.ankiPending[key];
+      callbacks.forEach(function (pendingCallback) {
+        pendingCallback(error, ids || []);
+      });
     },
   );
 };

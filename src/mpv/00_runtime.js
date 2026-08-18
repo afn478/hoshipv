@@ -91,10 +91,10 @@ IINATAN.debounce = function (name, callback) {
 };
 
 IINATAN.abortProcess = function (id) {
-  var handle = IINATAN.processes[id];
-  if (!handle) return;
+  var entry = IINATAN.processes[id];
+  if (!entry) return;
   try {
-    mp.abort_async_command(handle);
+    mp.abort_async_command(entry.handle);
   } catch (_) {}
   delete IINATAN.processes[id];
 };
@@ -140,13 +140,21 @@ IINATAN.subprocess = function (args, options, callback) {
     }, 0);
     return null;
   }
-  IINATAN.processes[id] = handle;
-  IINATAN.processes[id].playbackOnly = command.playback_only;
+  IINATAN.processes[id] = {
+    handle: handle,
+    playbackOnly: command.playback_only,
+  };
   return id;
 };
 
 IINATAN.path = function (value) {
   return mp.utils.get_user_path(value);
+};
+IINATAN.fallbackFontPath = function () {
+  return (
+    mp.get_opt("fallback-font") ||
+    IINATAN.path("~~/scripts/iinatan/fonts/NotoSansCJKjp-Regular.otf")
+  );
 };
 IINATAN.readJson = function (path, fallback) {
   try {

@@ -16,7 +16,7 @@ IINATAN.backendPath = function () {
   );
 };
 IINATAN.backendCommand = function (args, callback, options) {
-  IINATAN.subprocess(
+  return IINATAN.subprocess(
     [IINATAN.path(IINATAN.backendPath())].concat(args),
     options || {},
     callback,
@@ -100,6 +100,12 @@ IINATAN.startWorker = function (callback) {
 };
 
 IINATAN.stopWorker = function (callback) {
+  if (IINATAN.worker.active)
+    IINATAN.backendCommand(
+      ["queue-cancel", IINATAN.workerPath(""), IINATAN.worker.active.id],
+      function () {},
+      { playbackOnly: false },
+    );
   try {
     IINATAN.writeText(IINATAN.worker.root + "/stop", "stop\n");
   } catch (_) {}
@@ -112,7 +118,14 @@ IINATAN.stopWorker = function (callback) {
 };
 
 IINATAN.pollResponse = function (job) {
-  if (!job || job.generation !== IINATAN.worker.generation) return;
+  if (!job) return;
+  if (job.generation !== IINATAN.worker.generation) {
+    IINATAN.cleanupRequest(job.id);
+    if (IINATAN.worker.active === job) IINATAN.worker.active = null;
+    job.callback(new Error("worker request generation expired"));
+    IINATAN.runPendingLookup();
+    return;
+  }
   var path = IINATAN.worker.root + "/responses/" + job.id + ".json";
   var response = IINATAN.readJson(path, null);
   if (response) {

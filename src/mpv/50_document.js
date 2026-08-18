@@ -32,6 +32,8 @@ IINATAN.parseStructuredGlossary = function (raw, dictionary) {
     }
     if (typeof node !== "object") return;
     var tag = String(node.tag || node.type || "").toLowerCase();
+    var attributes = node.attributes || {},
+      classes = String(attributes.class || node.class || "").toLowerCase();
     var content =
       node.content !== undefined
         ? node.content
@@ -53,6 +55,13 @@ IINATAN.parseStructuredGlossary = function (raw, dictionary) {
       output.push({ type: "table", rows: IINATAN.structuredTable(node) });
       return;
     }
+    if (tag === "ruby" || tag === "rt" || tag === "rp") {
+      output.push({
+        type: tag === "rt" ? "furigana" : "paragraph",
+        text: IINATAN.structuredPlain(content),
+      });
+      return;
+    }
     if (tag === "ul" || tag === "ol" || tag === "list") {
       output.push({
         type: "list",
@@ -62,17 +71,41 @@ IINATAN.parseStructuredGlossary = function (raw, dictionary) {
       });
       return;
     }
-    if (tag === "details" || tag === "etymology" || tag === "grammar") {
+    if (
+      tag === "details" ||
+      tag === "etymology" ||
+      tag === "grammar" ||
+      /(?:etymology|grammar|forms?)/.test(classes)
+    ) {
+      var sectionType = /etymology/.test(tag + " " + classes)
+        ? "Etymology"
+        : /grammar/.test(tag + " " + classes)
+          ? "Grammar"
+          : /forms?/.test(classes)
+            ? "Forms"
+            : "Details";
       output.push({
         type: "section",
-        title:
-          tag === "details"
-            ? String(node.title || "Details")
-            : tag.charAt(0).toUpperCase() + tag.substring(1),
+        title: String(node.title || sectionType),
         content: [
           { type: "paragraph", text: IINATAN.structuredPlain(content) },
         ],
         collapsed: true,
+      });
+      return;
+    }
+    if (/example/.test(tag + " " + classes)) {
+      output.push({ type: "example", text: IINATAN.structuredPlain(content) });
+      return;
+    }
+    if (/note|warning/.test(tag + " " + classes) || tag === "blockquote") {
+      output.push({ type: "note", text: IINATAN.structuredPlain(content) });
+      return;
+    }
+    if (/cross.?reference|xref/.test(tag + " " + classes)) {
+      output.push({
+        type: "cross-reference",
+        text: IINATAN.structuredPlain(content),
       });
       return;
     }
@@ -140,9 +173,12 @@ class DictionaryDocument {
           id: "entry-" + index,
           headword: String(term.expression || item.matched || ""),
           reading: String(term.reading || ""),
+          furigana: term.furigana || [],
           matched: String(item.matched || ""),
           rules: String(term.rules || ""),
-          tags: [],
+          tags: String(term.termTags || term.rules || "")
+            .split(/\s+/)
+            .filter(Boolean),
           frequencies: term.frequencies || [],
           pitches: term.pitches || [],
           glossaries: [],
@@ -151,6 +187,12 @@ class DictionaryDocument {
         };
       if (!self.matched && entry.matched) self.matched = entry.matched;
       (term.glossaries || []).forEach(function (glossary, gi) {
+        String(glossary.termTags || "")
+          .split(/\s+/)
+          .filter(Boolean)
+          .forEach(function (tag) {
+            if (entry.tags.indexOf(tag) < 0) entry.tags.push(tag);
+          });
         entry.glossaries.push({
           id: entry.id + ":g" + gi,
           dictionary: String(glossary.dict || ""),
@@ -162,6 +204,12 @@ class DictionaryDocument {
             glossary.dict,
           ),
         });
+        entry.glossaries[entry.glossaries.length - 1].content.forEach(
+          function (node) {
+            if (node.type === "link" && node.href)
+              entry.sources.push({ text: node.text, href: node.href });
+          },
+        );
       });
       self.entries.push(entry);
     });
@@ -188,6 +236,13 @@ IINATAN.documentWidget = function (document) {
           IINATAN.scene.context().styles.reading,
         ),
       );
+    if (entry.tags.length) {
+      var tagRow = new HStack(entry.id + ":tags", 4);
+      entry.tags.forEach(function (tag, tagIndex) {
+        tagRow.add(new Chip(entry.id + ":tag:" + tagIndex, tag, null));
+      });
+      block.add(tagRow);
+    }
     var chips = new HStack(entry.id + ":meta", 5);
     entry.frequencies.forEach(function (group, fi) {
       (group.frequencies || []).forEach(function (frequency, fj) {
@@ -226,7 +281,12 @@ IINATAN.documentWidget = function (document) {
         var id = glossary.id + ":" + ni;
         if (node.type === "paragraph")
           block.add(
-            new TextRun(id, node.text, IINATAN.scene.context().styles.body),
+            new TextRun(
+              id,
+              node.text,
+              IINATAN.scene.context().styles.body,
+              IINATAN.nestedTextAction(id, node.text),
+            ),
           );
         else if (node.type === "link")
           block.add(
@@ -248,6 +308,23 @@ IINATAN.documentWidget = function (document) {
             );
           });
         else if (node.type === "table") block.add(new Table(id, node.rows));
+        else if (
+          node.type === "note" ||
+          node.type === "example" ||
+          node.type === "cross-reference" ||
+          node.type === "furigana"
+        )
+          block.add(
+            new Callout(
+              id + ":callout",
+              new TextRun(
+                id,
+                (node.type === "example" ? "Example: " : "") + node.text,
+                IINATAN.scene.context().styles.body,
+                IINATAN.nestedTextAction(id, node.text),
+              ),
+            ),
+          );
         else if (node.type === "section")
           block.add(
             new Expandable(

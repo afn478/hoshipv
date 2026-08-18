@@ -6,6 +6,12 @@ IINATAN.DEFAULT_CONFIG = {
     ffmpegPath: "ffmpeg",
     logPath: "~~state/iinatan/iinatan.log",
     lowRamImport: true,
+    recommendedDictionaries: [
+      {
+        title: "Jitendex (Japanese → English)",
+        url: "https://github.com/stephenmk/stephenmk.github.io/releases/latest/download/jitendex-yomitan.zip",
+      },
+    ],
   },
   dictionaries: [],
   pendingDictionaries: [],
@@ -126,6 +132,22 @@ IINATAN.normalizeConfig = function (input) {
   Object.keys(out.profiles).forEach(function (id) {
     IINATAN.normalizeProfile(out.profiles[id]);
   });
+  var installed = Object.create(null);
+  out.dictionaries.forEach(function (dictionary) {
+    if (dictionary && dictionary.id) installed[dictionary.id] = true;
+  });
+  out.pendingDictionaries = out.pendingDictionaries.filter(
+    function (reference) {
+      var id =
+        typeof reference === "string" ? reference : reference && reference.id;
+      if (!id || !installed[id]) return true;
+      Object.keys(out.profiles).forEach(function (profileId) {
+        var list = out.profiles[profileId].dictionaries;
+        if (list.indexOf(id) < 0) list.push(id);
+      });
+      return false;
+    },
+  );
   return out;
 };
 
@@ -220,6 +242,32 @@ IINATAN.validateTheme = function (theme) {
     },
   );
   return out;
+};
+IINATAN.THEME_PRESETS = {
+  dark: {
+    preset: "dark",
+    background: "181a20",
+    foreground: "f4f4f5",
+    accent: "8ab4f8",
+    muted: "a1a1aa",
+    border: "3f3f46",
+  },
+  light: {
+    preset: "light",
+    background: "fafafa",
+    foreground: "18181b",
+    accent: "2563eb",
+    muted: "52525b",
+    border: "d4d4d8",
+  },
+  "high-contrast": {
+    preset: "high-contrast",
+    background: "000000",
+    foreground: "ffffff",
+    accent: "ffff00",
+    muted: "d4d4d4",
+    border: "ffffff",
+  },
 };
 
 IINATAN.configPath = "~~home/iinatan/config.json";

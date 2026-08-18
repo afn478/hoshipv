@@ -6,6 +6,9 @@ IINATAN.detectPlatform = function () {
 };
 IINATAN.handleHover = function () {
   if (IINATAN.popupStack.length || IINATAN.state.settingsOpen) return;
+  var profile = IINATAN.config.profiles[IINATAN.config.activeProfileId];
+  if (profile.subtitleLookupMode === "shift-hover" && !IINATAN.state.shiftDown)
+    return;
   var mouse = IINATAN.state.mouse || {};
   if (!mouse.hover) {
     IINATAN.state.hoverUnit = null;
@@ -26,17 +29,13 @@ IINATAN.handleHover = function () {
         break;
       }
     }
-  if (!found || found.position === IINATAN.state.hoverUnit) return;
-  IINATAN.state.hoverUnit = found.position;
+  var hoverKey = found ? found.surface + ":" + found.position : "";
+  if (!found || hoverKey === IINATAN.state.hoverUnit) return;
+  IINATAN.state.hoverUnit = hoverKey;
+  IINATAN.state.subtitleRect = IINATAN.unionRects(found.rects || []);
   var scalar =
-    IINATAN.unicodeMap((IINATAN.state.subtitle || {}).text || "").scalars[
-      found.position
-    ] || {};
-  IINATAN.openLookup(
-    IINATAN.state.subtitle.text,
-    scalar.utf16Start || 0,
-    false,
-  );
+    IINATAN.unicodeMap(found.text || "").scalars[found.position] || {};
+  IINATAN.openLookup(found.text, scalar.utf16Start || 0, false);
 };
 
 IINATAN.initialize = function () {
@@ -79,6 +78,14 @@ IINATAN.initialize = function () {
     if (IINATAN.overlay) IINATAN.overlay.remove();
   });
   mp.add_key_binding("Ctrl+d", "iinatan-settings", IINATAN.toggleSettings);
+  mp.add_key_binding(
+    "Shift",
+    "iinatan-shift-state",
+    function (event) {
+      IINATAN.state.shiftDown = !!event && event.event === "down";
+    },
+    { complex: true },
+  );
   mp.add_key_binding("ESC", "iinatan-escape", function () {
     if (IINATAN.popupStack.length) IINATAN.closePopup();
     else if (IINATAN.state.settingsOpen) IINATAN.toggleSettings();

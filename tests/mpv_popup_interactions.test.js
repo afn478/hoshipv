@@ -1,0 +1,69 @@
+const fs = require("fs");
+const path = require("path");
+const vm = require("vm");
+
+const root = path.resolve(__dirname, "..");
+const context = {
+  console,
+  setTimeout,
+  clearTimeout,
+  isFinite,
+  mp: {
+    msg: { info() {}, error() {}, warn() {} },
+    utils: {
+      get_user_path(v) {
+        return v;
+      },
+    },
+    get_opt() {},
+    get_property_bool() {
+      return false;
+    },
+    set_property_bool() {},
+    remove_key_binding() {},
+    add_forced_key_binding() {},
+  },
+};
+vm.createContext(context);
+for (const file of [
+  "src/mpv/00_runtime.js",
+  "src/mpv/40_ass.js",
+  "src/mpv/60_popup.js",
+])
+  vm.runInContext(fs.readFileSync(path.join(root, file), "utf8"), context);
+const I = context.IINATAN;
+I.config = {
+  activeProfileId: "default",
+  profiles: { default: { nestedPopupMode: "off", nestedPopupMaxDepth: 3 } },
+};
+I.state.osd = { w: 1000, h: 700, ml: 0, mr: 0, mt: 0, mb: 0 };
+I.state.properties["user-data/osc/margins"] = { b: 0.12, l: 0, r: 0, t: 0 };
+I.state.mouse = { hover: true, x: 500, y: 600 };
+I.popupStack = [{ rect: { x: 400, y: 200, w: 300, h: 200 } }];
+function assert(value, message) {
+  if (!value) throw new Error(message);
+}
+const placed = I.placePopup(
+  { x: 460, y: 500, w: 80, h: 30 },
+  { w: 360, h: 260 },
+);
+assert(placed.x >= 8 && placed.y >= 8, "popup must stay in the OSD safe area");
+assert(
+  placed.y + placed.h <= 700 - 0.12 * 700 - 8,
+  "popup must account for OSC margins",
+);
+I.pauseOwner = true;
+I.popupStack = [{}, {}];
+I.cancelAudioPreview = function () {};
+I.invalidateScene = function () {};
+I.closePopup();
+assert(
+  I.popupStack.length === 1 && I.pauseOwner,
+  "closing nested popup must retain root and pause ownership",
+);
+I.closePopup();
+assert(
+  I.popupStack.length === 0 && !I.pauseOwner,
+  "closing final popup must release owned pause",
+);
+console.log("mpv popup interaction tests passed");

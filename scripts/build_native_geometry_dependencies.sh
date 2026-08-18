@@ -7,11 +7,13 @@ WORK="$ROOT/build/native-geometry-deps"
 DOWNLOADS="${IINATAN_NATIVE_ARCHIVE_DIR:-$WORK/downloads}"
 SOURCES="$WORK/sources"
 STAGE="$WORK/stage"
-JOBS="$(sysctl -n hw.ncpu 2>/dev/null || echo 4)"
-FFMPEG_FEATURE_SET="bitmap-subtitles-v1"
+JOBS="$(sysctl -n hw.ncpu 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
+FFMPEG_FEATURE_SET="bitmap-subtitles-audio-preview-v2"
 
-if [[ "$(uname -s)" != "Darwin" || "$(uname -m)" != "arm64" ]]; then
-  echo "The pinned ASS geometry stack currently supports macOS arm64 only." >&2
+SYSTEM_NAME="$(uname -s)"
+SYSTEM_ARCH="$(uname -m)"
+if [[ "$SYSTEM_NAME" != "Darwin" && "$SYSTEM_NAME" != "Linux" ]]; then
+  echo "The POSIX dependency builder supports macOS and Linux; Windows uses the MSVC/vcpkg CI preset." >&2
   exit 2
 fi
 if [[ ! -f "$LOCK" ]]; then
@@ -20,7 +22,12 @@ if [[ ! -f "$LOCK" ]]; then
 fi
 
 mkdir -p "$DOWNLOADS" "$SOURCES" "$STAGE"
-LOCK_SHA="$(shasum -a 256 "$LOCK" | awk '{print $1}')"
+sha256_file() {
+  if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | awk '{print $1}'
+  else sha256sum "$1" | awk '{print $1}'
+  fi
+}
+LOCK_SHA="$(sha256_file "$LOCK")"
 if [[ "${IINATAN_REBUILD_NATIVE_DEPS:-0}" != "1" ]] &&
   [[ -f "$STAGE/.dependency-lock-sha256" ]] &&
   [[ "$(cat "$STAGE/.dependency-lock-sha256")" == "$LOCK_SHA" ]] &&
@@ -30,12 +37,20 @@ if [[ "${IINATAN_REBUILD_NATIVE_DEPS:-0}" != "1" ]] &&
   echo "Pinned native ASS geometry dependencies are current at $STAGE"
   exit 0
 fi
-export MACOSX_DEPLOYMENT_TARGET=11.0
 export CC="${CC:-clang}"
 export CXX="${CXX:-clang++}"
 export CFLAGS="-O2 -fvisibility=hidden ${CFLAGS:-}"
 export CXXFLAGS="-O2 -fvisibility=hidden ${CXXFLAGS:-}"
-export LDFLAGS="-Wl,-dead_strip ${LDFLAGS:-}"
+if [[ "$SYSTEM_NAME" == "Darwin" ]]; then
+  export MACOSX_DEPLOYMENT_TARGET=11.0
+  export LDFLAGS="-Wl,-dead_strip ${LDFLAGS:-}"
+  LIBASS_PROVIDER_ARGS=(--disable-fontconfig --enable-coretext --disable-directwrite)
+  FFMPEG_PLATFORM_ARGS=(--target-os=darwin --enable-securetransport)
+else
+  export LDFLAGS="-Wl,--gc-sections ${LDFLAGS:-}"
+  LIBASS_PROVIDER_ARGS=(--enable-fontconfig --disable-coretext --disable-directwrite)
+  FFMPEG_PLATFORM_ARGS=(--target-os=linux --enable-openssl)
+fi
 
 lock_field() {
   python3 - "$LOCK" "$1" "$2" <<'PY'
@@ -78,7 +93,7 @@ PY
       -o "$partial"
     mv "$partial" "$archive"
   fi
-  actual="$(shasum -a 256 "$archive" | awk '{print $1}')"
+  actual="$(sha256_file "$archive")"
   if [[ "$actual" != "$sha" ]]; then
     echo "SHA-256 mismatch for $name: expected $sha, got $actual" >&2
     exit 2
@@ -104,7 +119,7 @@ if [[ ! -f "$LIBASS_PATCH" ]]; then
   echo "Missing pinned libass patch: $LIBASS_PATCH" >&2
   exit 2
 fi
-ACTUAL_LIBASS_PATCH_SHA="$(shasum -a 256 "$LIBASS_PATCH" | awk '{print $1}')"
+ACTUAL_LIBASS_PATCH_SHA="$(sha256_file "$LIBASS_PATCH")"
 if [[ "$ACTUAL_LIBASS_PATCH_SHA" != "$LIBASS_PATCH_SHA" ]]; then
   echo "SHA-256 mismatch for pinned libass patch: expected $LIBASS_PATCH_SHA, got $ACTUAL_LIBASS_PATCH_SHA" >&2
   exit 2
@@ -185,7 +200,9 @@ cmake --install "$WORK/build-harfbuzz" --config Release
 
 export PKG_CONFIG_PATH="$STAGE/lib/pkgconfig:$STAGE/share/pkgconfig"
 export CPPFLAGS="-I$STAGE/include -I$STAGE/include/freetype2"
-export LDFLAGS="-L$STAGE/lib -Wl,-dead_strip"
+if [[ "$SYSTEM_NAME" == "Darwin" ]]; then export LDFLAGS="-L$STAGE/lib -Wl,-dead_strip"
+else export LDFLAGS="-L$STAGE/lib -Wl,--gc-sections"
+fi
 (
   cd "$SOURCES/libass"
   ./configure \
@@ -194,9 +211,7 @@ export LDFLAGS="-L$STAGE/lib -Wl,-dead_strip"
     --enable-static \
     --disable-test \
     --disable-profile \
-    --disable-fontconfig \
-    --enable-coretext \
-    --disable-directwrite \
+    "${LIBASS_PROVIDER_ARGS[@]}" \
     --enable-libunibreak \
     --disable-asm
   make -j "$JOBS"
@@ -208,8 +223,8 @@ export LDFLAGS="-L$STAGE/lib -Wl,-dead_strip"
   ./configure \
     --prefix="$STAGE" \
     --cc="$CC" \
-    --arch=arm64 \
-    --target-os=darwin \
+    --arch="$SYSTEM_ARCH" \
+    "${FFMPEG_PLATFORM_ARGS[@]}" \
     --disable-shared \
     --enable-static \
     --disable-programs \
@@ -219,10 +234,11 @@ export LDFLAGS="-L$STAGE/lib -Wl,-dead_strip"
     --enable-avutil \
     --enable-avcodec \
     --enable-avformat \
+    --enable-swresample \
     --enable-protocol=file,http,https,tcp,tls \
-    --enable-securetransport \
-    --enable-demuxer=matroska,ass,sup,vobsub,mpegps,mpegts,avi \
-    --enable-decoder=pgssub,dvdsub,dvbsub,xsub \
+    --enable-demuxer=matroska,ass,sup,vobsub,mpegps,mpegts,avi,mp3,ogg,wav,flac,mov,aac \
+    --enable-decoder=pgssub,dvdsub,dvbsub,xsub,mp3,aac,opus,vorbis,flac,pcm_s16le,pcm_s24le,pcm_f32le \
+    --enable-parser=aac,mpegaudio,opus,vorbis,flac \
     --enable-zlib \
     --extra-cflags="-I$STAGE/include" \
     --extra-ldflags="-L$STAGE/lib" \
@@ -236,6 +252,7 @@ for archive in \
   "$STAGE/lib/libavformat.a" \
   "$STAGE/lib/libavcodec.a" \
   "$STAGE/lib/libavutil.a" \
+  "$STAGE/lib/libswresample.a" \
   "$STAGE/lib/libharfbuzz.a" \
   "$STAGE/lib/libfreetype.a" \
   "$STAGE/lib/libfribidi.a" \
