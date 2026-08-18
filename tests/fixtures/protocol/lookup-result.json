@@ -1,0 +1,22 @@
+{
+  "ok": true,
+  "lookupString": "食べました",
+  "scanLength": 24,
+  "resultCount": 1,
+  "results": [
+    {
+      "matched": "食べました",
+      "deinflected": "食べる",
+      "preprocessorSteps": 0,
+      "trace": [{ "name": "polite past", "description": "ました → る" }],
+      "term": {
+        "expression": "食べる",
+        "reading": "たべる",
+        "rules": "v1",
+        "glossaries": [{ "dict": "JMdict", "glossary": "to eat", "definitionTags": "", "termTags": "common" }],
+        "frequencies": [{ "dict": "frequency", "frequencies": [{ "value": 100, "displayValue": "100" }] }],
+        "pitches": [{ "dict": "pitch", "positions": [2], "transcriptions": ["たべꜜる"] }]
+      }
+    }
+  ]
+}

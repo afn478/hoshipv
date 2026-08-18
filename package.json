@@ -2,10 +2,12 @@
   "name": "iinatan",
   "version": "2.1.4",
   "private": true,
-  "description": "Hover Japanese subtitles to see dictionary popups in IINA",
+  "description": "Native cross-platform popup dictionary for mpv 0.41+",
   "license": "GPL-3.0-only",
   "scripts": {
     "build": "python3 scripts/build_plugin.py",
+    "build:mpv": "node scripts/build_mpv.js && cmake --preset release && cmake --build --preset release",
+    "test:mpv": "node scripts/build_mpv.js && node tests/mpv_041_runtime.test.js",
     "format:js": "prettier --write \"**/*.js\"",
     "package": "python3 scripts/build_plugin.py --package dist/iinatan.iinaplgz",
     "validate": "python3 scripts/build_plugin.py --validate",
@@ -24,6 +26,9 @@
     "iina:link": "/Applications/IINA.app/Contents/MacOS/iina-plugin link ."
   },
   "devDependencies": {
+    "@babel/cli": "^7.29.7",
+    "@babel/core": "^7.29.7",
+    "@babel/preset-env": "^7.29.7",
     "prettier": "^3.8.4"
   }
 }

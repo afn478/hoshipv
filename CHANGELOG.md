@@ -2,15 +2,16 @@
 
 ## Unreleased
 
+### Added
+
+- Began the native mpv 0.41+ cutover with a MuJS-compatible bundled runtime, config schema v2 migration, observed media/subtitle state, persistent-worker scheduling, a reusable ASS widget toolkit, UI-neutral dictionary documents, native popup/settings controllers, direct Anki orchestration, tracked CMake presets, additive text-layout and filesystem protocols, and real mpv runtime coverage.
+- Added a per-profile minimum popup width setting so compact dictionary results, including CEDICT entries, can retain a balanced layout.
+- Added optional Yomitan-style Shift-hover lookup triggers for subtitle text and nested popup definitions.
+
 ### Fixed
 
 - Prevented rapid media-heavy Anki exports from hanging in IINA's external-process bridge when word-audio resolution, screenshot hashing, and sentence-audio encoding overlap; process work is now safely serialized, loopback audio metadata stays on native HTTP, network/storage stages remain concurrent, and identical in-flight audio-source requests are reused.
 - Prevented provisional root and nested lookup popups, including lookups inside example sentences, from flashing a full sentence or jumping from a temporary loading position before the completed dictionary result appears.
-
-### Added
-
-- Added a per-profile minimum popup width setting so compact dictionary results, including CEDICT entries, can retain a balanced layout.
-- Added optional Yomitan-style Shift-hover lookup triggers for subtitle text and nested popup definitions.
 
 ## 2.1.4 - 2026-08-16
 

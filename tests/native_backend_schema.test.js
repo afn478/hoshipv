@@ -82,9 +82,9 @@ assert(
   "Native worker should back off directory scans while its queue is idle",
 );
 assert(
-  /WRAPPER_VERSION = "1\.11\.0"/.test(nativeSource) &&
+  /WRAPPER_VERSION = "3\.0\.0-dev"/.test(nativeSource) &&
     /command == "font-metrics"/.test(nativeSource),
-  "Native wrapper 1.11 should preserve the read-only font-metrics command",
+  "Native mpv backend should preserve the read-only font-metrics command",
 );
 assert(
   /CGEventSourceCounterForEventType/.test(nativeSource) &&
@@ -96,7 +96,7 @@ assert(
   /bitmap-subtitle-ocr/.test(nativeSource) &&
     /bitmapOcr/.test(nativeSource) &&
     /OcrService/.test(nativeSource),
-  "Native wrapper 1.10 should expose bitmap subtitle OCR and its capability",
+  "Native backend should expose bitmap subtitle OCR and its capability",
 );
 assert(
   /av_seek_frame\(\s*session\.format\.value, -1, global_timestamp/.test(

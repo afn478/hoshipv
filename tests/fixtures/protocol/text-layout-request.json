@@ -1,0 +1,15 @@
+{
+  "type": "text-layout",
+  "protocol": 1,
+  "requestId": "fixture-layout-1",
+  "text": "Á漢😀️한",
+  "font": {
+    "family": "sans-serif",
+    "size": 32,
+    "weight": 400,
+    "italic": false,
+    "spacing": 0
+  },
+  "wrapWidth": 800,
+  "osdScale": 1
+}

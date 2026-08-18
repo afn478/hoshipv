@@ -6,6 +6,8 @@ const DEFAULT_TIMEOUT_MS = 180000;
 const TESTS = [
   ["media", "tests/media_source.test.js"],
   ["language", "tests/languages.test.js"],
+  ["language", "tests/lookup_protocol_golden.test.js"],
+  ["settings", "tests/mpv_config_v2.test.js"],
   ["dictionary", "tests/import_validation.test.js"],
   ["dictionary", "tests/dictionary_pipeline.test.js"],
   ["settings", "tests/profile_settings.test.js"],
@@ -35,6 +37,8 @@ const TESTS = [
   ["settings", "tests/settings_menu_layout.test.js"],
   ["native-static", "tests/native_backend_schema.test.js"],
   ["native", "tests/native_ass_geometry.test.js"],
+  ["native", "tests/native_text_layout_protocol.test.js"],
+  ["mpv-runtime", "tests/mpv_041_runtime.test.js"],
   ["diagnostics", "tests/debug_log_performance.test.js"],
   ["diagnostics", "tests/external_process_queue.test.js"],
   ["release", "tests/release_notes.test.js"],
