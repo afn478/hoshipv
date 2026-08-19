@@ -33,6 +33,7 @@ const context = {
 vm.createContext(context);
 for (const file of [
   "src/mpv/00_runtime.js",
+  "src/mpv/10_unicode.js",
   "src/mpv/40_ass.js",
   "src/mpv/60_popup.js",
 ])
@@ -111,5 +112,32 @@ I.closePopup();
 assert(
   I.popupStack.length === 0 && !I.pauseOwner,
   "closing final popup must release owned pause",
+);
+I.config.profiles.default.subtitleLookupMode = "hover";
+I.state.lookupEnabled = true;
+I.state.settingsOpen = false;
+I.state.hoverUnit = null;
+I.state.mouse = { hover: true, x: 625, y: 640 };
+I.state.subtitleUnits = [
+  {
+    surface: "primary",
+    position: 1,
+    displayStartUtf16: 1,
+    text: "日本語",
+    rects: [{ x: 610, y: 620, w: 60, h: 56 }],
+  },
+];
+let hoverLookup = null;
+I.unionRects = function (rects) {
+  return rects[0];
+};
+I.openLookup = function (text, position, nested) {
+  hoverLookup = { text, position, nested };
+};
+I.handleHover();
+assert(
+  JSON.stringify(hoverLookup) ===
+    JSON.stringify({ text: "日本語", position: 1, nested: false }),
+  "a pointer inside absolute subtitle geometry must open lookup at that glyph",
 );
 console.log("mpv popup interaction tests passed");

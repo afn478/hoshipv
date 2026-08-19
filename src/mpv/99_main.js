@@ -4,51 +4,6 @@ IINATAN.detectPlatform = function () {
   if (mp.utils.file_info("/System/Library/CoreServices")) return "macos";
   return "linux";
 };
-IINATAN.handleHover = function () {
-  if (
-    !IINATAN.state.lookupEnabled ||
-    IINATAN.popupStack.length ||
-    IINATAN.state.settingsOpen
-  )
-    return;
-  var profile = IINATAN.config.profiles[IINATAN.config.activeProfileId];
-  if (profile.subtitleLookupMode === "shift-hover" && !IINATAN.state.shiftDown)
-    return;
-  var mouse = IINATAN.state.mouse || {};
-  if (!mouse.hover) {
-    IINATAN.state.hoverUnit = null;
-    return;
-  }
-  var units = IINATAN.state.subtitleUnits || [],
-    found = null;
-  for (var i = units.length - 1; i >= 0 && !found; i--)
-    for (var j = (units[i].rects || []).length - 1; j >= 0; j--) {
-      var r = units[i].rects[j];
-      if (
-        mouse.x >= r.x &&
-        mouse.x <= r.x + r.w &&
-        mouse.y >= r.y &&
-        mouse.y <= r.y + r.h
-      ) {
-        found = units[i];
-        break;
-      }
-    }
-  var hoverKey = found ? found.surface + ":" + found.position : "";
-  if (!found || hoverKey === IINATAN.state.hoverUnit) return;
-  IINATAN.state.hoverUnit = hoverKey;
-  IINATAN.state.subtitleRect = IINATAN.unionRects(found.rects || []);
-  var scalar =
-    IINATAN.unicodeMap(found.text || "").scalars[found.position] || {};
-  IINATAN.openLookup(
-    found.text,
-    found.displayStartUtf16 !== undefined
-      ? found.displayStartUtf16
-      : scalar.utf16Start || 0,
-    false,
-  );
-};
-
 IINATAN.initialize = function () {
   IINATAN.platform = IINATAN.detectPlatform();
   IINATAN.loadConfig();

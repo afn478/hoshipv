@@ -105,10 +105,12 @@ std::string ass_escape(const std::string& text) {
 
 std::string ass_document(
     const std::string& text, const std::string& family, double size,
-    int weight, bool italic, double spacing, int width) {
+    int weight, bool italic, double spacing, double play_res_width,
+    double play_res_height, int alignment, double margin_x, double margin_y) {
   std::ostringstream out;
-  out << "[Script Info]\nScriptType: v4.00+\nPlayResX: " << width
-      << "\nPlayResY: 4096\nWrapStyle: 0\nScaledBorderAndShadow: yes\n"
+  out << "[Script Info]\nScriptType: v4.00+\nPlayResX: " << play_res_width
+      << "\nPlayResY: " << play_res_height
+      << "\nWrapStyle: 0\nScaledBorderAndShadow: yes\n"
       << "[V4+ Styles]\n"
       << "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
          "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
@@ -118,7 +120,8 @@ std::string ass_document(
       << ",&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,"
       << (weight >= 600 ? -1 : 0) << ',' << (italic ? -1 : 0)
       << ",0,0,100,100," << spacing
-      << ",0,1,0,0,7,8,8,8,1\n"
+      << ",0,1,0,0," << alignment << ',' << margin_x << ',' << margin_x
+      << ',' << margin_y << ",1\n"
       << "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, "
          "MarginV, Effect, Text\n"
       << "Dialogue: 0,0:00:00.00,0:00:10.00,Default,,0,0,0,,"
@@ -231,19 +234,93 @@ Json TextLayoutService::handle(const Json& request) {
           ? field(*font_value, "spacing")->number_or(0.0)
           : 0.0,
       -20.0, 100.0);
-  const int width = static_cast<int>(std::clamp<int64_t>(
+  const int measure_width = static_cast<int>(std::clamp<int64_t>(
       field(request, "wrapWidth")
           ? field(request, "wrapWidth")->integer_or(4096)
           : 4096,
       32, 16384));
+  const Json* renderer_value = field(request, "renderer");
+  const bool positioned = renderer_value && renderer_value->is_object();
+  const auto renderer_integer = [&](const char* name, int64_t fallback) {
+    const Json* value = positioned ? field(*renderer_value, name) : nullptr;
+    return value ? value->integer_or(fallback) : fallback;
+  };
+  const auto renderer_number = [&](const char* name, double fallback) {
+    const Json* value = positioned ? field(*renderer_value, name) : nullptr;
+    return value ? value->number_or(fallback) : fallback;
+  };
+  const auto renderer_boolean = [&](const char* name, bool fallback) {
+    const Json* value = positioned ? field(*renderer_value, name) : nullptr;
+    return value ? value->boolean_or(fallback) : fallback;
+  };
+  const int frame_width = static_cast<int>(std::clamp<int64_t>(
+      renderer_integer("width", measure_width),
+      32, 16384));
+  const int frame_height = static_cast<int>(std::clamp<int64_t>(
+      renderer_integer("height", 4096),
+      32, 16384));
+  const double play_res_width = std::clamp(
+      renderer_number(
+          "playResWidth",
+          positioned ? frame_width : static_cast<double>(measure_width)),
+      32.0, 16384.0);
+  const double play_res_height = std::clamp(
+      renderer_number("playResHeight", positioned ? frame_height : 4096.0),
+      32.0, 16384.0);
+  const int alignment = static_cast<int>(std::clamp<int64_t>(
+      renderer_integer("alignment", positioned ? 2 : 7),
+      1, 9));
+  const double style_margin_x = std::clamp(
+      renderer_number("styleMarginX", positioned ? 0.0 : 8.0),
+      0.0, 4096.0);
+  const double style_margin_y = std::clamp(
+      renderer_number("styleMarginY", positioned ? 0.0 : 8.0),
+      0.0, 4096.0);
   const std::string script =
-      ass_document(text, family, size, weight, italic, spacing, width);
+      ass_document(
+          text, family, size, weight, italic, spacing, play_res_width,
+          play_res_height, alignment, style_margin_x, style_margin_y);
   ASS_Track* track = ass_read_memory(
       state_->library,
       const_cast<char*>(script.data()), static_cast<int>(script.size()), nullptr);
   if (!track) return failure(request_id, "text-layout-track-failed");
-  ass_set_frame_size(state_->renderer, width, 4096);
-  ass_set_storage_size(state_->renderer, width, 4096);
+  if (positioned && track->n_styles > 0) {
+    track->styles[0].Justify = static_cast<int>(std::clamp<int64_t>(
+        renderer_integer("justify", ASS_JUSTIFY_AUTO),
+        ASS_JUSTIFY_AUTO, ASS_JUSTIFY_RIGHT));
+  }
+  ass_set_frame_size(state_->renderer, frame_width, frame_height);
+  ass_set_storage_size(state_->renderer, frame_width, frame_height);
+  if (positioned) {
+    const int margin_left = static_cast<int>(std::clamp<int64_t>(
+        renderer_integer("marginLeft", 0),
+        0, frame_width));
+    const int margin_right = static_cast<int>(std::clamp<int64_t>(
+        renderer_integer("marginRight", 0),
+        0, frame_width));
+    const int margin_top = static_cast<int>(std::clamp<int64_t>(
+        renderer_integer("marginTop", 0),
+        0, frame_height));
+    const int margin_bottom = static_cast<int>(std::clamp<int64_t>(
+        renderer_integer("marginBottom", 0),
+        0, frame_height));
+    ass_set_margins(
+        state_->renderer, margin_top, margin_bottom, margin_left, margin_right);
+    ass_set_use_margins(
+        state_->renderer, renderer_boolean("useMargins", false) ? 1 : 0);
+    ass_set_line_position(
+        state_->renderer,
+        std::clamp(renderer_number("linePosition", 100.0), -50.0, 100.0));
+    ass_set_line_spacing(
+        state_->renderer,
+        std::clamp(
+            renderer_number("lineSpacing", 0.0), -1000.0, 1000.0));
+  } else {
+    ass_set_margins(state_->renderer, 0, 0, 0, 0);
+    ass_set_use_margins(state_->renderer, 0);
+    ass_set_line_position(state_->renderer, 100.0);
+    ass_set_line_spacing(state_->renderer, 0.0);
+  }
   ass_set_fonts(
       state_->renderer, nullptr, family.c_str(), ASS_FONTPROVIDER_AUTODETECT,
       nullptr, 1);
@@ -298,8 +375,8 @@ Json TextLayoutService::handle(const Json& request) {
         {"text", text.substr(
                      static_cast<size_t>(cluster.utf8_start),
                      static_cast<size_t>(cluster.utf8_end - cluster.utf8_start))},
-        {"x", rect ? rect->x - left : 0},
-        {"y", rect ? rect->y - top : 0},
+        {"x", rect ? rect->x - (positioned ? 0 : left) : 0},
+        {"y", rect ? rect->y - (positioned ? 0 : top) : 0},
         {"width", rect ? rect->w : 0},
         {"height", rect ? rect->h : 0},
         {"utf8Range", Json::Array{cluster.utf8_start, cluster.utf8_end}},
@@ -311,6 +388,7 @@ Json TextLayoutService::handle(const Json& request) {
   return Json::Object{{"ok", true},
                       {"protocol", kTextLayoutProtocol},
                       {"requestId", request_id},
+                      {"positioned", positioned},
                       {"width", right - left},
                       {"height", bottom - top},
                       {"clusters", std::move(response_clusters)}};

@@ -78,6 +78,63 @@ try {
   fs.rmSync(multilineTemp, { recursive: true, force: true });
 }
 
+const positionedRequest = JSON.parse(
+  fs.readFileSync(
+    path.join(root, "tests/fixtures/protocol/text-layout-request.json"),
+    "utf8",
+  ),
+);
+positionedRequest.requestId = "fixture-layout-positioned";
+positionedRequest.text = "日本語\n辞書";
+positionedRequest.renderer = {
+  width: 1280,
+  height: 720,
+  playResWidth: 1280,
+  playResHeight: 720,
+  marginLeft: 0,
+  marginRight: 0,
+  marginTop: 0,
+  marginBottom: 0,
+  useMargins: true,
+  styleMarginX: 19,
+  styleMarginY: 34,
+  linePosition: 0,
+  lineSpacing: 0,
+  alignment: 2,
+  justify: 0,
+};
+const positionedTemp = fs.mkdtempSync(
+  path.join(os.tmpdir(), "iinatan-text-positioned-"),
+);
+try {
+  const positionedFile = path.join(positionedTemp, "request.json");
+  fs.writeFileSync(positionedFile, JSON.stringify(positionedRequest));
+  const positioned = spawnSync(backend, ["text-layout", positionedFile], {
+    encoding: "utf8",
+  });
+  assert(positioned.status === 0, positioned.stderr || positioned.stdout);
+  const positionedResponse = JSON.parse(
+    positioned.stdout.trim().split(/\n/).pop(),
+  );
+  const visible = positionedResponse.clusters.filter(
+    (cluster) => cluster.width > 0,
+  );
+  assert(
+    positionedResponse.ok && positionedResponse.positioned,
+    "positioned text layout must return absolute OSD rectangles",
+  );
+  assert(
+    visible.every((cluster) => cluster.y > 600),
+    "bottom-positioned subtitles must remain near the OSD bottom",
+  );
+  assert(
+    visible[3].x > visible[0].x,
+    "center justification must offset a shorter second line",
+  );
+} finally {
+  fs.rmSync(positionedTemp, { recursive: true, force: true });
+}
+
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), "iinatan-worker-test-"));
 fs.mkdirSync(path.join(temp, "queue"), { recursive: true });
 fs.writeFileSync(path.join(temp, "config.tsv"), "fingerprint\tfixture\n");

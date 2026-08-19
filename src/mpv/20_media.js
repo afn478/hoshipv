@@ -21,23 +21,45 @@ IINATAN.OBSERVED_PROPERTIES = [
   ["osd-dimensions", "native"],
   ["video-out-params", "native"],
   ["mouse-pos", "native"],
+  ["mouse-pos/x", "number"],
+  ["mouse-pos/y", "number"],
+  ["mouse-pos/hover", "bool"],
   ["user-data/osc/margins", "native"],
   ["sub-font", "string"],
   ["sub-font-size", "number"],
   ["sub-bold", "bool"],
   ["sub-italic", "bool"],
   ["sub-spacing", "number"],
+  ["sub-line-spacing", "number"],
   ["sub-margin-x", "number"],
   ["sub-margin-y", "number"],
+  ["sub-align-x", "string"],
+  ["sub-align-y", "string"],
+  ["sub-justify", "string"],
+  ["sub-use-margins", "bool"],
   ["sub-pos", "number"],
+  ["secondary-sub-pos", "number"],
   ["sub-scale", "number"],
+  ["sub-scale-by-window", "bool"],
+  ["sub-scale-with-window", "bool"],
   ["sub-ass-override", "string"],
 ];
 
 IINATAN.mediaGeneration = 0;
 IINATAN.propertyChanged = function (name, value) {
-  IINATAN.state.properties[name] = value;
-  if (name === "mouse-pos") {
+  if (name.indexOf("mouse-pos/") === 0) {
+    var current = IINATAN.state.properties["mouse-pos"] || {};
+    current = {
+      x: Number(current.x || 0),
+      y: Number(current.y || 0),
+      hover: !!current.hover,
+    };
+    current[name.substring("mouse-pos/".length)] = value;
+    IINATAN.state.properties["mouse-pos"] = current;
+  } else {
+    IINATAN.state.properties[name] = value;
+  }
+  if (name === "mouse-pos" || name.indexOf("mouse-pos/") === 0) {
     IINATAN.state.mouseSerial = (IINATAN.state.mouseSerial || 0) + 1;
     IINATAN.updateSelection();
   }

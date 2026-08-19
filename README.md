@@ -39,6 +39,8 @@ If mpv is started with `--no-config`, pass absolute bootstrap paths with `--scri
 
 `Ctrl+Shift+d` toggles lookup. Escape closes the deepest nested popup, then the root popup, then Settings. Click, wheel, selection dragging, expandable sections, source links, audio, and Anki actions are handled inside the OSD. iinatan installs forced mouse bindings only while the pointer is over one of its interactive regions, leaving mpv and its OSC untouched elsewhere.
 
+mpv continues to render the subtitle itself. iinatan shapes the same visible text into an invisible per-grapheme hit map in OSD coordinates; it does not replace or cover the subtitle. When the pointer enters a mapped grapheme, iinatan looks up that UTF-16 text position and renders the resulting popup through a separate ASS OSD overlay. No iinatan overlay is visible before a successful lookup unless Settings is open.
+
 Available script messages are:
 
 ```text

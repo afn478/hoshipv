@@ -565,12 +565,40 @@ IINATAN.geometryRequestForSubtitle = function (sub) {
         defaultFamily: String(props["sub-font"] || "sans-serif"),
         fontProvider: "auto",
         assJustify: false,
-        linePosition: Number(props["sub-pos"] || 100),
+        linePosition:
+          100 -
+          Number(
+            sub.surface === "secondary"
+              ? props["secondary-sub-pos"] || 0
+              : props["sub-pos"] === undefined
+                ? 100
+                : props["sub-pos"],
+          ),
         hinting: "none",
         shaper: "complex",
       },
     };
   }
+  var frameWidth = Math.max(1, Number(osd.w || 0)),
+    frameHeight = Math.max(1, Number(osd.h || 0)),
+    videoHeight = Math.max(
+      1,
+      frameHeight - Number(osd.mt || 0) - Number(osd.mb || 0),
+    ),
+    scaleByWindow = props["sub-scale-by-window"] !== false,
+    scaleWithWindow = props["sub-scale-with-window"] !== false,
+    playResHeight = scaleByWindow
+      ? scaleWithWindow
+        ? 720
+        : (frameHeight * 720) / videoHeight
+      : frameHeight,
+    playResWidth = (playResHeight * frameWidth) / frameHeight,
+    alignX = String(props["sub-align-x"] || "center"),
+    alignY = String(props["sub-align-y"] || "bottom"),
+    justify = String(props["sub-justify"] || "auto"),
+    alignment =
+      (alignY === "top" ? 6 : alignY === "center" ? 3 : 0) +
+      (alignX === "left" ? 1 : alignX === "right" ? 3 : 2);
   return {
     type: "text-layout",
     protocol: 1,
@@ -583,7 +611,38 @@ IINATAN.geometryRequestForSubtitle = function (sub) {
       italic: !!props["sub-italic"],
       spacing: Number(props["sub-spacing"] || 0),
     },
-    wrapWidth: Math.max(1, osd.w - 2 * Number(props["sub-margin-x"] || 20)),
+    renderer: {
+      width: frameWidth,
+      height: frameHeight,
+      playResWidth: playResWidth,
+      playResHeight: playResHeight,
+      marginLeft: Number(osd.ml || 0),
+      marginRight: Number(osd.mr || 0),
+      marginTop: Number(osd.mt || 0),
+      marginBottom: Number(osd.mb || 0),
+      useMargins: props["sub-use-margins"] !== false,
+      styleMarginX: Number(props["sub-margin-x"] || 19),
+      styleMarginY: Number(props["sub-margin-y"] || 34),
+      linePosition:
+        100 -
+        Number(
+          sub.surface === "secondary"
+            ? props["secondary-sub-pos"] || 0
+            : props["sub-pos"] === undefined
+              ? 100
+              : props["sub-pos"],
+        ),
+      lineSpacing: Number(props["sub-line-spacing"] || 0),
+      alignment: alignment,
+      justify:
+        justify === "left"
+          ? 1
+          : justify === "center"
+            ? 2
+            : justify === "right"
+              ? 3
+              : 0,
+    },
     osdScale: 1,
     fallbackFontPath: IINATAN.fallbackFontPath(),
   };
@@ -629,7 +688,23 @@ IINATAN.updateSubtitleGeometry = function () {
         var units = [],
           allRects = [];
         if (response.units) units = response.units;
-        else if (response.clusters) {
+        else if (response.clusters && response.positioned) {
+          units = response.clusters.map(function (cluster, index) {
+            return {
+              position: index,
+              displayStartUtf16: cluster.utf16Range[0],
+              displayEndUtf16: cluster.utf16Range[1],
+              rects: [
+                {
+                  x: cluster.x,
+                  y: cluster.y,
+                  w: cluster.width,
+                  h: cluster.height,
+                },
+              ],
+            };
+          });
+        } else if (response.clusters) {
           var x = (osd.w - response.width) / 2,
             margin = Number(IINATAN.state.properties["sub-margin-y"] || 22),
             lineOffset = surfaceIndex * (response.height + 8),

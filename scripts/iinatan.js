@@ -1745,11 +1745,22 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
   };
 
   // ---- src/mpv/20_media.js ----
-  IINATAN.OBSERVED_PROPERTIES = [["path", "string"], ["stream-open-filename", "string"], ["sub-text", "string"], ["sub-text/ass-full", "string"], ["sub-ass-extradata", "string"], ["sub-start", "number"], ["sub-end", "number"], ["secondary-sub-text", "string"], ["secondary-sub-text/ass-full", "string"], ["secondary-sub-ass-extradata", "string"], ["secondary-sub-start", "number"], ["secondary-sub-end", "number"], ["sid", "native"], ["secondary-sid", "native"], ["track-list", "native"], ["sub-delay", "number"], ["secondary-sub-delay", "number"], ["pause", "bool"], ["time-pos", "number"], ["osd-dimensions", "native"], ["video-out-params", "native"], ["mouse-pos", "native"], ["user-data/osc/margins", "native"], ["sub-font", "string"], ["sub-font-size", "number"], ["sub-bold", "bool"], ["sub-italic", "bool"], ["sub-spacing", "number"], ["sub-margin-x", "number"], ["sub-margin-y", "number"], ["sub-pos", "number"], ["sub-scale", "number"], ["sub-ass-override", "string"]];
+  IINATAN.OBSERVED_PROPERTIES = [["path", "string"], ["stream-open-filename", "string"], ["sub-text", "string"], ["sub-text/ass-full", "string"], ["sub-ass-extradata", "string"], ["sub-start", "number"], ["sub-end", "number"], ["secondary-sub-text", "string"], ["secondary-sub-text/ass-full", "string"], ["secondary-sub-ass-extradata", "string"], ["secondary-sub-start", "number"], ["secondary-sub-end", "number"], ["sid", "native"], ["secondary-sid", "native"], ["track-list", "native"], ["sub-delay", "number"], ["secondary-sub-delay", "number"], ["pause", "bool"], ["time-pos", "number"], ["osd-dimensions", "native"], ["video-out-params", "native"], ["mouse-pos", "native"], ["mouse-pos/x", "number"], ["mouse-pos/y", "number"], ["mouse-pos/hover", "bool"], ["user-data/osc/margins", "native"], ["sub-font", "string"], ["sub-font-size", "number"], ["sub-bold", "bool"], ["sub-italic", "bool"], ["sub-spacing", "number"], ["sub-line-spacing", "number"], ["sub-margin-x", "number"], ["sub-margin-y", "number"], ["sub-align-x", "string"], ["sub-align-y", "string"], ["sub-justify", "string"], ["sub-use-margins", "bool"], ["sub-pos", "number"], ["secondary-sub-pos", "number"], ["sub-scale", "number"], ["sub-scale-by-window", "bool"], ["sub-scale-with-window", "bool"], ["sub-ass-override", "string"]];
   IINATAN.mediaGeneration = 0;
   IINATAN.propertyChanged = function (name, value) {
-    IINATAN.state.properties[name] = value;
-    if (name === "mouse-pos") {
+    if (name.indexOf("mouse-pos/") === 0) {
+      var current = IINATAN.state.properties["mouse-pos"] || {};
+      current = {
+        x: Number(current.x || 0),
+        y: Number(current.y || 0),
+        hover: !!current.hover
+      };
+      current[name.substring("mouse-pos/".length)] = value;
+      IINATAN.state.properties["mouse-pos"] = current;
+    } else {
+      IINATAN.state.properties[name] = value;
+    }
+    if (name === "mouse-pos" || name.indexOf("mouse-pos/") === 0) {
       IINATAN.state.mouseSerial = (IINATAN.state.mouseSerial || 0) + 1;
       IINATAN.updateSelection();
     }
@@ -3019,6 +3030,31 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
   // ---- src/mpv/60_popup.js ----
   IINATAN.pauseOwner = false;
   IINATAN.popupStack = [];
+  IINATAN.handleHover = function () {
+    if (!IINATAN.state.lookupEnabled || IINATAN.popupStack.length || IINATAN.state.settingsOpen) return;
+    var profile = IINATAN.config.profiles[IINATAN.config.activeProfileId];
+    if (profile.subtitleLookupMode === "shift-hover" && !IINATAN.state.shiftDown) return;
+    var mouse = IINATAN.state.mouse || {};
+    if (!mouse.hover) {
+      IINATAN.state.hoverUnit = null;
+      return;
+    }
+    var units = IINATAN.state.subtitleUnits || [],
+      found = null;
+    for (var i = units.length - 1; i >= 0 && !found; i--) for (var j = (units[i].rects || []).length - 1; j >= 0; j--) {
+      var r = units[i].rects[j];
+      if (mouse.x >= r.x && mouse.x <= r.x + r.w && mouse.y >= r.y && mouse.y <= r.y + r.h) {
+        found = units[i];
+        break;
+      }
+    }
+    var hoverKey = found ? found.surface + ":" + found.position : "";
+    if (!found || hoverKey === IINATAN.state.hoverUnit) return;
+    IINATAN.state.hoverUnit = hoverKey;
+    IINATAN.state.subtitleRect = IINATAN.unionRects(found.rects || []);
+    var scalar = IINATAN.unicodeMap(found.text || "").scalars[found.position] || {};
+    IINATAN.openLookup(found.text, found.displayStartUtf16 !== undefined ? found.displayStartUtf16 : scalar.utf16Start || 0, false);
+  };
   IINATAN.anchorRect = function () {
     var osd = IINATAN.state.osd || {
         w: 1280,
@@ -3718,12 +3754,23 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
           defaultFamily: String(props["sub-font"] || "sans-serif"),
           fontProvider: "auto",
           assJustify: false,
-          linePosition: Number(props["sub-pos"] || 100),
+          linePosition: 100 - Number(sub.surface === "secondary" ? props["secondary-sub-pos"] || 0 : props["sub-pos"] === undefined ? 100 : props["sub-pos"]),
           hinting: "none",
           shaper: "complex"
         }
       };
     }
+    var frameWidth = Math.max(1, Number(osd.w || 0)),
+      frameHeight = Math.max(1, Number(osd.h || 0)),
+      videoHeight = Math.max(1, frameHeight - Number(osd.mt || 0) - Number(osd.mb || 0)),
+      scaleByWindow = props["sub-scale-by-window"] !== false,
+      scaleWithWindow = props["sub-scale-with-window"] !== false,
+      playResHeight = scaleByWindow ? scaleWithWindow ? 720 : frameHeight * 720 / videoHeight : frameHeight,
+      playResWidth = playResHeight * frameWidth / frameHeight,
+      alignX = String(props["sub-align-x"] || "center"),
+      alignY = String(props["sub-align-y"] || "bottom"),
+      justify = String(props["sub-justify"] || "auto"),
+      alignment = (alignY === "top" ? 6 : alignY === "center" ? 3 : 0) + (alignX === "left" ? 1 : alignX === "right" ? 3 : 2);
     return {
       type: "text-layout",
       protocol: 1,
@@ -3735,7 +3782,23 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
         italic: !!props["sub-italic"],
         spacing: Number(props["sub-spacing"] || 0)
       },
-      wrapWidth: Math.max(1, osd.w - 2 * Number(props["sub-margin-x"] || 20)),
+      renderer: {
+        width: frameWidth,
+        height: frameHeight,
+        playResWidth: playResWidth,
+        playResHeight: playResHeight,
+        marginLeft: Number(osd.ml || 0),
+        marginRight: Number(osd.mr || 0),
+        marginTop: Number(osd.mt || 0),
+        marginBottom: Number(osd.mb || 0),
+        useMargins: props["sub-use-margins"] !== false,
+        styleMarginX: Number(props["sub-margin-x"] || 19),
+        styleMarginY: Number(props["sub-margin-y"] || 34),
+        linePosition: 100 - Number(sub.surface === "secondary" ? props["secondary-sub-pos"] || 0 : props["sub-pos"] === undefined ? 100 : props["sub-pos"]),
+        lineSpacing: Number(props["sub-line-spacing"] || 0),
+        alignment: alignment,
+        justify: justify === "left" ? 1 : justify === "center" ? 2 : justify === "right" ? 3 : 0
+      },
       osdScale: 1,
       fallbackFontPath: IINATAN.fallbackFontPath()
     };
@@ -3761,7 +3824,21 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
         if (error || generation !== IINATAN.generation || geometryGeneration !== IINATAN.state.geometryGeneration) return;
         var units = [],
           allRects = [];
-        if (response.units) units = response.units;else if (response.clusters) {
+        if (response.units) units = response.units;else if (response.clusters && response.positioned) {
+          units = response.clusters.map(function (cluster, index) {
+            return {
+              position: index,
+              displayStartUtf16: cluster.utf16Range[0],
+              displayEndUtf16: cluster.utf16Range[1],
+              rects: [{
+                x: cluster.x,
+                y: cluster.y,
+                w: cluster.width,
+                h: cluster.height
+              }]
+            };
+          });
+        } else if (response.clusters) {
           var x = (osd.w - response.width) / 2,
             margin = Number(IINATAN.state.properties["sub-margin-y"] || 22),
             lineOffset = surfaceIndex * (response.height + 8),
@@ -4540,31 +4617,6 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
     if (path.indexOf("windows") >= 0) return "windows";
     if (mp.utils.file_info("/System/Library/CoreServices")) return "macos";
     return "linux";
-  };
-  IINATAN.handleHover = function () {
-    if (!IINATAN.state.lookupEnabled || IINATAN.popupStack.length || IINATAN.state.settingsOpen) return;
-    var profile = IINATAN.config.profiles[IINATAN.config.activeProfileId];
-    if (profile.subtitleLookupMode === "shift-hover" && !IINATAN.state.shiftDown) return;
-    var mouse = IINATAN.state.mouse || {};
-    if (!mouse.hover) {
-      IINATAN.state.hoverUnit = null;
-      return;
-    }
-    var units = IINATAN.state.subtitleUnits || [],
-      found = null;
-    for (var i = units.length - 1; i >= 0 && !found; i--) for (var j = (units[i].rects || []).length - 1; j >= 0; j--) {
-      var r = units[i].rects[j];
-      if (mouse.x >= r.x && mouse.x <= r.x + r.w && mouse.y >= r.y && mouse.y <= r.y + r.h) {
-        found = units[i];
-        break;
-      }
-    }
-    var hoverKey = found ? found.surface + ":" + found.position : "";
-    if (!found || hoverKey === IINATAN.state.hoverUnit) return;
-    IINATAN.state.hoverUnit = hoverKey;
-    IINATAN.state.subtitleRect = IINATAN.unionRects(found.rects || []);
-    var scalar = IINATAN.unicodeMap(found.text || "").scalars[found.position] || {};
-    IINATAN.openLookup(found.text, found.displayStartUtf16 !== undefined ? found.displayStartUtf16 : scalar.utf16Start || 0, false);
   };
   IINATAN.initialize = function () {
     IINATAN.platform = IINATAN.detectPlatform();
