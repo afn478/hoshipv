@@ -392,7 +392,7 @@ IINATAN.rebuildScene = function () {
     measured = surface.measure(ctx, max),
     minWidth = Math.min(
       Math.max(profile.popupMaxWidth, 770),
-      Math.max(profile.popupMinWidth, 440),
+      Math.max(profile.popupMinWidth, 700),
     ),
     placed = IINATAN.placePopup(IINATAN.anchorRect(), {
       w: Math.max(minWidth, measured.w),

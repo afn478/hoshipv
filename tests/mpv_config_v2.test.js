@@ -85,7 +85,10 @@ assert(
     migrated.profiles.reader.anki.deck === "Mining",
   "Anki settings must migrate",
 );
-
+assert(
+  migrated.profiles.reader.popupMinWidth === 700,
+  "profiles must use the wider minimum popup width",
+);
 const invalidTheme = context.IINATAN.validateTheme({
   background: "url(x)",
   foreground: "#abcdef",

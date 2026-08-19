@@ -12,6 +12,7 @@
 - Restore MuJS compatibility for Unicode code-point matching and ignore subtitle punctuation that has no valid lookup request instead of aborting the popup controller.
 - Replace stale root popups when hovering a different subtitle word, discard out-of-order lookup results, remove mpv's invalid standalone Shift binding, and keep popup placement deterministic with a readable minimum width.
 - Keep the popup anchored above the pointer, remove pointer-avoidance placement, route wheel events through scroll containers, add scrollbar track clicks, and expand the default popup width to 770 OSD pixels.
+- Raise the default minimum popup width to 700 OSD pixels so compact results stay close to the 770-pixel maximum.
 
 ## 3.0.0 - 2026-08-19
 

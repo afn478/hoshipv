@@ -227,7 +227,7 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
         nestedPopupMode: "off",
         nestedPopupMaxDepth: 3,
         popupScale: 0.92,
-        popupMinWidth: 440,
+        popupMinWidth: 700,
         popupMaxWidth: 770,
         popupMaxHeightVh: 34,
         popupSubtitleGapPx: 24,
@@ -371,7 +371,7 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
     profile.scanLength = IINATAN.clamp(profile.scanLength, 1, 128, 24);
     profile.maxEntries = IINATAN.clamp(profile.maxEntries, 1, 20, 3);
     profile.maxGlossesPerEntry = IINATAN.clamp(profile.maxGlossesPerEntry, 1, 40, 4);
-    profile.popupMinWidth = Math.max(440, IINATAN.clamp(profile.popupMinWidth, 300, 1200, 440));
+    profile.popupMinWidth = Math.max(700, IINATAN.clamp(profile.popupMinWidth, 440, 1200, 700));
     profile.popupMaxWidth = Math.max(profile.popupMinWidth, 770, IINATAN.clamp(profile.popupMaxWidth, 300, 1600, 770));
     profile.popupMaxHeightVh = IINATAN.clamp(profile.popupMaxHeightVh, 15, 90, 34);
     profile.pauseWhilePopupVisible = profile.pauseWhilePopupVisible !== false;
@@ -3388,7 +3388,7 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
       },
       ctx = IINATAN.scene.context(),
       measured = surface.measure(ctx, max),
-      minWidth = Math.min(Math.max(profile.popupMaxWidth, 770), Math.max(profile.popupMinWidth, 440)),
+      minWidth = Math.min(Math.max(profile.popupMaxWidth, 770), Math.max(profile.popupMinWidth, 700)),
       placed = IINATAN.placePopup(IINATAN.anchorRect(), {
         w: Math.max(minWidth, measured.w),
         h: Math.min(max.h, measured.h)
