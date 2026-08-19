@@ -5,6 +5,7 @@ IINATAN.detectPlatform = function () {
   return "linux";
 };
 IINATAN.initialize = function () {
+  IINATAN.validateRuntimeCompatibility();
   IINATAN.platform = IINATAN.detectPlatform();
   IINATAN.loadConfig();
   IINATAN.overlay = mp.create_osd_overlay("ass-events");

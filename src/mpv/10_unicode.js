@@ -53,6 +53,7 @@ IINATAN.lookupRequestFor = function (languageId, text, utf16Position, profile) {
     scalarPosition,
     profile.scanLength,
   );
+  if (!selected) return null;
   return {
     requestId: "",
     text: selected.lookupText,

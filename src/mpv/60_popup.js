@@ -235,6 +235,7 @@ IINATAN.openLookup = function (text, utf16Position, nested) {
     utf16Position,
     profile,
   );
+  if (!payload) return;
   var generation = IINATAN.generation;
   IINATAN.lookup(payload, function (error, result) {
     if (generation !== IINATAN.generation || error) {

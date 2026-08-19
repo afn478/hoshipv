@@ -18,7 +18,47 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
     return target;
   };
   if (!Array.from) Array.from = function (value) {
+    if (typeof value === "string") {
+      var characters = [];
+      for (var index = 0; index < value.length; index++) {
+        var first = value.charCodeAt(index);
+        if (first >= 0xd800 && first <= 0xdbff && index + 1 < value.length) {
+          var second = value.charCodeAt(index + 1);
+          if (second >= 0xdc00 && second <= 0xdfff) {
+            characters.push(value.substring(index, index + 2));
+            index++;
+            continue;
+          }
+        }
+        characters.push(value.charAt(index));
+      }
+      return characters;
+    }
     return Array.prototype.slice.call(value);
+  };
+  if (!String.prototype.codePointAt) String.prototype.codePointAt = function (position) {
+    var text = String(this),
+      index = Number(position) || 0;
+    if (index < 0 || index >= text.length) return undefined;
+    index = Math.floor(index);
+    var first = text.charCodeAt(index);
+    if (first >= 0xd800 && first <= 0xdbff && index + 1 < text.length) {
+      var second = text.charCodeAt(index + 1);
+      if (second >= 0xdc00 && second <= 0xdfff) return 0x10000 + (first - 0xd800) * 0x400 + second - 0xdc00;
+    }
+    return first;
+  };
+  if (!String.fromCodePoint) String.fromCodePoint = function () {
+    var output = "";
+    for (var index = 0; index < arguments.length; index++) {
+      var codePoint = Number(arguments[index]);
+      if (!isFinite(codePoint) || Math.floor(codePoint) !== codePoint || codePoint < 0 || codePoint > 0x10ffff) throw new RangeError("invalid code point");
+      if (codePoint <= 0xffff) output += String.fromCharCode(codePoint);else {
+        codePoint -= 0x10000;
+        output += String.fromCharCode(0xd800 + Math.floor(codePoint / 0x400), 0xdc00 + codePoint % 0x400);
+      }
+    }
+    return output;
   };
   if (!Number.isInteger) Number.isInteger = function (value) {
     return typeof value === "number" && isFinite(value) && Math.floor(value) === value;
@@ -53,6 +93,10 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
     processes: Object.create(null),
     processSerial: 0,
     listeners: Object.create(null)
+  };
+  IINATAN.validateRuntimeCompatibility = function () {
+    var supplementary = "\uD83D\uDE00";
+    if (supplementary.codePointAt(0) !== 0x1f600 || String.fromCodePoint(0x1f600) !== supplementary || Array.from(supplementary).length !== 1) throw new Error("Unicode compatibility layer is unavailable");
   };
   function pref(key, fallback) {
     var profile = IINATAN.config && IINATAN.config.profiles[IINATAN.config.activeProfileId];
@@ -1732,6 +1776,7 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
       return false;
     });
     var selected = language.lookupRequest(text, scalarPosition, profile.scanLength);
+    if (!selected) return null;
     return {
       requestId: "",
       text: selected.lookupText,
@@ -3200,6 +3245,7 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
   IINATAN.openLookup = function (text, utf16Position, nested) {
     var profile = IINATAN.config.profiles[IINATAN.config.activeProfileId];
     var payload = IINATAN.lookupRequestFor(profile.lookupLanguage, text, utf16Position, profile);
+    if (!payload) return;
     var generation = IINATAN.generation;
     IINATAN.lookup(payload, function (error, result) {
       if (generation !== IINATAN.generation || error) {
@@ -4619,6 +4665,7 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
     return "linux";
   };
   IINATAN.initialize = function () {
+    IINATAN.validateRuntimeCompatibility();
     IINATAN.platform = IINATAN.detectPlatform();
     IINATAN.loadConfig();
     IINATAN.overlay = mp.create_osd_overlay("ass-events");

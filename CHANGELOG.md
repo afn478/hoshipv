@@ -9,6 +9,7 @@
 - Start subtitle hover lookup when asynchronous subtitle geometry completes, even if the pointer has not moved since the subtitle appeared.
 - Preserve multiline subtitle geometry when line-break clusters have no rendered glyph box, so visible lines remain hoverable.
 - Track pointer coordinate subproperties directly and match hover geometry to mpv's OSD canvas, alignment, scaled-pixel sizing, margins, and bottom-origin libass line position instead of guessing or vertically mirroring subtitle rectangles.
+- Restore MuJS compatibility for Unicode code-point matching and ignore subtitle punctuation that has no valid lookup request instead of aborting the popup controller.
 
 ## 3.0.0 - 2026-08-19
 

@@ -33,6 +33,19 @@ const context = {
 vm.createContext(context);
 for (const file of [
   "src/mpv/00_runtime.js",
+  "src/languages/lookup_character_policy.js",
+  "src/languages/common.js",
+  "src/languages/deinflection.js",
+  "src/languages/japanese.js",
+  "src/languages/english_yomitan_rules.js",
+  "src/languages/english.js",
+  "src/languages/french_yomitan_rules.js",
+  "src/languages/french.js",
+  "src/languages/german_yomitan_rules.js",
+  "src/languages/german.js",
+  "src/languages/chinese.js",
+  "src/languages/korean.js",
+  "src/languages/registry.js",
   "src/mpv/10_unicode.js",
   "src/mpv/40_ass.js",
   "src/mpv/60_popup.js",
@@ -114,6 +127,8 @@ assert(
   "closing final popup must release owned pause",
 );
 I.config.profiles.default.subtitleLookupMode = "hover";
+I.config.profiles.default.lookupLanguage = "ja";
+I.config.profiles.default.scanLength = 24;
 I.state.lookupEnabled = true;
 I.state.settingsOpen = false;
 I.state.hoverUnit = null;
@@ -134,6 +149,10 @@ I.unionRects = function (rects) {
 I.openLookup = function (text, position, nested) {
   hoverLookup = { text, position, nested };
 };
+assert(
+  I.lookupRequestFor("ja", "（", 0, I.config.profiles.default) === null,
+  "punctuation must not produce a lookup payload",
+);
 I.handleHover();
 assert(
   JSON.stringify(hoverLookup) ===
