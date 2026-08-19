@@ -1,12 +1,8 @@
 IINATAN.pauseOwner = false;
 IINATAN.popupStack = [];
+IINATAN.lookupSerial = 0;
 IINATAN.handleHover = function () {
-  if (
-    !IINATAN.state.lookupEnabled ||
-    IINATAN.popupStack.length ||
-    IINATAN.state.settingsOpen
-  )
-    return;
+  if (!IINATAN.state.lookupEnabled || IINATAN.state.settingsOpen) return;
   var profile = IINATAN.config.profiles[IINATAN.config.activeProfileId];
   if (profile.subtitleLookupMode === "shift-hover" && !IINATAN.state.shiftDown)
     return;
@@ -14,6 +10,18 @@ IINATAN.handleHover = function () {
   if (!mouse.hover) {
     IINATAN.state.hoverUnit = null;
     return;
+  }
+  if (IINATAN.popupStack.length) {
+    var current = IINATAN.popupStack[IINATAN.popupStack.length - 1],
+      popupRect = current && current.rect;
+    if (
+      popupRect &&
+      mouse.x >= popupRect.x &&
+      mouse.x <= popupRect.x + popupRect.w &&
+      mouse.y >= popupRect.y &&
+      mouse.y <= popupRect.y + popupRect.h
+    )
+      return;
   }
   var units = IINATAN.state.subtitleUnits || [],
     found = null;
@@ -30,8 +38,12 @@ IINATAN.handleHover = function () {
         break;
       }
     }
-  var hoverKey = found ? found.surface + ":" + found.position : "";
-  if (!found || hoverKey === IINATAN.state.hoverUnit) return;
+  if (!found) {
+    IINATAN.state.hoverUnit = null;
+    return;
+  }
+  var hoverKey = found.surface + ":" + found.position;
+  if (hoverKey === IINATAN.state.hoverUnit) return;
   IINATAN.state.hoverUnit = hoverKey;
   IINATAN.state.subtitleRect = IINATAN.unionRects(found.rects || []);
   var scalar =
@@ -47,6 +59,8 @@ IINATAN.handleHover = function () {
 IINATAN.anchorRect = function () {
   var osd = IINATAN.state.osd || { w: 1280, h: 720 },
     mouse = IINATAN.state.mouse || {};
+  if (mouse.hover && isFinite(Number(mouse.x)) && isFinite(Number(mouse.y)))
+    return { x: Number(mouse.x) - 1, y: Number(mouse.y) - 1, w: 2, h: 2 };
   return (
     IINATAN.state.subtitleRect || {
       x: Math.max(0, Number(mouse.x || osd.w / 2) - 20),
@@ -76,36 +90,31 @@ IINATAN.placePopup = function (anchor, size) {
       Math.max(Number(osd.mb || 0), Number(margins.b || 0) * h) -
       16,
   };
+  var popupWidth = Math.max(0, Math.min(Number(size.w || 0), safe.w)),
+    popupHeight = Math.max(0, Math.min(Number(size.h || 0), safe.h));
   var xs = [
+      anchor.x + anchor.w / 2 - popupWidth / 2,
       anchor.x,
-      anchor.x + anchor.w / 2 - size.w / 2,
-      anchor.x + anchor.w - size.w,
+      anchor.x + anchor.w - popupWidth,
     ],
-    ys = [anchor.y - size.h - 12, anchor.y + anchor.h + 12],
-    mouse = IINATAN.state.mouse || {};
+    ys = [anchor.y - popupHeight - 12, anchor.y + anchor.h + 12];
   var candidates = [];
-  ys.forEach(function (y) {
+  ys.forEach(function (y, yIndex) {
     xs.forEach(function (x) {
-      var cx = Math.max(safe.x, Math.min(safe.x + safe.w - size.w, x)),
-        cy = Math.max(safe.y, Math.min(safe.y + safe.h - size.h, y));
+      var cx = Math.max(safe.x, Math.min(safe.x + safe.w - popupWidth, x)),
+        cy = Math.max(safe.y, Math.min(safe.y + safe.h - popupHeight, y));
       var overflow = Math.abs(cx - x) + Math.abs(cy - y);
       var overlap = IINATAN.rectOverlap(
-        { x: cx, y: cy, w: size.w, h: size.h },
+        { x: cx, y: cy, w: popupWidth, h: popupHeight },
         anchor,
       );
-      var pointer =
-        mouse.hover &&
-        mouse.x >= cx &&
-        mouse.x <= cx + size.w &&
-        mouse.y >= cy &&
-        mouse.y <= cy + size.h
-          ? 500
-          : 0;
       var nested = IINATAN.popupStack.reduce(function (sum, popup) {
+        if (popup === IINATAN.popupStack[IINATAN.popupStack.length - 1])
+          return sum;
         return (
           sum +
           IINATAN.rectOverlap(
-            { x: cx, y: cy, w: size.w, h: size.h },
+            { x: cx, y: cy, w: popupWidth, h: popupHeight },
             popup.rect || {},
           )
         );
@@ -113,15 +122,15 @@ IINATAN.placePopup = function (anchor, size) {
       candidates.push({
         x: cx,
         y: cy,
-        w: Math.min(size.w, safe.w),
-        h: Math.min(size.h, safe.h),
-        score:
-          overflow * 10 + overlap * 4 + nested * 3 + pointer + Math.abs(cy - y),
+        w: popupWidth,
+        h: popupHeight,
+        order: yIndex * xs.length + candidates.length,
+        score: overflow * 10 + overlap * 4 + nested * 3 + Math.abs(cy - y),
       });
     });
   });
   candidates.sort(function (a, b) {
-    return a.score - b.score;
+    return a.score - b.score || a.order - b.order;
   });
   return candidates[0];
 };
@@ -228,6 +237,7 @@ IINATAN.handleNestedHover = function () {
 };
 
 IINATAN.openLookup = function (text, utf16Position, nested) {
+  var lookupSerial = ++IINATAN.lookupSerial;
   var profile = IINATAN.config.profiles[IINATAN.config.activeProfileId];
   var payload = IINATAN.lookupRequestFor(
     profile.lookupLanguage,
@@ -238,8 +248,13 @@ IINATAN.openLookup = function (text, utf16Position, nested) {
   if (!payload) return;
   var generation = IINATAN.generation;
   IINATAN.lookup(payload, function (error, result) {
-    if (generation !== IINATAN.generation || error) {
-      if (error && error.message !== "lookup superseded")
+    if (
+      lookupSerial !== IINATAN.lookupSerial ||
+      generation !== IINATAN.generation
+    )
+      return;
+    if (error) {
+      if (error.message !== "lookup superseded")
         IINATAN.showStatus(error.message, "error");
       return;
     }
@@ -270,6 +285,7 @@ IINATAN.openLookup = function (text, utf16Position, nested) {
 };
 
 IINATAN.closePopup = function () {
+  IINATAN.lookupSerial++;
   if (IINATAN.popupStack.length) IINATAN.popupStack.pop();
   IINATAN.cancelAudioPreview();
   if (!IINATAN.popupStack.length && IINATAN.pauseOwner) {
@@ -279,6 +295,7 @@ IINATAN.closePopup = function () {
   IINATAN.invalidateScene("close-popup");
 };
 IINATAN.closeAllPopups = function () {
+  IINATAN.lookupSerial++;
   while (IINATAN.popupStack.length) IINATAN.popupStack.pop();
   IINATAN.cancelAudioPreview();
   if (IINATAN.pauseOwner) {
@@ -321,6 +338,9 @@ IINATAN.updateBindings = function () {
       var current = IINATAN.scene.index.hit(
         IINATAN.state.mouse.x,
         IINATAN.state.mouse.y,
+        function (region) {
+          return !!region.handler.wheel;
+        },
       );
       if (current && current.handler.wheel) current.handler.wheel(1);
     });
@@ -328,6 +348,9 @@ IINATAN.updateBindings = function () {
       var current = IINATAN.scene.index.hit(
         IINATAN.state.mouse.x,
         IINATAN.state.mouse.y,
+        function (region) {
+          return !!region.handler.wheel;
+        },
       );
       if (current && current.handler.wheel) current.handler.wheel(-1);
     });
@@ -362,13 +385,17 @@ IINATAN.rebuildScene = function () {
       fill: profile.theme.background,
     });
   var max = {
-      w: Math.min(profile.popupMaxWidth, osd.w - 24),
+      w: Math.min(Math.max(profile.popupMaxWidth, 770), osd.w - 24),
       h: (osd.h * profile.popupMaxHeightVh) / 100,
     },
     ctx = IINATAN.scene.context(),
     measured = surface.measure(ctx, max),
+    minWidth = Math.min(
+      Math.max(profile.popupMaxWidth, 770),
+      Math.max(profile.popupMinWidth, 440),
+    ),
     placed = IINATAN.placePopup(IINATAN.anchorRect(), {
-      w: Math.max(profile.popupMinWidth, measured.w),
+      w: Math.max(minWidth, measured.w),
       h: Math.min(max.h, measured.h),
     });
   current.rect = placed;

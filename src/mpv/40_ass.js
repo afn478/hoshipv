@@ -222,12 +222,12 @@ class SpatialIndex {
         this.cells[key].push(region);
       }
   }
-  hit(x, y) {
+  hit(x, y, predicate) {
     var list = (
       this.cells[Math.floor(x / this.cell) + ":" + Math.floor(y / this.cell)] ||
       []
     ).filter(function (region) {
-      return region.contains(x, y);
+      return region.contains(x, y) && (!predicate || predicate(region));
     });
     list.sort(function (a, b) {
       return b.order - a.order || a.area() - b.area();
@@ -438,7 +438,10 @@ class Scrollbar extends Widget {
     ctx.hit(
       this.id,
       this.rect,
-      { wheel: this.view.onWheel.bind(this.view) },
+      {
+        wheel: this.view.onWheel.bind(this.view),
+        click: this.view.onScrollbarClick.bind(this.view),
+      },
       "scroll",
     );
   }
@@ -492,6 +495,15 @@ class ScrollView extends Widget {
       ),
     );
     IINATAN.invalidateScene("scroll");
+  }
+  onScrollbarClick() {
+    var mouse = IINATAN.state.mouse || {},
+      ratio = Math.max(
+        0,
+        Math.min(1, (Number(mouse.y || 0) - this.rect.y) / this.rect.h),
+      );
+    this.scrollY = ratio * Math.max(0, this.contentHeight - this.rect.h);
+    IINATAN.invalidateScene("scrollbar");
   }
   scrollRatio() {
     return this.scrollY / Math.max(1, this.contentHeight - this.rect.h);

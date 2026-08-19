@@ -291,7 +291,7 @@ IINATAN.configurePopupSize = function () {
         value,
         IINATAN.activeProfile().popupMinWidth,
         1600,
-        440,
+        770,
       );
       IINATAN.saveConfig(function () {});
       IINATAN.invalidateScene("popup-size");

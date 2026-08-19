@@ -53,14 +53,6 @@ IINATAN.initialize = function () {
       "info",
     );
   });
-  mp.add_key_binding(
-    "Shift",
-    "iinatan-shift-state",
-    function (event) {
-      IINATAN.state.shiftDown = !!event && event.event === "down";
-    },
-    { complex: true },
-  );
   mp.add_key_binding("ESC", "iinatan-escape", function () {
     if (IINATAN.popupStack.length) IINATAN.closePopup();
     else if (IINATAN.state.settingsOpen) IINATAN.toggleSettings();

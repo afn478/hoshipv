@@ -63,9 +63,39 @@ I.popupStack = [{ rect: { x: 400, y: 200, w: 300, h: 200 } }];
 function assert(value, message) {
   if (!value) throw new Error(message);
 }
+const pointerAnchor = I.anchorRect();
+assert(
+  pointerAnchor.x === 499 &&
+    pointerAnchor.y === 599 &&
+    pointerAnchor.w === 2 &&
+    pointerAnchor.h === 2,
+  "hovered popup anchors must follow the pointer coordinates",
+);
+const pointerPlaced = I.placePopup(pointerAnchor, { w: 360, h: 260 });
+assert(
+  pointerPlaced.x + pointerPlaced.w / 2 === 500,
+  "popup should be horizontally centered over the pointer when space allows",
+);
 const placed = I.placePopup(
   { x: 460, y: 500, w: 80, h: 30 },
   { w: 360, h: 260 },
+);
+const placedAgain = I.placePopup(
+  { x: 460, y: 500, w: 80, h: 30 },
+  { w: 360, h: 260 },
+);
+assert(
+  JSON.stringify(placed) === JSON.stringify(placedAgain),
+  "popup placement must be deterministic across redraws",
+);
+I.popupStack[0].rect = placed;
+const placedAfterRender = I.placePopup(
+  { x: 460, y: 500, w: 80, h: 30 },
+  { w: 360, h: 260 },
+);
+assert(
+  JSON.stringify(placed) === JSON.stringify(placedAfterRender),
+  "the current popup must not repel itself during redraw",
 );
 assert(placed.x >= 8 && placed.y >= 8, "popup must stay in the OSD safe area");
 assert(
@@ -141,6 +171,13 @@ I.state.subtitleUnits = [
     text: "日本語",
     rects: [{ x: 610, y: 620, w: 60, h: 56 }],
   },
+  {
+    surface: "primary",
+    position: 2,
+    displayStartUtf16: 2,
+    text: "日本語",
+    rects: [{ x: 680, y: 620, w: 60, h: 56 }],
+  },
 ];
 let hoverLookup = null;
 I.unionRects = function (rects) {
@@ -158,5 +195,13 @@ assert(
   JSON.stringify(hoverLookup) ===
     JSON.stringify({ text: "日本語", position: 1, nested: false }),
   "a pointer inside absolute subtitle geometry must open lookup at that glyph",
+);
+I.popupStack = [{ rect: { x: 200, y: 200, w: 300, h: 200 } }];
+I.state.mouse = { hover: true, x: 700, y: 640 };
+I.handleHover();
+assert(
+  JSON.stringify(hoverLookup) ===
+    JSON.stringify({ text: "日本語", position: 2, nested: false }),
+  "hovering a different subtitle glyph must replace the root popup lookup",
 );
 console.log("mpv popup interaction tests passed");

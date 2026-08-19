@@ -227,8 +227,8 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
         nestedPopupMode: "off",
         nestedPopupMaxDepth: 3,
         popupScale: 0.92,
-        popupMinWidth: 250,
-        popupMaxWidth: 440,
+        popupMinWidth: 440,
+        popupMaxWidth: 770,
         popupMaxHeightVh: 34,
         popupSubtitleGapPx: 24,
         theme: {
@@ -371,8 +371,8 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
     profile.scanLength = IINATAN.clamp(profile.scanLength, 1, 128, 24);
     profile.maxEntries = IINATAN.clamp(profile.maxEntries, 1, 20, 3);
     profile.maxGlossesPerEntry = IINATAN.clamp(profile.maxGlossesPerEntry, 1, 40, 4);
-    profile.popupMinWidth = IINATAN.clamp(profile.popupMinWidth, 180, 1200, 250);
-    profile.popupMaxWidth = Math.max(profile.popupMinWidth, IINATAN.clamp(profile.popupMaxWidth, 180, 1600, 440));
+    profile.popupMinWidth = Math.max(440, IINATAN.clamp(profile.popupMinWidth, 300, 1200, 440));
+    profile.popupMaxWidth = Math.max(profile.popupMinWidth, 770, IINATAN.clamp(profile.popupMaxWidth, 300, 1600, 770));
     profile.popupMaxHeightVh = IINATAN.clamp(profile.popupMaxHeightVh, 15, 90, 34);
     profile.pauseWhilePopupVisible = profile.pauseWhilePopupVisible !== false;
     profile.theme = IINATAN.validateTheme(profile.theme);
@@ -2188,9 +2188,9 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
         this.cells[key].push(region);
       }
     };
-    _proto3.hit = function hit(x, y) {
+    _proto3.hit = function hit(x, y, predicate) {
       var list = (this.cells[Math.floor(x / this.cell) + ":" + Math.floor(y / this.cell)] || []).filter(function (region) {
-        return region.contains(x, y);
+        return region.contains(x, y) && (!predicate || predicate(region));
       });
       list.sort(function (a, b) {
         return b.order - a.order || a.area() - b.area();
@@ -2437,7 +2437,8 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
       };
       ctx.ass.rect(ctx.layer++, thumb, ctx.theme.muted, null, 2);
       ctx.hit(this.id, this.rect, {
-        wheel: this.view.onWheel.bind(this.view)
+        wheel: this.view.onWheel.bind(this.view),
+        click: this.view.onScrollbarClick.bind(this.view)
       }, "scroll");
     };
     return Scrollbar;
@@ -2488,6 +2489,12 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
     _proto0.onWheel = function onWheel(delta) {
       this.scrollY = Math.max(0, Math.min(this.contentHeight - this.rect.h, this.scrollY + (delta > 0 ? -44 : 44)));
       IINATAN.invalidateScene("scroll");
+    };
+    _proto0.onScrollbarClick = function onScrollbarClick() {
+      var mouse = IINATAN.state.mouse || {},
+        ratio = Math.max(0, Math.min(1, (Number(mouse.y || 0) - this.rect.y) / this.rect.h));
+      this.scrollY = ratio * Math.max(0, this.contentHeight - this.rect.h);
+      IINATAN.invalidateScene("scrollbar");
     };
     _proto0.scrollRatio = function scrollRatio() {
       return this.scrollY / Math.max(1, this.contentHeight - this.rect.h);
@@ -3075,14 +3082,20 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
   // ---- src/mpv/60_popup.js ----
   IINATAN.pauseOwner = false;
   IINATAN.popupStack = [];
+  IINATAN.lookupSerial = 0;
   IINATAN.handleHover = function () {
-    if (!IINATAN.state.lookupEnabled || IINATAN.popupStack.length || IINATAN.state.settingsOpen) return;
+    if (!IINATAN.state.lookupEnabled || IINATAN.state.settingsOpen) return;
     var profile = IINATAN.config.profiles[IINATAN.config.activeProfileId];
     if (profile.subtitleLookupMode === "shift-hover" && !IINATAN.state.shiftDown) return;
     var mouse = IINATAN.state.mouse || {};
     if (!mouse.hover) {
       IINATAN.state.hoverUnit = null;
       return;
+    }
+    if (IINATAN.popupStack.length) {
+      var current = IINATAN.popupStack[IINATAN.popupStack.length - 1],
+        popupRect = current && current.rect;
+      if (popupRect && mouse.x >= popupRect.x && mouse.x <= popupRect.x + popupRect.w && mouse.y >= popupRect.y && mouse.y <= popupRect.y + popupRect.h) return;
     }
     var units = IINATAN.state.subtitleUnits || [],
       found = null;
@@ -3093,8 +3106,12 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
         break;
       }
     }
-    var hoverKey = found ? found.surface + ":" + found.position : "";
-    if (!found || hoverKey === IINATAN.state.hoverUnit) return;
+    if (!found) {
+      IINATAN.state.hoverUnit = null;
+      return;
+    }
+    var hoverKey = found.surface + ":" + found.position;
+    if (hoverKey === IINATAN.state.hoverUnit) return;
     IINATAN.state.hoverUnit = hoverKey;
     IINATAN.state.subtitleRect = IINATAN.unionRects(found.rects || []);
     var scalar = IINATAN.unicodeMap(found.text || "").scalars[found.position] || {};
@@ -3106,6 +3123,12 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
         h: 720
       },
       mouse = IINATAN.state.mouse || {};
+    if (mouse.hover && isFinite(Number(mouse.x)) && isFinite(Number(mouse.y))) return {
+      x: Number(mouse.x) - 1,
+      y: Number(mouse.y) - 1,
+      w: 2,
+      h: 2
+    };
     return IINATAN.state.subtitleRect || {
       x: Math.max(0, Number(mouse.x || osd.w / 2) - 20),
       y: Math.max(0, Number(mouse.y || osd.h * 0.8) - 16),
@@ -3124,41 +3147,43 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
       w: w - Math.max(Number(osd.ml || 0), Number(margins.l || 0) * w) - Math.max(Number(osd.mr || 0), Number(margins.r || 0) * w) - 16,
       h: h - Math.max(Number(osd.mt || 0), Number(margins.t || 0) * h) - Math.max(Number(osd.mb || 0), Number(margins.b || 0) * h) - 16
     };
-    var xs = [anchor.x, anchor.x + anchor.w / 2 - size.w / 2, anchor.x + anchor.w - size.w],
-      ys = [anchor.y - size.h - 12, anchor.y + anchor.h + 12],
-      mouse = IINATAN.state.mouse || {};
+    var popupWidth = Math.max(0, Math.min(Number(size.w || 0), safe.w)),
+      popupHeight = Math.max(0, Math.min(Number(size.h || 0), safe.h));
+    var xs = [anchor.x + anchor.w / 2 - popupWidth / 2, anchor.x, anchor.x + anchor.w - popupWidth],
+      ys = [anchor.y - popupHeight - 12, anchor.y + anchor.h + 12];
     var candidates = [];
-    ys.forEach(function (y) {
+    ys.forEach(function (y, yIndex) {
       xs.forEach(function (x) {
-        var cx = Math.max(safe.x, Math.min(safe.x + safe.w - size.w, x)),
-          cy = Math.max(safe.y, Math.min(safe.y + safe.h - size.h, y));
+        var cx = Math.max(safe.x, Math.min(safe.x + safe.w - popupWidth, x)),
+          cy = Math.max(safe.y, Math.min(safe.y + safe.h - popupHeight, y));
         var overflow = Math.abs(cx - x) + Math.abs(cy - y);
         var overlap = IINATAN.rectOverlap({
           x: cx,
           y: cy,
-          w: size.w,
-          h: size.h
+          w: popupWidth,
+          h: popupHeight
         }, anchor);
-        var pointer = mouse.hover && mouse.x >= cx && mouse.x <= cx + size.w && mouse.y >= cy && mouse.y <= cy + size.h ? 500 : 0;
         var nested = IINATAN.popupStack.reduce(function (sum, popup) {
+          if (popup === IINATAN.popupStack[IINATAN.popupStack.length - 1]) return sum;
           return sum + IINATAN.rectOverlap({
             x: cx,
             y: cy,
-            w: size.w,
-            h: size.h
+            w: popupWidth,
+            h: popupHeight
           }, popup.rect || {});
         }, 0);
         candidates.push({
           x: cx,
           y: cy,
-          w: Math.min(size.w, safe.w),
-          h: Math.min(size.h, safe.h),
-          score: overflow * 10 + overlap * 4 + nested * 3 + pointer + Math.abs(cy - y)
+          w: popupWidth,
+          h: popupHeight,
+          order: yIndex * xs.length + candidates.length,
+          score: overflow * 10 + overlap * 4 + nested * 3 + Math.abs(cy - y)
         });
       });
     });
     candidates.sort(function (a, b) {
-      return a.score - b.score;
+      return a.score - b.score || a.order - b.order;
     });
     return candidates[0];
   };
@@ -3243,13 +3268,15 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
     IINATAN.openLookup(cluster.text, cluster.range[0], true);
   };
   IINATAN.openLookup = function (text, utf16Position, nested) {
+    var lookupSerial = ++IINATAN.lookupSerial;
     var profile = IINATAN.config.profiles[IINATAN.config.activeProfileId];
     var payload = IINATAN.lookupRequestFor(profile.lookupLanguage, text, utf16Position, profile);
     if (!payload) return;
     var generation = IINATAN.generation;
     IINATAN.lookup(payload, function (error, result) {
-      if (generation !== IINATAN.generation || error) {
-        if (error && error.message !== "lookup superseded") IINATAN.showStatus(error.message, "error");
+      if (lookupSerial !== IINATAN.lookupSerial || generation !== IINATAN.generation) return;
+      if (error) {
+        if (error.message !== "lookup superseded") IINATAN.showStatus(error.message, "error");
         return;
       }
       var document = new DictionaryDocument(result, IINATAN.captureCardMediaContext());
@@ -3272,6 +3299,7 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
     });
   };
   IINATAN.closePopup = function () {
+    IINATAN.lookupSerial++;
     if (IINATAN.popupStack.length) IINATAN.popupStack.pop();
     IINATAN.cancelAudioPreview();
     if (!IINATAN.popupStack.length && IINATAN.pauseOwner) {
@@ -3281,6 +3309,7 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
     IINATAN.invalidateScene("close-popup");
   };
   IINATAN.closeAllPopups = function () {
+    IINATAN.lookupSerial++;
     while (IINATAN.popupStack.length) IINATAN.popupStack.pop();
     IINATAN.cancelAudioPreview();
     if (IINATAN.pauseOwner) {
@@ -3310,11 +3339,15 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
         complex: true
       });
       mp.add_forced_key_binding("WHEEL_UP", "iinatan-wheel-up", function () {
-        var current = IINATAN.scene.index.hit(IINATAN.state.mouse.x, IINATAN.state.mouse.y);
+        var current = IINATAN.scene.index.hit(IINATAN.state.mouse.x, IINATAN.state.mouse.y, function (region) {
+          return !!region.handler.wheel;
+        });
         if (current && current.handler.wheel) current.handler.wheel(1);
       });
       mp.add_forced_key_binding("WHEEL_DOWN", "iinatan-wheel-down", function () {
-        var current = IINATAN.scene.index.hit(IINATAN.state.mouse.x, IINATAN.state.mouse.y);
+        var current = IINATAN.scene.index.hit(IINATAN.state.mouse.x, IINATAN.state.mouse.y, function (region) {
+          return !!region.handler.wheel;
+        });
         if (current && current.handler.wheel) current.handler.wheel(-1);
       });
     } else {
@@ -3350,13 +3383,14 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
         fill: profile.theme.background
       });
     var max = {
-        w: Math.min(profile.popupMaxWidth, osd.w - 24),
+        w: Math.min(Math.max(profile.popupMaxWidth, 770), osd.w - 24),
         h: osd.h * profile.popupMaxHeightVh / 100
       },
       ctx = IINATAN.scene.context(),
       measured = surface.measure(ctx, max),
+      minWidth = Math.min(Math.max(profile.popupMaxWidth, 770), Math.max(profile.popupMinWidth, 440)),
       placed = IINATAN.placePopup(IINATAN.anchorRect(), {
-        w: Math.max(profile.popupMinWidth, measured.w),
+        w: Math.max(minWidth, measured.w),
         h: Math.min(max.h, measured.h)
       });
     current.rect = placed;
@@ -4481,7 +4515,7 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
       prompt: "Popup max width in OSD pixels",
       default_text: String(IINATAN.activeProfile().popupMaxWidth),
       submit: function submit(value) {
-        IINATAN.activeProfile().popupMaxWidth = IINATAN.clamp(value, IINATAN.activeProfile().popupMinWidth, 1600, 440);
+        IINATAN.activeProfile().popupMaxWidth = IINATAN.clamp(value, IINATAN.activeProfile().popupMinWidth, 1600, 770);
         IINATAN.saveConfig(function () {});
         IINATAN.invalidateScene("popup-size");
       }
@@ -4709,11 +4743,6 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
       IINATAN.state.lookupEnabled = !IINATAN.state.lookupEnabled;
       if (!IINATAN.state.lookupEnabled) IINATAN.closeAllPopups();
       IINATAN.showStatus(IINATAN.state.lookupEnabled ? "lookup enabled" : "lookup disabled", "info");
-    });
-    mp.add_key_binding("Shift", "iinatan-shift-state", function (event) {
-      IINATAN.state.shiftDown = !!event && event.event === "down";
-    }, {
-      complex: true
     });
     mp.add_key_binding("ESC", "iinatan-escape", function () {
       if (IINATAN.popupStack.length) IINATAN.closePopup();else if (IINATAN.state.settingsOpen) IINATAN.toggleSettings();

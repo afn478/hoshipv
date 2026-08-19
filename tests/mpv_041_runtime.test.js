@@ -34,6 +34,8 @@ const run = spawnSync(
 const output = (run.stdout || "") + (run.stderr || "");
 if (run.status !== 0 || !output.includes("native mpv runtime ready"))
   throw new Error(output || "mpv runtime smoke test failed");
+if (/\[input\] Unknown key 'Shift'/.test(output))
+  throw new Error("runtime must not register the standalone Shift key");
 if (
   /create_assdraw/.test(
     fs.readFileSync(path.join(root, "scripts/iinatan.js"), "utf8"),

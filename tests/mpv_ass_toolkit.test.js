@@ -63,6 +63,30 @@ assert(
   index.hit(90, 90).id === "back",
   "spatial cells must retain background hits",
 );
+index.add(
+  new I.HitRegion(
+    "scroll-wheel",
+    { x: 0, y: 0, w: 100, h: 100 },
+    { wheel() {} },
+    "scroll",
+    0,
+  ),
+);
+index.add(
+  new I.HitRegion(
+    "button-without-wheel",
+    { x: 10, y: 10, w: 20, h: 20 },
+    { click() {} },
+    "button",
+    2,
+  ),
+);
+assert(
+  index.hit(15, 15, function (region) {
+    return !!region.handler.wheel;
+  }).id === "scroll-wheel",
+  "wheel hit testing must skip controls without wheel handlers",
+);
 
 I.config = {
   activeProfileId: "default",
@@ -145,4 +169,14 @@ assert(
 );
 firstAction.handler.click();
 assert(clicked, "a visible modal button must dispatch its click action");
+const scrollView = new I.ScrollView("scroll-test", new I.VStack("content", 0));
+scrollView.rect = { x: 100, y: 50, w: 300, h: 200 };
+scrollView.contentHeight = 600;
+I.state.mouse = { x: 390, y: 150 };
+I.invalidateScene = function () {};
+scrollView.onScrollbarClick();
+assert(
+  scrollView.scrollY === 200,
+  "scrollbar track clicks must move the scroll view to the clicked ratio",
+);
 console.log("mpv ASS toolkit tests passed");

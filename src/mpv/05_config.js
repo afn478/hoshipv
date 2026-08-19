@@ -32,8 +32,8 @@ IINATAN.DEFAULT_CONFIG = {
       nestedPopupMode: "off",
       nestedPopupMaxDepth: 3,
       popupScale: 0.92,
-      popupMinWidth: 250,
-      popupMaxWidth: 440,
+      popupMinWidth: 440,
+      popupMaxWidth: 770,
       popupMaxHeightVh: 34,
       popupSubtitleGapPx: 24,
       theme: {
@@ -204,10 +204,14 @@ IINATAN.normalizeProfile = function (profile) {
     40,
     4,
   );
-  profile.popupMinWidth = IINATAN.clamp(profile.popupMinWidth, 180, 1200, 250);
+  profile.popupMinWidth = Math.max(
+    440,
+    IINATAN.clamp(profile.popupMinWidth, 300, 1200, 440),
+  );
   profile.popupMaxWidth = Math.max(
     profile.popupMinWidth,
-    IINATAN.clamp(profile.popupMaxWidth, 180, 1600, 440),
+    770,
+    IINATAN.clamp(profile.popupMaxWidth, 300, 1600, 770),
   );
   profile.popupMaxHeightVh = IINATAN.clamp(
     profile.popupMaxHeightVh,

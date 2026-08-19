@@ -10,6 +10,8 @@
 - Preserve multiline subtitle geometry when line-break clusters have no rendered glyph box, so visible lines remain hoverable.
 - Track pointer coordinate subproperties directly and match hover geometry to mpv's OSD canvas, alignment, scaled-pixel sizing, margins, and bottom-origin libass line position instead of guessing or vertically mirroring subtitle rectangles.
 - Restore MuJS compatibility for Unicode code-point matching and ignore subtitle punctuation that has no valid lookup request instead of aborting the popup controller.
+- Replace stale root popups when hovering a different subtitle word, discard out-of-order lookup results, remove mpv's invalid standalone Shift binding, and keep popup placement deterministic with a readable minimum width.
+- Keep the popup anchored above the pointer, remove pointer-avoidance placement, route wheel events through scroll containers, add scrollbar track clicks, and expand the default popup width to 770 OSD pixels.
 
 ## 3.0.0 - 2026-08-19
 
