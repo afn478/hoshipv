@@ -606,7 +606,7 @@ IINATAN.geometryRequestForSubtitle = function (sub) {
     font: {
       family: String(props["sub-font"] || "sans-serif"),
       size:
-        Number(props["sub-font-size"] || 55) * Number(props["sub-scale"] || 1),
+        Number(props["sub-font-size"] || 38) * Number(props["sub-scale"] || 1),
       weight: props["sub-bold"] ? 700 : 400,
       italic: !!props["sub-italic"],
       spacing: Number(props["sub-spacing"] || 0),
@@ -665,8 +665,22 @@ IINATAN.updateSubtitleGeometry = function () {
     IINATAN.state.properties["video-out-params"],
     IINATAN.state.properties["sub-font"],
     IINATAN.state.properties["sub-font-size"],
+    IINATAN.state.properties["sub-bold"],
+    IINATAN.state.properties["sub-italic"],
+    IINATAN.state.properties["sub-spacing"],
+    IINATAN.state.properties["sub-line-spacing"],
+    IINATAN.state.properties["sub-margin-x"],
+    IINATAN.state.properties["sub-margin-y"],
+    IINATAN.state.properties["sub-align-x"],
+    IINATAN.state.properties["sub-align-y"],
+    IINATAN.state.properties["sub-justify"],
+    IINATAN.state.properties["sub-use-margins"],
     IINATAN.state.properties["sub-pos"],
+    IINATAN.state.properties["secondary-sub-pos"],
     IINATAN.state.properties["sub-scale"],
+    IINATAN.state.properties["sub-scale-by-window"],
+    IINATAN.state.properties["sub-scale-with-window"],
+    IINATAN.state.properties["sub-ass-override"],
   ]);
   if (key === IINATAN.state.geometryKey) return;
   IINATAN.state.geometryKey = key;
