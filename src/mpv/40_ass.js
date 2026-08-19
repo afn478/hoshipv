@@ -479,9 +479,9 @@ class ScrollView extends Widget {
     });
   }
   render(ctx) {
+    ctx.hit(this.id, this.rect, { wheel: this.onWheel.bind(this) }, "scroll");
     ctx.withClip(this.rect, this.child.render.bind(this.child, ctx));
     if (this.contentHeight > this.rect.h) this.scrollbar.render(ctx);
-    ctx.hit(this.id, this.rect, { wheel: this.onWheel.bind(this) }, "scroll");
   }
   onWheel(delta) {
     this.scrollY = Math.max(
@@ -634,7 +634,12 @@ class Callout extends Widget {
   }
 }
 class PopupSurface extends Callout {}
-class Modal extends PopupSurface {}
+class Modal extends PopupSurface {
+  measure(ctx, limits) {
+    var size = super.measure(ctx, limits);
+    return { w: limits.w, h: size.h };
+  }
+}
 
 IINATAN.Widget = Widget;
 IINATAN.TextRun = TextRun;

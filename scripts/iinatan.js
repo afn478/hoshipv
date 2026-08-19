@@ -2418,11 +2418,11 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
       });
     };
     _proto0.render = function render(ctx) {
-      ctx.withClip(this.rect, this.child.render.bind(this.child, ctx));
-      if (this.contentHeight > this.rect.h) this.scrollbar.render(ctx);
       ctx.hit(this.id, this.rect, {
         wheel: this.onWheel.bind(this)
       }, "scroll");
+      ctx.withClip(this.rect, this.child.render.bind(this.child, ctx));
+      if (this.contentHeight > this.rect.h) this.scrollbar.render(ctx);
     };
     _proto0.onWheel = function onWheel(delta) {
       this.scrollY = Math.max(0, Math.min(this.contentHeight - this.rect.h, this.scrollY + (delta > 0 ? -44 : 44)));
@@ -2592,6 +2592,14 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
       return _PopupSurface.apply(this, arguments) || this;
     }
     _inheritsLoose(Modal, _PopupSurface);
+    var _proto12 = Modal.prototype;
+    _proto12.measure = function measure(ctx, limits) {
+      var size = _PopupSurface.prototype.measure.call(this, ctx, limits);
+      return {
+        w: limits.w,
+        h: size.h
+      };
+    };
     return Modal;
   }(PopupSurface);
   IINATAN.Widget = Widget;
@@ -2621,8 +2629,8 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
       this.clusterRegions = [];
       this.lastData = "";
     }
-    var _proto12 = Scene.prototype;
-    _proto12.context = function context() {
+    var _proto13 = Scene.prototype;
+    _proto13.context = function context() {
       var self = this,
         profile = IINATAN.config.profiles[IINATAN.config.activeProfileId],
         theme = profile.theme;
@@ -2675,7 +2683,7 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
         }
       };
     };
-    _proto12.measure = function measure(text, style, wrap) {
+    _proto13.measure = function measure(text, style, wrap) {
       var osd = IINATAN.state.osd || {},
         key = JSON.stringify([text, style.font, style.size, !!style.bold, !!style.italic, style.spacing || 0, wrap || 0, osd.w || 0, osd.h || 0, IINATAN.platform || "unknown"]);
       if (this.measureCache[key]) return this.measureCache[key];
@@ -2710,7 +2718,7 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
         clusters: []
       };
     };
-    _proto12.addClusters = function addClusters(widget, clusters, clip) {
+    _proto13.addClusters = function addClusters(widget, clusters, clip) {
       var self = this;
       clusters.forEach(function (cluster, index) {
         var rect = {
@@ -2730,14 +2738,14 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
         });
       });
     };
-    _proto12.clusterAt = function clusterAt(x, y) {
+    _proto13.clusterAt = function clusterAt(x, y) {
       var matches = this.clusterRegions.filter(function (cluster) {
         var rect = cluster.rect;
         return x >= rect.x && y >= rect.y && x <= rect.x + rect.w && y <= rect.y + rect.h;
       });
       return matches.length ? matches[matches.length - 1] : null;
     };
-    _proto12.render = function render(root, rect) {
+    _proto13.render = function render(root, rect) {
       this.root = root;
       this.index.clear();
       this.clusterRegions = [];
@@ -2762,7 +2770,7 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
         this.lastData = data;
       }
     };
-    _proto12.clear = function clear() {
+    _proto13.clear = function clear() {
       if (this.lastData) this.overlay.remove();
       this.lastData = "";
       this.index.clear();
@@ -2914,8 +2922,8 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
       this.context = context || {};
       this.fromResult(result);
     }
-    var _proto13 = DictionaryDocument.prototype;
-    _proto13.fromResult = function fromResult(result) {
+    var _proto14 = DictionaryDocument.prototype;
+    _proto14.fromResult = function fromResult(result) {
       var self = this;
       (result.results || []).forEach(function (item, index) {
         var term = item.term || {},

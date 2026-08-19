@@ -116,4 +116,33 @@ assert(
   /\\clip\(10,10,50,30\)/.test(ass.build()),
   "scroll content must emit ASS clipping",
 );
+
+let clicked = false;
+const actions = new I.VStack("actions", 8);
+actions.add(
+  new I.Button("first-action", "First action", function () {
+    clicked = true;
+  }),
+);
+actions.add(new I.Button("close-action", "Close", function () {}));
+const modal = new I.Modal(
+  "settings-modal",
+  new I.ScrollView("settings-scroll", actions),
+  { fill: "000000" },
+);
+scene.render(modal, { x: 100, y: 20, w: 620, h: 400 });
+assert(
+  modal.rect.w === 620,
+  "modal width must remain stable while text measurements are pending",
+);
+const firstAction = scene.index.hit(
+  actions.children[0].rect.x + 2,
+  actions.children[0].rect.y + 2,
+);
+assert(
+  firstAction && firstAction.id === "first-action",
+  "scroll surfaces must not mask child button hit regions",
+);
+firstAction.handler.click();
+assert(clicked, "a visible modal button must dispatch its click action");
 console.log("mpv ASS toolkit tests passed");

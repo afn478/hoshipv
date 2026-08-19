@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- Keep the settings modal at its intended width before text shaping completes and allow its buttons to receive pointer clicks through the scroll surface.
+
 ## 3.0.0 - 2026-08-19
 
 ### Breaking changes
