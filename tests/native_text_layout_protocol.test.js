@@ -43,6 +43,41 @@ assert(
   "every shaped cluster needs a measured box",
 );
 
+const multilineRequest = JSON.parse(
+  fs.readFileSync(
+    path.join(root, "tests/fixtures/protocol/text-layout-request.json"),
+    "utf8",
+  ),
+);
+multilineRequest.requestId = "fixture-layout-multiline";
+multilineRequest.text = "日本語\n辞書";
+const multilineTemp = fs.mkdtempSync(
+  path.join(os.tmpdir(), "iinatan-text-layout-"),
+);
+try {
+  const multilineFile = path.join(multilineTemp, "request.json");
+  fs.writeFileSync(multilineFile, JSON.stringify(multilineRequest));
+  const multiline = spawnSync(backend, ["text-layout", multilineFile], {
+    encoding: "utf8",
+  });
+  assert(multiline.status === 0, multiline.stderr || multiline.stdout);
+  const multilineResponse = JSON.parse(
+    multiline.stdout.trim().split(/\n/).pop(),
+  );
+  assert(
+    multilineResponse.ok && multilineResponse.clusters.length === 6,
+    "multiline text layout must preserve the newline cluster",
+  );
+  assert(
+    multilineResponse.clusters.some(
+      (cluster) => cluster.text === "\n" && cluster.width === 0,
+    ),
+    "newline clusters must remain non-hit-testable",
+  );
+} finally {
+  fs.rmSync(multilineTemp, { recursive: true, force: true });
+}
+
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), "iinatan-worker-test-"));
 fs.mkdirSync(path.join(temp, "queue"), { recursive: true });
 fs.writeFileSync(path.join(temp, "config.tsv"), "fingerprint\tfixture\n");

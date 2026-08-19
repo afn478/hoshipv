@@ -285,17 +285,23 @@ Json TextLayoutService::handle(const Json& request) {
     const ASS_IinatanLookupRect* rect = nullptr;
     for (int candidate = 0; candidate < count; ++candidate)
       if (rects[candidate].id == static_cast<int>(index)) rect = &rects[candidate];
-    if (!rect) {
+    const Cluster& cluster = clusters[index];
+    const bool line_break =
+        cluster.utf8_end - cluster.utf8_start == 1 &&
+        (text[static_cast<size_t>(cluster.utf8_start)] == '\n' ||
+         text[static_cast<size_t>(cluster.utf8_start)] == '\r');
+    if (!rect && !line_break) {
       ass_free_track(track);
       return failure(request_id, "text-layout-missing-cluster");
     }
-    const Cluster& cluster = clusters[index];
     response_clusters.emplace_back(Json::Object{
         {"text", text.substr(
                      static_cast<size_t>(cluster.utf8_start),
                      static_cast<size_t>(cluster.utf8_end - cluster.utf8_start))},
-        {"x", rect->x - left}, {"y", rect->y - top},
-        {"width", rect->w}, {"height", rect->h},
+        {"x", rect ? rect->x - left : 0},
+        {"y", rect ? rect->y - top : 0},
+        {"width", rect ? rect->w : 0},
+        {"height", rect ? rect->h : 0},
         {"utf8Range", Json::Array{cluster.utf8_start, cluster.utf8_end}},
         {"scalarRange", Json::Array{cluster.scalar_start, cluster.scalar_end}},
         {"utf16Range", Json::Array{cluster.utf16_start, cluster.utf16_end}},
