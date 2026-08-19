@@ -6,6 +6,7 @@
 
 - Keep the settings modal at its intended width before text shaping completes and allow its buttons to receive pointer clicks through the scroll surface.
 - Prepare worker storage before writing its configuration and report write failures without terminating the mpv script.
+- Start subtitle hover lookup when asynchronous subtitle geometry completes, even if the pointer has not moved since the subtitle appeared.
 
 ## 3.0.0 - 2026-08-19
 

@@ -137,4 +137,42 @@ I.ocrCache.values = Object.create(null);
 I.requestBitmapSubtitleOcr();
 assert.strictEqual(request, null, "non-Apple platforms must not schedule OCR");
 
+let hoverAfterGeometry = 0;
+I.handleHover = function () {
+  hoverAfterGeometry++;
+};
+I.state.subtitles = [
+  { surface: "primary", text: "日本語", ass: "", extradata: "" },
+];
+I.state.geometryKey = "";
+I.state.geometryGeneration = 0;
+I.state.osd = { w: 1280, h: 720, ml: 0, mr: 0, mt: 0, mb: 0 };
+I.state.properties = {
+  "video-out-params": { w: 1920, h: 1080 },
+  "sub-font": "sans-serif",
+  "sub-font-size": 55,
+  "sub-scale": 1,
+  "sub-margin-x": 20,
+};
+I.workerRequest = function (payload, callback) {
+  assert.strictEqual(payload.type, "text-layout");
+  callback(null, {
+    ok: true,
+    width: 180,
+    height: 56,
+    clusters: [
+      { x: 0, y: 0, width: 60, height: 56 },
+      { x: 60, y: 0, width: 60, height: 56 },
+      { x: 120, y: 0, width: 60, height: 56 },
+    ],
+  });
+};
+I.updateSubtitleGeometry();
+assert.strictEqual(
+  hoverAfterGeometry,
+  1,
+  "geometry completion must re-run hover lookup for a stationary pointer",
+);
+assert.strictEqual(I.state.subtitleUnits.length, 3);
+
 console.log("mpv bitmap OCR controller tests passed");

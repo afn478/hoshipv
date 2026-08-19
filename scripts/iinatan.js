@@ -3798,6 +3798,7 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
         });
         IINATAN.state.subtitleUnits = combined;
         IINATAN.state.subtitleRect = IINATAN.unionRects(rects);
+        IINATAN.handleHover();
       }, 10000);
     });
   };
