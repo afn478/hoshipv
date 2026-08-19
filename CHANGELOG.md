@@ -5,6 +5,7 @@
 ### Fixed
 
 - Keep the settings modal at its intended width before text shaping completes and allow its buttons to receive pointer clicks through the scroll surface.
+- Prepare worker storage before writing its configuration and report write failures without terminating the mpv script.
 
 ## 3.0.0 - 2026-08-19
 

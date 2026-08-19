@@ -39,6 +39,7 @@ vm.runInContext(
 const I = context.IINATAN;
 I.config = {
   activeProfileId: "default",
+  global: { backendPath: "/backend" },
   dictionaries: [{ id: "d", path: "/d" }],
   profiles: {
     default: {
@@ -48,6 +49,44 @@ I.config = {
     },
   },
 };
+
+const startupEvents = [];
+I.backendCommand = function (args, callback) {
+  startupEvents.push(args[0]);
+  callback(null);
+};
+I.writeText = function () {
+  startupEvents.push("write-config");
+};
+I.subprocess = function () {
+  startupEvents.push("spawn-worker");
+  return 42;
+};
+I.startWorker(function () {});
+assert(
+  startupEvents.join(",") === "worker-prepare,write-config,spawn-worker",
+  "worker storage must be prepared before config is written and the worker starts",
+);
+
+I.worker.processId = null;
+let startupError = null;
+let spawnedAfterWriteFailure = false;
+I.writeText = function () {
+  throw new Error("config write failed");
+};
+I.subprocess = function () {
+  spawnedAfterWriteFailure = true;
+};
+I.startWorker(function (error) {
+  startupError = error;
+});
+assert(
+  startupError &&
+    startupError.message === "config write failed" &&
+    !spawnedAfterWriteFailure,
+  "worker config write failures must reach the caller without spawning",
+);
+
 I.startWorker = function (callback) {
   callback(null);
 };

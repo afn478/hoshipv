@@ -1900,10 +1900,15 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
     var config = ["fingerprint\t" + profile.lookupLanguage].concat(dictionaries.map(function (path) {
       return "dict\t" + path;
     })).join("\n") + "\n";
-    IINATAN.writeText(IINATAN.worker.root + "/config.tsv", config);
     IINATAN.backendCommand(["worker-prepare", IINATAN.workerPath("")], function (prepareError) {
       if (prepareError) {
         callback(prepareError);
+        return;
+      }
+      try {
+        IINATAN.writeText(IINATAN.worker.root + "/config.tsv", config);
+      } catch (writeError) {
+        callback(writeError);
         return;
       }
       IINATAN.worker.processId = IINATAN.subprocess([IINATAN.path(IINATAN.backendPath()), "worker", IINATAN.workerPath(""), "--owner-pid", String(mp.utils.getpid())], {
@@ -2026,7 +2031,7 @@ function _setPrototypeOf(t, e) { return _setPrototypeOf = Object.setPrototypeOf 
 
   // ---- src/mpv/40_ass.js ----
   IINATAN.assEscape = function (text) {
-    return String(text === undefined ? "" : text).replace(/\\/g, "\\\\").replace(/{/g, "\\{").replace(/}/g, "\\}").replace(/\r?\n/g, "\\N");
+    return String(text === undefined ? "" : text).replace(/\\/g, "\\\\").replace(/\{/g, "\\{").replace(/\}/g, "\\}").replace(/\r?\n/g, "\\N");
   };
   IINATAN.assColor = function (rgb, alpha) {
     var value = String(rgb || "ffffff").replace(/^#/, "");

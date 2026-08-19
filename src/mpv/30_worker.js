@@ -69,12 +69,17 @@ IINATAN.startWorker = function (callback) {
         }),
       )
       .join("\n") + "\n";
-  IINATAN.writeText(IINATAN.worker.root + "/config.tsv", config);
   IINATAN.backendCommand(
     ["worker-prepare", IINATAN.workerPath("")],
     function (prepareError) {
       if (prepareError) {
         callback(prepareError);
+        return;
+      }
+      try {
+        IINATAN.writeText(IINATAN.worker.root + "/config.tsv", config);
+      } catch (writeError) {
+        callback(writeError);
         return;
       }
       IINATAN.worker.processId = IINATAN.subprocess(

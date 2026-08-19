@@ -1,8 +1,8 @@
 IINATAN.assEscape = function (text) {
   return String(text === undefined ? "" : text)
     .replace(/\\/g, "\\\\")
-    .replace(/{/g, "\\{")
-    .replace(/}/g, "\\}")
+    .replace(/\{/g, "\\{")
+    .replace(/\}/g, "\\}")
     .replace(/\r?\n/g, "\\N");
 };
 IINATAN.assColor = function (rgb, alpha) {
