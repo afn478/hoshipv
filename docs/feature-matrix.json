@@ -1,0 +1,364 @@
+{
+  "schemaVersion": 1,
+  "interpretation": {
+    "x86": "x86-64 / AMD64, not 32-bit IA-32",
+    "statusDefinitions": {
+      "implemented": "boundary or behavior exists",
+      "unit-tested": "pure behavior has automated coverage",
+      "native-desktop-tested": "real stock mpv, helper, browser windows, and native input were exercised",
+      "unverified": "no authoritative current-state evidence",
+      "blocked": "a concrete dependency or platform gate prevents validation"
+    }
+  },
+  "features": [
+    {
+      "id": "electron-companion-surfaces",
+      "source": "ADR-001",
+      "implementation": "app/main.js; src/platform/browser-host.js",
+      "tests": [
+        "tests/core.test.js",
+        "tests/integration/application-controller.test.js",
+        "scripts/e2e/desktop-vertical-slice.js"
+      ],
+      "status": "per-session-isolated-surfaces-with-foreground-owned-stacking",
+      "nativeDesktopStatus": "macos-windowed-and-supplied-media-fullscreen-companion-surfaces-tested;nonmacos-native-desktop-unverified"
+    },
+    {
+      "id": "stock-mpv-ipc-session",
+      "source": "reference mpv bridge",
+      "implementation": "src/player/mpv-ipc.js; src/player/player-bridge.js; mpv/iinatan-session.lua",
+      "tests": [
+        "tests/integration/mpv-ipc.test.js",
+        "scripts/e2e/stock-mpv-ipc-smoke.js",
+        "scripts/e2e/stock-mpv-multi-session-smoke.js",
+        "scripts/e2e/stock-mpv-recovery-smoke.js",
+        "scripts/e2e/stock-mpv-subtitle-smoke.js",
+        "scripts/e2e/stock-mpv-media-smoke.js"
+      ],
+      "status": "stock-mpv-headless-descriptor-ipc-subtitle-property-timing-oversized-ipc-fails-closed-multiple-session-isolation-crash-recovery-and-opt-in-real-media-smoke",
+      "nativeDesktopStatus": "windowed-native-window-content-sidecar-and-native-input-tested;stock-glyph-equivalence-open"
+    },
+    {
+      "id": "ordinary-mpv-bootstrap",
+      "source": "objective ordinary mpv workflow and packaging bootstrap",
+      "implementation": "src/player/mpv-launcher.js; src/player/launch-arguments.js; app/main.js; mpv/iinatan-session.lua",
+      "tests": [
+        "tests/integration/mpv-launcher.test.js",
+        "tests/core.test.js (explicit --open-media argument parsing)",
+        "scripts/e2e/mpv-launcher-smoke.js (opt-in real stock-mpv run)"
+      ],
+      "status": "native-file-picker-and-explicit-path-bootstrap;launch-time-session-script-and-private-ipc-only;no-config-mutation;platform-named-pipe-contract-tested",
+      "nativeDesktopStatus": "GUI-menu-launch-unverified;real-stock-mpv-launcher-descriptor-and-IPC-smoke-passed"
+    },
+    {
+      "id": "explicit-session-identity",
+      "source": "objective shared session/process/window identity",
+      "implementation": "src/player/session-descriptor.js",
+      "tests": ["tests/core.test.js"],
+      "status": "unit-tested",
+      "nativeDesktopStatus": "unverified"
+    },
+    {
+      "id": "coordinate-contract",
+      "source": "docs/coordinate-geometry.md",
+      "implementation": "src/geometry/coordinate-mapper.js",
+      "tests": ["tests/core.test.js"],
+      "status": "unit-tested",
+      "nativeDesktopStatus": "unverified"
+    },
+    {
+      "id": "snapshot-stale-rejection",
+      "source": "objective generation invariant",
+      "implementation": "src/geometry/snapshot.js; src/player/application-controller.js",
+      "tests": ["tests/core.test.js"],
+      "status": "unit-tested",
+      "nativeDesktopStatus": "unverified"
+    },
+    {
+      "id": "primary-secondary-track-identity",
+      "source": "objective track/event model",
+      "implementation": "src/geometry/snapshot.js; src/geometry/subtitle-geometry-provider.js",
+      "tests": ["tests/core.test.js"],
+      "status": "unit-tested",
+      "nativeDesktopStatus": "unverified"
+    },
+    {
+      "id": "independent-geometry-oracle",
+      "source": "objective stock-mpv comparison oracle",
+      "implementation": "src/geometry/oracle.js; scripts/geometry-oracle.js",
+      "tests": [
+        "tests/core.test.js",
+        "scripts/e2e/stock-mpv-pixel-oracle.js",
+        "scripts/e2e/stock-mpv-real-media-pixel-oracle.js",
+        "scripts/e2e/stock-mpv-real-media-ass-smoke.js"
+      ],
+      "status": "unit-tested; stock-mpv-selected-supported-subrip-mixed-language-missing-font-multi-event-multiline-simultaneous-positioned-style-explicit-position-explicit-movement-static-tags-bounded-transforms-bounded-default-strip-color-identity-inline-color-identity-and-unique-color-per-unit-pixel-bounds-and-visible-envelope-smoke; supplied-mkv-japanese-subrip-pixel-and-visible-envelope-oracle-passed; supplied-mkv-ASS-attachment-demux-visible-grapheme-word-coverage-primary-colour-fill-and-visible-envelope-registration-passed; stock-and-helper-libass-0.17.5-version-aligned; per-glyph-renderer-patch-build-environment-equivalence-open",
+      "nativeDesktopStatus": "advanced-renderer-modes-and-platform-input-oracle-open"
+    },
+    {
+      "id": "exact-native-ass-geometry",
+      "source": "objective geometry investigation order",
+      "implementation": "src/geometry/subtitle-geometry-provider.js; src/geometry/native-subtitle-geometry-service.js; src/services/native-geometry-client.js; native window probe boundary",
+      "tests": ["tests/core.test.js", "scripts/e2e/native-geometry-smoke.js"],
+      "status": "opt-in-client-integrated; macos-helper-bundled; fill-rectangles-hit-geometry-and-additive-visible-envelope-rectangles; supported-mode-bounded-default-strip-simple-external-subrip-and-explicit-position-explicit-movement-static-tags-and-transform-oracle-passed; supplied-mkv-japanese-subrip-pixel-oracle-passed; supplied-mkv-ASS-attachment-demux-visible-grapheme-and-word-coverage-passed; unsupported-vector-clipping-drawing-and-unknown-modes-fail-closed; full-stock-exact-support-open",
+      "nativeDesktopStatus": "macos-supplied-media-windowed-and-fullscreen-instrumented-native-e2e-passed; stock-glyph-equivalence-and-nonmacos-platform-oracle-open"
+    },
+    {
+      "id": "popup-placement-hysteresis",
+      "source": "objective popup stability",
+      "implementation": "src/geometry/popup-placement.js",
+      "tests": [
+        "tests/core.test.js",
+        "tests/integration/application-controller.test.js",
+        "scripts/e2e/browser-integration.js"
+      ],
+      "status": "unit-tested;controller-rendered-size-reflow-and-browser-document-layout-tested",
+      "nativeDesktopStatus": "macos-windowed-and-supplied-media-popup-placement-and-smooth-approach-tested;nonmacos-native-desktop-unverified"
+    },
+    {
+      "id": "input-focus-state-machine",
+      "source": "objective explicit state machine",
+      "implementation": "src/interaction/interaction-controller.js",
+      "tests": ["tests/core.test.js", "scripts/e2e/browser-integration.js"],
+      "status": "unit-tested;browser-document-selection-focus-context-menu-and-native-wheel-coverage;native-scroll-selection-outside-dismissal-matrix-passed;smooth-popup-approach-regression-passed;live-hoshi-smooth-approach-passed",
+      "nativeDesktopStatus": "macos-supplied-media-native-selection-scroll-and-outside-dismissal-passed;nonmacos-focus-and-input-unverified"
+    },
+    {
+      "id": "phase-a-demo-vertical-slice",
+      "source": "objective Phase A real-window/input slice",
+      "implementation": "src/player/application-controller.js; tests/integration/application-controller.test.js",
+      "tests": [
+        "tests/integration/application-controller.test.js",
+        "scripts/e2e/desktop-vertical-slice.js (including optional additional native pointer probes)"
+      ],
+      "status": "controller-integration-tested;real-media-native-geometry-tested;windowed-and-fullscreen-native-harness-passed-with-instrumented-geometry;four-unit-multi-pointer-probe-passed-on-macos;native-selection-scroll-outside-dismissal-matrix-passed;smooth-popup-approach-regression-passed;live-hoshi-smooth-approach-passed",
+      "nativeDesktopStatus": "macos-windowed-and-supplied-media-fullscreen-hover-popup-click-selection-scroll-outside-dismissal-escape-combined-capture-and-live-hoshi-tested;four-unit-multi-pointer-probe-passed;stock-glyph-equivalence-open"
+    },
+    {
+      "id": "pause-ownership",
+      "source": "objective pause transaction",
+      "implementation": "src/interaction/pause-ownership.js",
+      "tests": ["tests/core.test.js"],
+      "status": "unit-tested",
+      "nativeDesktopStatus": "windowed-native-e2e-tested-for-user-pause-preservation-and-plugin-pause-release"
+    },
+    {
+      "id": "gamepad-contexts",
+      "source": "reference controller bindings",
+      "implementation": "src/interaction/controller-bindings.js; src/interaction/controller-runtime.js; app/renderer.js; src/player/application-controller.js",
+      "tests": ["tests/core.test.js"],
+      "status": "generic-browser-gamepad-router;browser-hotplug-event-and-poll-transport;macos-native-HID-worker-state-transport;native-contract-stale-disconnect-recovery-and-device-hot-swap-edge-state-unit-tested",
+      "nativeDesktopStatus": "macos-native-HID-path-wired;physical-controller-focus-hotplug-and-device-compatibility-unverified"
+    },
+    {
+      "id": "hoshidicts-worker",
+      "source": "reference HoshiDicts worker protocol",
+      "implementation": "src/services/hoshi-worker.js; src/services/dictionary-service.js; app/main.js; native/portable_hoshi_main.cpp; CMakeLists.txt",
+      "tests": [
+        "tests/core.test.js",
+        "scripts/e2e/hoshi-worker-smoke.js",
+        "scripts/e2e/portable-hoshi-smoke.js",
+        "scripts/e2e/recommended-dictionary-download-smoke.js"
+      ],
+      "status": "bounded-lookup-cancellation-and-timeouts; macos-arm64-full-backend-bundled; windows-linux-portable-dictionary-worker-built; portable-helper-revision-attested-and-smoked; platform-geometry-backends-unverified",
+      "nativeDesktopStatus": "macos-windowed-live-hoshi-popup-and-input-tested;nonmacos-native-desktop-unverified"
+    },
+    {
+      "id": "six-lookup-languages",
+      "source": "reference language registry",
+      "implementation": "src/services/language-registry.js; src/services/deinflection.js; src/services/language-rules/; src/services/dictionary-service.js; src/settings/defaults.js",
+      "tests": ["tests/core.test.js"],
+      "status": "six-language-routing-and-bounded-deinflection-candidates; dictionary-candidate-merge-tested",
+      "nativeDesktopStatus": "unverified"
+    },
+    {
+      "id": "dictionary-import-and-profiles",
+      "source": "reference dictionary manager",
+      "implementation": "src/services/dictionary-catalog.js; src/services/dictionary-download.js; src/services/recommended-dictionaries.js; src/settings/settings-store.js; app/settings-renderer.js",
+      "tests": ["tests/core.test.js", "scripts/e2e/settings-integration.js"],
+      "status": "managed-import-ordering-profiles-and-bounded-recommended-download-update;live-jitendex-download-import-worker-lookup-smoke-passed",
+      "nativeDesktopStatus": "unverified"
+    },
+    {
+      "id": "structured-dictionary-rendering",
+      "source": "reference overlay dictionary document",
+      "implementation": "app/renderer.js; src/services/content-security.js",
+      "tests": ["tests/core.test.js", "scripts/e2e/browser-integration.js"],
+      "status": "secure-structured-content-renderer-with-scoped-etymology-grammar-and-non-lemma-presentation",
+      "nativeDesktopStatus": "unverified"
+    },
+    {
+      "id": "browser-document-integration",
+      "source": "objective browser integration validation",
+      "implementation": "app/overlay.html; app/renderer.js; app/preload.js",
+      "tests": [
+        "scripts/e2e/browser-integration.js",
+        "scripts/validate-release.js",
+        ".github/workflows/native-release.yml (Linux Xvfb document-integration job)"
+      ],
+      "status": "real-electron-chromium-document-smoke-with-structured-content-input-events-context-menu-focus-layout-reflow-capability-handshake-and-release-security-contract",
+      "nativeDesktopStatus": "browser-only-evidence; OS-focus-and-click-through-unverified"
+    },
+    {
+      "id": "phase-a-performance-and-lifecycle-stress",
+      "source": "objective quality gates and lifecycle validation",
+      "implementation": "scripts/benchmarks/phase-a-performance.js; src/player/application-controller.js",
+      "tests": [
+        "scripts/benchmarks/phase-a-performance.js",
+        "tests/integration/application-controller.test.js"
+      ],
+      "status": "host-microbenchmarks-and-twelve-cycle-attach-detach-stress",
+      "nativeDesktopStatus": "native-harness-status-and-combined-capture-latency-telemetry-added;scanout-latency-and-long-run-compositor-stress-unverified"
+    },
+    {
+      "id": "directory-package-layout",
+      "source": "objective packaging and non-destructive uninstall",
+      "implementation": "package.json; scripts/validate-package.js",
+      "tests": [
+        "scripts/validate-package.js (platform-aware directory-package validation)",
+        "scripts/validate-release.js"
+      ],
+      "status": "macos-arm64-directory-package-resource-copy-remove-and-release-security-contract-smoke",
+      "nativeDesktopStatus": "signed-installer-and-windows-linux-packages-unverified"
+    },
+    {
+      "id": "anki-connect",
+      "source": "reference Anki service",
+      "implementation": "src/services/anki-connect.js; src/services/anki-card.js; src/services/anki-media.js; src/services/sentence-audio-service.js; src/player/application-controller.js; app/main.js",
+      "tests": [
+        "tests/core.test.js",
+        "tests/integration/application-controller.test.js",
+        "scripts/e2e/anki-connect-smoke.js",
+        "scripts/e2e/sentence-audio-smoke.js"
+      ],
+      "status": "host-rendered-cards-duplicates-selected-text-word-media-screenshot-and-bounded-sentence-audio-markers;loopback-mock-ankiconnect-discovery-media-and-note-smoke;anki-media-controller-integration-passed;macos-bundled-ffmpeg-package-tested;cross-platform-codec-acceptance-open",
+      "nativeDesktopStatus": "unverified"
+    },
+    {
+      "id": "audio-sources",
+      "source": "reference audio service",
+      "implementation": "src/services/audio-service.js; app/renderer.js; src/player/application-controller.js",
+      "tests": ["tests/core.test.js"],
+      "status": "bounded-resolution-with-source-selection",
+      "nativeDesktopStatus": "unverified"
+    },
+    {
+      "id": "ocr-migration-limit",
+      "source": "reference OCR capability",
+      "implementation": "src/settings/defaults.js",
+      "tests": ["tests/core.test.js"],
+      "status": "settings-preserved-but-not-advertised",
+      "nativeDesktopStatus": "unsupported-until-platform-implementation"
+    },
+    {
+      "id": "settings-migration",
+      "source": "reference profile defaults and backup",
+      "implementation": "src/settings/defaults.js; src/settings/settings-store.js; docs/settings-migration.md",
+      "tests": [
+        "tests/core.test.js",
+        "tests/integration/application-controller.test.js",
+        "scripts/e2e/settings-integration.js"
+      ],
+      "status": "unit-tested;bounded-runtime-timeout-and-refresh-controls;sanitized-native-geometry-diagnostics",
+      "nativeDesktopStatus": "unverified"
+    },
+    {
+      "id": "settings-window-and-profile-editor",
+      "source": "reference settings and profile manager",
+      "implementation": "app/settings.html; app/settings-renderer.js; app/settings-preload.js; app/main.js",
+      "tests": [
+        "scripts/e2e/settings-integration.js",
+        "scripts/e2e/settings-native-window-smoke.js",
+        ".github/workflows/native-release.yml (Linux Xvfb document-integration job)"
+      ],
+      "status": "real-electron-sandboxed-settings-document-preload-and-capability-diagnostics-smoke",
+      "nativeDesktopStatus": "macos-settings-window-visibility-geometry-and-activation-passed;native-menu-keystroke-invocation-unverified"
+    },
+    {
+      "id": "custom-css-boundary",
+      "source": "objective real custom CSS with security boundary",
+      "implementation": "src/services/content-security.js; app/renderer.js",
+      "tests": [
+        "tests/core.test.js",
+        "scripts/e2e/browser-integration.js",
+        "scripts/validate-release.js"
+      ],
+      "status": "unit-tested;selector-based-custom-css-and-declaration-fragments-rendered-in-real-electron;unsafe-resource-and-expression-inputs-rejected;browser-CSP-and-release-security-contract-tested",
+      "nativeDesktopStatus": "unverified"
+    },
+    {
+      "id": "macos-arm64-window-probe",
+      "source": "objective AppKit/CoreGraphics investigation",
+      "implementation": "native/window_probe_macos.mm",
+      "tests": [
+        "cmake --preset release; cmake --build --preset release",
+        "scripts/e2e/stock-mpv-window-smoke.js (opt-in; windowed/fullscreen request, mpv property, and macOS AppKit style-mask observation when shimmed)"
+      ],
+      "status": "native-helper-built-with-focus-boundary",
+      "nativeDesktopStatus": "windowed-and-supplied-media-fullscreen-content-sidecar-smoke;idle-only-fullscreen-style-mask-mismatch-remains-explicit;compositor-and-input-unverified"
+    },
+    {
+      "id": "macos-in-process-content-shim",
+      "source": "objective authoritative player-content geometry boundary",
+      "implementation": "native/mpv-cplugin-api.h; native/mpv_window_shim_macos.mm; src/platform/native-window-adapter.js",
+      "tests": [
+        "cmake --preset release; cmake --build --preset release",
+        "scripts/e2e/stock-mpv-window-smoke.js (IINATAN_NATIVE_SHIM)",
+        "tests/core.test.js"
+      ],
+      "status": "macos-stock-mpv-appkit-content-sidecar-smoke",
+      "nativeDesktopStatus": "windowed-and-supplied-media-fullscreen-combined-desktop-and-native-input-passed;stock-glyph-equivalence-unverified"
+    },
+    {
+      "id": "windows-x86-64-window-probe",
+      "source": "objective Win32 client-area tracking",
+      "implementation": "native/window_probe_windows.cpp; native/window_probe_windows.manifest; native/window_probe_windows.rc; native/desktop_test_windows.cpp; native/png_writer.cpp",
+      "tests": [
+        ".github/workflows/native-release.yml (Windows native-helper and transparent-popup selection smokes)"
+      ],
+      "status": "source-implemented;activation-request-and-observation-separated;native-Win32-Electron-window-and-input-smokes-defined",
+      "nativeDesktopStatus": "unverified;required-CI-Win32-window-popup-selection-and-stock-mpv-combined-e2e-defined;approximate-geometry-only;exact-stock-glyph-equivalence-open"
+    },
+    {
+      "id": "linux-x11-window-probe",
+      "source": "objective X11 capability",
+      "implementation": "native/window_probe_linux.cpp; native/desktop_test_x11.cpp; native/png_writer.cpp",
+      "tests": [
+        ".github/workflows/native-release.yml (Linux X11 native-helper and transparent-popup selection smokes)"
+      ],
+      "status": "source-implemented;format-safe;activation-request-only;native-X11-Electron-window-and-input-smokes-defined",
+      "nativeDesktopStatus": "unverified;required-CI-X11-window-popup-selection-and-stock-mpv-combined-e2e-defined;approximate-geometry-only;exact-stock-glyph-equivalence-open"
+    },
+    {
+      "id": "wayland-capability-gate",
+      "source": "objective Wayland feasibility gate",
+      "implementation": "src/platform/native-window-adapter.js",
+      "tests": ["tests/core.test.js"],
+      "status": "explicitly-rejected-without-backend",
+      "nativeDesktopStatus": "unverified"
+    },
+    {
+      "id": "native-desktop-combined-capture",
+      "source": "objective validation section E",
+      "implementation": "scripts/e2e/desktop-vertical-slice.js; native/desktop_test_macos.mm",
+      "tests": [
+        "cmake --preset release; cmake --build --preset release",
+        "scripts/e2e/desktop-vertical-slice.js (IINATAN_E2E=1; windowed/fullscreen request; optional additional pointer probes)"
+      ],
+      "status": "macos-windowed-native-desktop-tested-with-signed-helper-and-instrumented-geometry",
+      "nativeDesktopStatus": "windowed-and-supplied-media-fullscreen-combined-capture-native-input-and-supplied-media-selection-scroll-passed;stock-glyph-oracle-open"
+    },
+    {
+      "id": "packaging-and-installation",
+      "source": "objective packaging",
+      "implementation": "package.json build metadata; scripts/validate-release.js",
+      "tests": [
+        "scripts/validate-package.js",
+        "scripts/validate-release.js",
+        ".github/workflows/native-release.yml (platform package jobs)"
+      ],
+      "status": "macos-arm64-dmg-zip-and-directory-package-tested;Apple-Development-signed;notarization-unavailable-without-notary-credentials;windows-linux-ci-package-jobs-defined",
+      "nativeDesktopStatus": "macos-installer-artifacts-verified;windows-linux-unverified"
+    }
+  ]
+}

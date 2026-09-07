@@ -1,4 +1,4 @@
-name: Native mpv build and release
+name: iinatan mpv companion
 
 on:
   pull_request:
@@ -10,174 +10,338 @@ permissions:
 
 jobs:
   javascript:
-    name: ES5 runtime and portable UI
-    runs-on: ubuntu-22.04
+    name: JavaScript checks
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-          cache: npm
-      - run: npm ci
-      - run: npx prettier --check "**/*.js"
-      - run: node scripts/build_mpv.js --check
-      - run: node scripts/run_tests.js --exclude-group native --exclude-group mpv-runtime
+      - run: npm ci --ignore-scripts
+      - name: Check dependency freshness and vulnerabilities
+        shell: bash
+        run: |
+          test "$(npm outdated --json)" = "{}"
+          npm audit --omit=optional --audit-level=moderate
+      - run: npm run format:check
+      - run: npm test
+      - run: npm run test:anki
+      - run: npm run validate:release
 
-  unix-native:
-    name: ${{ matrix.target }} executable gate
+  browser-integration:
+    name: Linux Electron/browser integration (Xvfb)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install virtual X11 display and window manager
+        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends xauth libnspr4 libnss3 libatk1.0-0t64 libatk-bridge2.0-0t64 libgtk-3-0t64 libasound2t64 libcups2t64 libgbm1 libxcomposite1 libxdamage1 libxrandr2 libxfixes3 libxkbcommon0 libxshmfence1 xvfb openbox
+      - run: npm ci
+      - name: Materialize Electron runtime
+        run: node -e "require('electron')"
+      - name: Prepare Electron Chromium sandbox helper
+        run: |
+          if test -f node_modules/electron/dist/chrome-sandbox; then
+            sudo chown root:root node_modules/electron/dist/chrome-sandbox
+            sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
+          fi
+      - name: Run overlay document integration
+        run: xvfb-run --auto-servernum --server-args="-screen 0 1600x1000x24" npm run test:browser
+      - name: Run settings document integration
+        run: xvfb-run --auto-servernum --server-args="-screen 0 1600x1000x24" npm run test:settings
+
+  linux-x11-native-probe:
+    name: Linux X11 native probe
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install X11 build and display dependencies
+        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends xauth libnspr4 libnss3 libatk1.0-0t64 libatk-bridge2.0-0t64 libgtk-3-0t64 libasound2t64 libcups2t64 libgbm1 libxcomposite1 libxdamage1 libxrandr2 libxfixes3 libxkbcommon0 libxshmfence1 libx11-dev libxtst-dev xvfb openbox
+      - run: npm ci
+      - name: Materialize Electron runtime
+        run: node -e "require('electron')"
+      - name: Prepare Electron Chromium sandbox helper
+        run: |
+          if test -f node_modules/electron/dist/chrome-sandbox; then
+            sudo chown root:root node_modules/electron/dist/chrome-sandbox
+            sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
+          fi
+      - name: Configure native helper
+        run: cmake --preset release
+      - name: Build X11 window probe
+        run: cmake --build build/native --target iinatan-window-probe
+      - name: Build X11 desktop input and capture helper
+        run: cmake --build build/native --target iinatan-desktop-test
+      - name: Exercise native X11 window identity, geometry, and activation
+        env:
+          IINATAN_X11_REQUIRED: "1"
+        run: |
+          xvfb-run --auto-servernum --server-args="-screen 0 1600x1000x24" \
+            sh -c 'openbox --sm-disable >/tmp/iinatan-openbox.log 2>&1 & sleep 1; exec npm run test:native:x11'
+      - name: Exercise native X11 Electron text selection
+        env:
+          IINATAN_NATIVE_SELECTION: "1"
+          IINATAN_NATIVE_SELECTION_OVERLAY: "1"
+        run: |
+          xvfb-run --auto-servernum --server-args="-screen 0 1600x1000x24" \
+            sh -c 'openbox --sm-disable >/tmp/iinatan-openbox-selection.log 2>&1 & sleep 1; exec npm run test:native:selection'
+
+  windows-native-probe:
+    name: Windows native window probe
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci
+      - name: Configure native helper
+        run: cmake -S . -B build/native -A x64 -DCMAKE_BUILD_TYPE=Release
+      - name: Build Win32 window probe
+        run: cmake --build build/native --config Release --target iinatan-window-probe
+      - name: Build Win32 desktop input and capture helper
+        run: cmake --build build/native --config Release --target iinatan-desktop-test
+      - name: Exercise native HWND identity, client geometry, DPI, activation, and resize
+        env:
+          IINATAN_WINDOWS_REQUIRED: "1"
+        run: npm run test:native:windows
+      - name: Exercise native Win32 Electron text selection
+        env:
+          IINATAN_NATIVE_SELECTION: "1"
+          IINATAN_NATIVE_SELECTION_OVERLAY: "1"
+        run: npm run test:native:selection
+
+  linux-stock-mpv-native-e2e:
+    name: Linux X11 stock-mpv native E2E
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install stock mpv, encoder, X11, and virtual display dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends ffmpeg mpv xauth libnspr4 libnss3 libatk1.0-0t64 libatk-bridge2.0-0t64 libgtk-3-0t64 libasound2t64 libcups2t64 libgbm1 libxcomposite1 libxdamage1 libxrandr2 libxfixes3 libxkbcommon0 libxshmfence1 libx11-dev libxtst-dev xvfb openbox
+      - run: npm ci
+      - name: Materialize Electron runtime
+        run: node -e "require('electron')"
+      - name: Prepare Electron Chromium sandbox helper
+        run: |
+          if test -f node_modules/electron/dist/chrome-sandbox; then
+            sudo chown root:root node_modules/electron/dist/chrome-sandbox
+            sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
+          fi
+      - name: Configure native helpers
+        run: cmake --preset release
+      - name: Build native helpers
+        run: cmake --build build/native --config Release
+      - name: Run stock-mpv, transparent Electron, native input, and combined-capture E2E
+        env:
+          IINATAN_E2E: "1"
+          IINATAN_E2E_ALLOW_APPROXIMATE: "1"
+          IINATAN_E2E_NATIVE_INTERACTION: "1"
+          IINATAN_E2E_VO: "x11"
+          IINATAN_E2E_DEBUG: "1"
+          IINATAN_E2E_EVIDENCE_DIR: ${{ runner.temp }}/iinatan-linux-native-e2e
+        run: |
+          xvfb-run --auto-servernum --server-args="-screen 0 1600x1000x24" \
+            sh -c 'openbox --sm-disable >/tmp/iinatan-openbox-e2e.log 2>&1 & sleep 1; exec npm run test:e2e'
+      - name: Upload Linux native E2E evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: iinatan-linux-stock-mpv-native-e2e
+          path: ${{ runner.temp }}/iinatan-linux-native-e2e
+          if-no-files-found: warn
+
+  windows-stock-mpv-native-e2e:
+    name: Windows stock-mpv native E2E
+    runs-on: windows-2025
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install stock mpv and encoder
+        shell: pwsh
+        run: choco install mpv ffmpeg -y --no-progress
+      - name: Verify stock mpv and encoder are on PATH
+        shell: pwsh
+        run: |
+          Get-Command mpv
+          Get-Command ffmpeg
+      - run: npm ci
+      - name: Configure native helpers
+        run: cmake -S . -B build/native -A x64 -DCMAKE_BUILD_TYPE=Release
+      - name: Build native helpers
+        run: cmake --build build/native --config Release
+      - name: Run stock-mpv, transparent Electron, native input, and combined-capture E2E
+        env:
+          IINATAN_E2E: "1"
+          IINATAN_E2E_ALLOW_APPROXIMATE: "1"
+          IINATAN_E2E_NATIVE_INTERACTION: "1"
+          IINATAN_E2E_DEBUG: "1"
+          IINATAN_E2E_EVIDENCE_DIR: ${{ runner.temp }}\iinatan-windows-native-e2e
+        run: npm run test:e2e
+      - name: Upload Windows native E2E evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: iinatan-windows-stock-mpv-native-e2e
+          path: ${{ runner.temp }}\iinatan-windows-native-e2e
+          if-no-files-found: warn
+
+  native:
+    name: Native helper (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
         include:
-          - target: macos-aarch64
-            runner: macos-14
-          - target: macos-x86_64
-            runner: macos-15-intel
-          - target: linux-x86_64
-            runner: ubuntu-22.04
-          - target: linux-aarch64
-            runner: ubuntu-22.04-arm
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 90
+          - os: macos-14
+            preset: release
+          - os: ubuntu-24.04
+            preset: release
+          - os: windows-2025
+            preset: release
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
+      - name: Install X11 development headers
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install --yes libx11-dev libxtst-dev
+      - name: Configure native helper (Unix)
+        if: runner.os != 'Windows'
+        run: cmake --preset ${{ matrix.preset }}
+      - name: Configure native helper (Windows)
+        if: runner.os == 'Windows'
+        run: cmake -S . -B build/native -A x64 -DCMAKE_BUILD_TYPE=Release
+      - name: Build native helper
+        run: cmake --build build/native --config Release
+      - name: Check executable exists
+        shell: bash
+        run: test -f build/native/iinatan-window-probe || test -f build/native/Release/iinatan-window-probe.exe
+      - name: Check macOS mpv content shim exists
+        if: runner.os == 'macOS'
+        shell: bash
+        run: test -f build/native/iinatan-mpv-window-shim.so
+      - name: Check portable dictionary helper exists
+        if: runner.os != 'macOS'
+        shell: bash
+        run: test -f build/native/iina-hoshi-dicts || test -f build/native/Release/iina-hoshi-dicts.exe
+      - name: Exercise portable dictionary worker
+        if: runner.os != 'macOS'
+        shell: bash
+        env:
+          IINATAN_PORTABLE_HOSHI_REQUIRED: "1"
+        run: node scripts/e2e/portable-hoshi-smoke.js
+
+  package-directory:
+    name: Directory package (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            platform: darwin
+          - os: ubuntu-24.04
+            platform: linux
+          - os: windows-2025
+            platform: win32
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-          cache: npm
-      - name: Install build and runtime dependencies (macOS)
-        if: startsWith(matrix.target, 'macos-')
-        run: brew install autoconf automake libtool meson ninja pkgconf cmake ffmpeg mpv
-      - name: Install build and runtime dependencies (Linux)
-        if: startsWith(matrix.target, 'linux-')
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y autoconf automake build-essential clang cmake curl ffmpeg fontconfig libcurl4-openssl-dev libfontconfig1-dev libssl-dev libtool meson ninja-build patch pkg-config python3 xz-utils
       - run: npm ci
-      - name: Build pinned geometry/audio dependencies
-        run: bash scripts/build_native_geometry_dependencies.sh
-      - name: Build backend
-        run: cmake --preset release && cmake --build --preset release -j 2
-      - name: Execute version, import, lookup, layout, HTTP, audio, cancellation, and config gates
+      - name: Install X11 development headers
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install --yes libx11-dev libxtst-dev
+      - name: Configure native helper (Unix)
+        if: runner.os != 'Windows'
+        run: cmake --preset release
+      - name: Configure native helper (Windows)
+        if: runner.os == 'Windows'
+        run: cmake -S . -B build/native -A x64 -DCMAKE_BUILD_TYPE=Release
+      - name: Build native helper
+        run: cmake --build build/native --config Release
+      - run: npm run package
+      - name: Validate directory package
         env:
-          IINATAN_BACKEND: ${{ github.workspace }}/build/native/release/iinatan-backend
-          IINATAN_FFMPEG: ffmpeg
+          IINATAN_PACKAGE_PLATFORM: ${{ matrix.platform }}
+        run: npm run validate:package
+      - name: Record Linux build baseline
+        if: runner.os == 'Linux'
+        shell: bash
         run: |
-          node tests/native_portable_smoke.test.js
-          node tests/native_ass_geometry.test.js
-          node tests/native_config_transaction.test.js
-          node tests/native_worker_lifecycle.test.js
-          node tests/native_ocr_smoke.test.js
-      - name: Verify macOS deployment target
-        if: startsWith(matrix.target, 'macos-')
-        run: |
-          test "$(build/native/release/iinatan-backend version | tail -1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target"])')" = "${{ matrix.target }}"
-          otool -l build/native/release/iinatan-backend | grep -A3 LC_BUILD_VERSION
-      - name: Verify Linux glibc baseline
-        if: startsWith(matrix.target, 'linux-')
-        run: |
-          test "$(build/native/release/iinatan-backend version | tail -1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target"])')" = "${{ matrix.target }}"
-          python3 scripts/verify_glibc_baseline.py build/native/release/iinatan-backend 2.35
-      - name: Package and validate target archive
-        run: |
-          python3 scripts/package_mpv.py --target "${{ matrix.target }}" --backend build/native/release/iinatan-backend --ffmpeg "$(command -v ffmpeg)"
-          archive="dist/iinatan-3.0.0-${{ matrix.target }}.tar.gz"
-          python3 scripts/validate_mpv_release.py "$archive" --target "${{ matrix.target }}" --execute
-          install_test="$(mktemp -d)"
-          tar -xzf "$archive" -C "$install_test"
-          package_root="$(find "$install_test" -mindepth 1 -maxdepth 1 -type d)"
-          XDG_CONFIG_HOME="$install_test/config" sh "$package_root/install.sh"
-          test -x "$install_test/config/mpv/scripts/iinatan/bin/iinatan-backend"
-          test -x "$install_test/config/mpv/scripts/iinatan/bin/ffmpeg"
-          test -f "$install_test/config/mpv/scripts/iinatan.js"
-          test -f "$install_test/config/mpv/iinatan/config.json"
-      - uses: actions/upload-artifact@v4
+          echo "runner=${RUNNER_OS}"
+          echo "architecture=$(uname -m)"
+          ldd --version | head -n 1
+      - name: Upload macOS directory package
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
         with:
-          name: iinatan-${{ matrix.target }}
-          path: dist/iinatan-3.0.0-${{ matrix.target }}.tar.gz
-
-  windows-native:
-    name: windows-x86_64 executable gate (MSVC 2022 static CRT)
-    runs-on: windows-2025
-    timeout-minutes: 120
-    steps:
-      - uses: actions/checkout@v4
+          name: iinatan-directory-darwin-arm64
+          path: dist/mac-arm64/iinatan for mpv.app
+          if-no-files-found: error
+      - name: Upload Windows directory package
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
         with:
-          submodules: recursive
-      - uses: actions/setup-node@v4
+          name: iinatan-directory-win32-x64
+          path: dist/win-unpacked
+          if-no-files-found: error
+      - name: Upload Linux directory package
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
         with:
-          node-version: 24
-          cache: npm
-      - uses: lukka/get-cmake@latest
-      - name: Bootstrap vcpkg
-        shell: pwsh
-        run: |
-          git clone --depth 1 https://github.com/microsoft/vcpkg "$env:RUNNER_TEMP\vcpkg"
-          & "$env:RUNNER_TEMP\vcpkg\bootstrap-vcpkg.bat" -disableMetrics
-          & "$env:RUNNER_TEMP\vcpkg\vcpkg.exe" install libass:x64-windows-static curl:x64-windows-static ffmpeg:x64-windows-static pkgconf:x64-windows-static --overlay-ports="$env:GITHUB_WORKSPACE\cmake\vcpkg-overlay-ports"
-      - name: Install ffmpeg executable
-        shell: pwsh
-        run: choco install ffmpeg -y --no-progress
-      - run: npm ci
-      - name: Configure and build with MSVC 2022
-        shell: pwsh
-        run: |
-          cmake -S . -B build/windows -A x64 -DCMAKE_BUILD_TYPE=Release -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DCMAKE_TOOLCHAIN_FILE="$env:RUNNER_TEMP\vcpkg\scripts\buildsystems\vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows-static -DVCPKG_OVERLAY_PORTS="$env:GITHUB_WORKSPACE\cmake\vcpkg-overlay-ports"
-          cmake --build build/windows --config Release --target iinatan-backend -j 2
-      - name: Execute native gates
-        shell: pwsh
-        env:
-          IINATAN_BACKEND: ${{ github.workspace }}\build\windows\Release\iinatan-backend.exe
-          IINATAN_FFMPEG: ffmpeg
-        run: |
-          node tests/native_portable_smoke.test.js
-          node tests/native_ass_geometry.test.js
-          node tests/native_config_transaction.test.js
-          node tests/native_worker_lifecycle.test.js
-          node tests/native_ocr_smoke.test.js
-      - name: Package and validate target archive
-        shell: pwsh
-        run: |
-          $ffmpeg = (Get-Command ffmpeg).Source
-          python scripts/package_mpv.py --target windows-x86_64 --backend build/windows/Release/iinatan-backend.exe --ffmpeg $ffmpeg
-          python scripts/validate_mpv_release.py dist/iinatan-3.0.0-windows-x86_64.zip --target windows-x86_64 --execute
-          $installTest = Join-Path $env:RUNNER_TEMP "iinatan-install"
-          Expand-Archive dist/iinatan-3.0.0-windows-x86_64.zip -DestinationPath $installTest
-          $packageRoot = (Get-ChildItem $installTest -Directory | Select-Object -First 1).FullName
-          $env:MPV_HOME = Join-Path $installTest "mpv"
-          & (Join-Path $packageRoot "install.ps1")
-          if (-not (Test-Path (Join-Path $env:MPV_HOME "scripts\iinatan.js"))) { throw "runtime was not installed" }
-          if (-not (Test-Path (Join-Path $env:MPV_HOME "scripts\iinatan\bin\iinatan-backend.exe"))) { throw "backend was not installed" }
-      - uses: actions/upload-artifact@v4
+          name: iinatan-directory-linux-x64-ubuntu-24.04
+          path: dist/linux-unpacked
+          if-no-files-found: error
+      - name: Upload macOS distributables
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
         with:
-          name: iinatan-windows-x86_64
-          path: dist/iinatan-3.0.0-windows-x86_64.zip
-
-  release-set:
-    name: Complete five-platform release set
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [javascript, unix-native, windows-native]
-    runs-on: ubuntu-22.04
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+          name: iinatan-installers-darwin-arm64
+          path: |
+            dist/*.dmg
+            dist/*-mac.zip
+            dist/*.blockmap
+            dist/latest-mac.yml
+          if-no-files-found: error
+      - name: Upload Windows distributables
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
         with:
-          pattern: iinatan-*
-          path: release
-          merge-multiple: true
-      - name: Require all five archives and non-empty release notes
-        run: |
-          python3 scripts/validate_release_set.py release "${GITHUB_REF_NAME}"
-          python3 scripts/extract_release_notes.py "${GITHUB_REF_NAME}" > release-notes.md
-          test -s release-notes.md
-      - name: Publish release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" release/* --verify-tag --notes-file release-notes.md
+          name: iinatan-installers-win32-x64
+          path: |
+            dist/*.exe
+            dist/*.zip
+            dist/*.blockmap
+            dist/latest.yml
+          if-no-files-found: error
+      - name: Upload Linux distributables
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: iinatan-installers-linux-x64-ubuntu-24.04
+          path: |
+            dist/*.AppImage
+            dist/*.tar.gz
+            dist/*.blockmap
+            dist/latest-linux.yml
+          if-no-files-found: error
