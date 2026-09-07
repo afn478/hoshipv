@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src https: http://127.0.0.1 http://localhost; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <meta name="color-scheme" content="dark light" />
+    <title>iinatan</title>
+    <link rel="stylesheet" href="./overlay.css" />
+  </head>
+  <body>
+    <main id="root" data-surface="highlight">
+      <div id="highlight-layer" aria-hidden="true"></div>
+      <section
+        id="popup-panel"
+        role="dialog"
+        aria-label="Dictionary lookup"
+        tabindex="-1"
+        hidden
+      >
+        <header id="popup-header">
+          <div id="popup-headword"></div>
+          <div id="popup-reading"></div>
+          <button
+            id="popup-close"
+            type="button"
+            data-action="close-popup"
+            aria-label="Close lookup"
+          >
+            ×
+          </button>
+        </header>
+        <div id="popup-content"></div>
+      </section>
+    </main>
+    <script src="./renderer.js"></script>
+  </body>
+</html>

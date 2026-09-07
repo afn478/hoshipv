@@ -1,0 +1,163 @@
+{
+  "name": "iinatan-mp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Native-feeling HTML dictionary overlay for stock mpv",
+  "license": "GPL-3.0-only",
+  "main": "app/main.js",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "start": "node scripts/run-electron.js .",
+    "start:demo": "node scripts/run-electron.js . --demo",
+    "test": "node --test tests/*.test.js tests/integration/*.test.js",
+    "test:unit": "node --test tests/*.test.js",
+    "test:integration": "node --test tests/integration/*.test.js",
+    "test:browser": "node scripts/e2e/browser-integration.js",
+    "test:settings": "node scripts/e2e/settings-integration.js",
+    "test:settings:native": "node scripts/e2e/settings-native-window-smoke.js",
+    "test:native:x11": "node scripts/e2e/x11-window-probe-smoke.js",
+    "test:native:windows": "node scripts/e2e/windows-window-probe-smoke.js",
+    "test:native:selection": "node scripts/e2e/native-selection-smoke.js",
+    "benchmark:phase-a": "node scripts/benchmarks/phase-a-performance.js",
+    "validate:package": "node scripts/validate-package.js",
+    "test:e2e": "node scripts/e2e/desktop-vertical-slice.js",
+    "test:mpv": "node scripts/e2e/stock-mpv-ipc-smoke.js",
+    "test:mpv:launcher": "node scripts/e2e/mpv-launcher-smoke.js",
+    "test:mpv:multi": "node scripts/e2e/stock-mpv-multi-session-smoke.js",
+    "test:mpv:recovery": "node scripts/e2e/stock-mpv-recovery-smoke.js",
+    "test:mpv:subtitles": "node scripts/e2e/stock-mpv-subtitle-smoke.js",
+    "test:mpv:media": "node scripts/e2e/stock-mpv-media-smoke.js",
+    "test:mpv:window": "node scripts/e2e/stock-mpv-window-smoke.js",
+    "test:hoshi": "node scripts/e2e/hoshi-worker-smoke.js",
+    "test:dictionary:download": "node scripts/e2e/recommended-dictionary-download-smoke.js",
+    "test:hoshi:portable": "node scripts/e2e/portable-hoshi-smoke.js",
+    "test:anki": "node scripts/e2e/anki-connect-smoke.js",
+    "test:sentence-audio": "node scripts/e2e/sentence-audio-smoke.js",
+    "test:native-geometry": "node scripts/e2e/native-geometry-smoke.js",
+    "test:stock-pixels": "node scripts/e2e/stock-mpv-pixel-oracle.js",
+    "test:stock-pixels:media": "node scripts/e2e/stock-mpv-real-media-pixel-oracle.js",
+    "test:stock-pixels:media:ass": "node scripts/e2e/stock-mpv-real-media-ass-smoke.js",
+    "geometry:oracle": "node scripts/geometry-oracle.js",
+    "format:js": "prettier --write \"app/**/*.js\" \"src/**/*.js\" \"tests/**/*.js\" \"scripts/**/*.js\"",
+    "format:check": "prettier --check \"app/**/*.js\" \"src/**/*.js\" \"tests/**/*.js\" \"scripts/**/*.js\"",
+    "build:native": "cmake --preset release && cmake --build --preset release",
+    "sign:native:macos": "node scripts/sign-macos-test-helper.js",
+    "prepare:runtime-tools": "node scripts/prepare-runtime-tools.js",
+    "prepare:native-package": "node scripts/prepare-native-package.js",
+    "package:dir": "npm run prepare:runtime-tools && npm run prepare:native-package && electron-builder --dir",
+    "package": "npm run prepare:runtime-tools && npm run prepare:native-package && electron-builder",
+    "validate:release": "node scripts/validate-release.js"
+  },
+  "devDependencies": {
+    "electron": "44.2.0",
+    "electron-builder": "26.15.3",
+    "ffmpeg-static": "5.3.0",
+    "prettier": "3.9.6"
+  },
+  "build": {
+    "appId": "org.iinatan.mp",
+    "productName": "iinatan for mpv",
+    "asar": true,
+    "files": [
+      "app/**/*",
+      "src/**/*",
+      "native/**/*",
+      "docs/**/*",
+      "package.json",
+      "LICENSE",
+      "THIRD_PARTY_NOTICES.md"
+    ],
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.utilities",
+      "extraResources": [
+        {
+          "from": "build/native/iinatan-window-probe",
+          "to": "bin/iinatan-window-probe"
+        },
+        {
+          "from": "build/native/iinatan-mpv-window-shim.so",
+          "to": "bin/iinatan-mpv-window-shim.so"
+        },
+        {
+          "from": "build/runtime-tools/ffmpeg.exe",
+          "to": "bin/ffmpeg.exe"
+        },
+        {
+          "from": "bin/iina-hoshi-dicts",
+          "to": "bin/iina-hoshi-dicts"
+        },
+        {
+          "from": "vendor/iina-hoshi-dicts-native-source.tar.gz",
+          "to": "vendor/iina-hoshi-dicts-native-source.tar.gz"
+        },
+        {
+          "from": "mpv/iinatan-session.lua",
+          "to": "mpv/iinatan-session.lua"
+        }
+      ]
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "zip"
+      ],
+      "extraResources": [
+        {
+          "from": "build/native/Release/iinatan-window-probe.exe",
+          "to": "bin/iinatan-window-probe.exe"
+        },
+        {
+          "from": "build/runtime-tools/ffmpeg.exe",
+          "to": "bin/ffmpeg.exe"
+        },
+        {
+          "from": "build/package-resources/iina-hoshi-dicts.exe",
+          "to": "bin/iina-hoshi-dicts.exe"
+        },
+        {
+          "from": "vendor/iina-hoshi-dicts-native-source.tar.gz",
+          "to": "vendor/iina-hoshi-dicts-native-source.tar.gz"
+        },
+        {
+          "from": "mpv/iinatan-session.lua",
+          "to": "mpv/iinatan-session.lua"
+        }
+      ]
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "tar.gz"
+      ],
+      "category": "AudioVideo",
+      "extraResources": [
+        {
+          "from": "build/native/iinatan-window-probe",
+          "to": "bin/iinatan-window-probe"
+        },
+        {
+          "from": "build/runtime-tools/ffmpeg.exe",
+          "to": "bin/ffmpeg.exe"
+        },
+        {
+          "from": "build/package-resources/iina-hoshi-dicts",
+          "to": "bin/iina-hoshi-dicts"
+        },
+        {
+          "from": "vendor/iina-hoshi-dicts-native-source.tar.gz",
+          "to": "vendor/iina-hoshi-dicts-native-source.tar.gz"
+        },
+        {
+          "from": "mpv/iinatan-session.lua",
+          "to": "mpv/iinatan-session.lua"
+        }
+      ]
+    }
+  }
+}

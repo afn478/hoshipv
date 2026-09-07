@@ -1,0 +1,453 @@
+:root {
+  color-scheme: dark;
+  --popup-background: rgba(27, 29, 35, 0.96);
+  --popup-foreground: #f7f7fa;
+  --popup-muted: #a8acb8;
+  --popup-accent: #8ab4f8;
+  --popup-border: rgba(255, 255, 255, 0.16);
+  --popup-selection: rgba(110, 165, 255, 0.32);
+  --popup-radius: 12px;
+  --popup-min-width: 250px;
+  --popup-max-width: 440px;
+}
+
+html,
+body,
+#root {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: inherit;
+}
+
+body {
+  background: transparent;
+  color: var(--popup-foreground);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  user-select: none;
+}
+
+#root[data-surface="highlight"] {
+  pointer-events: none;
+}
+
+#root[data-surface="popup"] {
+  pointer-events: auto;
+}
+
+#highlight-layer {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+}
+
+.highlight {
+  position: absolute;
+  border: 1px solid rgba(142, 197, 255, 0.95);
+  border-radius: 4px;
+  background: rgba(118, 177, 255, 0.24);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.15) inset;
+}
+
+#popup-panel {
+  position: absolute;
+  width: min(var(--popup-max-width), calc(100vw - 24px));
+  min-width: min(var(--popup-min-width), var(--popup-max-width));
+  max-width: var(--popup-max-width);
+  max-height: min(540px, calc(100vh - 24px));
+  overflow: auto;
+  border: 1px solid var(--popup-border);
+  border-radius: var(--popup-radius);
+  background: var(--popup-background);
+  box-shadow:
+    0 18px 48px rgba(0, 0, 0, 0.42),
+    0 2px 12px rgba(0, 0, 0, 0.26);
+  backdrop-filter: blur(22px) saturate(135%);
+  color: var(--popup-foreground);
+  pointer-events: auto;
+  user-select: text;
+  outline: none;
+  font-size: calc(1rem * var(--font-scale, 1));
+  transform: scale(var(--popup-scale, 1));
+  transform-origin: top left;
+}
+
+#popup-panel:focus-visible {
+  outline: 2px solid var(--popup-accent);
+  outline-offset: 2px;
+}
+
+#popup-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 10px;
+  align-items: baseline;
+  padding: 14px 14px 10px;
+  border-bottom: 1px solid var(--popup-border);
+  background: color-mix(in srgb, var(--popup-background) 92%, transparent);
+}
+
+#popup-headword {
+  color: var(--popup-accent);
+  font-size: 1.35rem;
+  font-weight: 750;
+  line-height: 1.2;
+}
+
+#popup-reading {
+  color: var(--popup-muted);
+  font-size: 0.9rem;
+}
+
+#popup-close {
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--popup-muted);
+  cursor: pointer;
+  font-size: 1.35rem;
+  line-height: 1;
+  padding: 2px 5px;
+}
+
+#popup-close:hover,
+#popup-close:focus-visible {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--popup-foreground);
+}
+
+#popup-content {
+  padding: 12px 14px 16px;
+}
+
+.entry + .entry {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--popup-border);
+}
+
+.audio-button {
+  float: right;
+  border: 1px solid var(--popup-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--popup-accent);
+  cursor: pointer;
+  font-size: 0.75rem;
+  padding: 3px 8px;
+}
+
+.audio-button:hover,
+.audio-button:focus-visible {
+  background: rgba(138, 180, 248, 0.14);
+}
+
+.dictionary-audio {
+  border: 1px solid var(--popup-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--popup-accent);
+  cursor: pointer;
+  font-size: 0.75rem;
+  padding: 3px 8px;
+}
+
+.dictionary-audio:hover,
+.dictionary-audio:focus-visible {
+  background: rgba(138, 180, 248, 0.14);
+}
+
+.audio-menu {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0 8px;
+  color: var(--popup-muted);
+  font-size: 0.76rem;
+}
+
+.audio-candidate {
+  border: 1px solid var(--popup-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--popup-accent);
+  cursor: pointer;
+  font-size: 0.75rem;
+  padding: 3px 8px;
+}
+
+.audio-candidate:hover,
+.audio-candidate:focus-visible {
+  background: rgba(138, 180, 248, 0.14);
+}
+
+.audio-candidate.selected {
+  border-color: var(--popup-accent);
+  background: rgba(138, 180, 248, 0.18);
+}
+
+.audio-status {
+  color: var(--popup-muted);
+}
+
+.audio-close {
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--popup-muted);
+  cursor: pointer;
+  font-size: 1rem;
+  line-height: 1;
+  padding: 2px 5px;
+}
+
+.audio-close:hover,
+.audio-close:focus-visible {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--popup-foreground);
+}
+
+.entry-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-bottom: 5px;
+}
+
+.entry-actions .audio-button {
+  float: none;
+}
+
+.anki-button {
+  border: 1px solid var(--popup-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--popup-accent);
+  cursor: pointer;
+  font-size: 0.75rem;
+  padding: 3px 8px;
+}
+
+.anki-button:hover:not(:disabled),
+.anki-button:focus-visible:not(:disabled) {
+  background: rgba(138, 180, 248, 0.14);
+}
+
+.anki-button:disabled {
+  cursor: default;
+  opacity: 0.65;
+}
+
+.anki-status {
+  display: block;
+  min-height: 1.1em;
+  color: var(--popup-muted);
+  font-size: 0.75rem;
+}
+
+.entry-meta,
+.glossary-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  align-items: center;
+  color: var(--popup-muted);
+  font-size: 0.74rem;
+}
+
+.entry-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 7px;
+  margin-bottom: 5px;
+}
+
+.entry-headword {
+  color: var(--popup-foreground);
+  font-size: 1.02rem;
+}
+
+.entry-reading,
+.entry-part-of-speech {
+  color: var(--popup-muted);
+  font-size: 0.8rem;
+}
+
+.entry-part-of-speech {
+  font-style: italic;
+}
+
+.entry-pitch {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  margin-top: 6px;
+  color: var(--popup-muted);
+  font-size: 0.74rem;
+}
+
+.entry-pitch-label {
+  font-weight: 650;
+}
+
+.chip {
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.11);
+}
+
+.glossary {
+  margin-top: 9px;
+}
+
+.glossary-meta {
+  margin-bottom: 6px;
+}
+
+.paragraph,
+.example,
+.note,
+.cross-reference,
+.furigana {
+  margin: 7px 0;
+  line-height: 1.45;
+}
+
+.example {
+  padding-left: 10px;
+  border-left: 2px solid rgba(48, 209, 88, 0.7);
+  color: #d6f4dc;
+}
+
+.note {
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 204, 0, 0.36);
+  border-radius: 7px;
+  background: rgba(255, 204, 0, 0.08);
+  color: #ffe9a6;
+}
+
+.source-link,
+.nested-link {
+  border: 0;
+  background: transparent;
+  color: var(--popup-accent);
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+  text-decoration: underline;
+}
+
+.details {
+  margin: 8px 0;
+  border: 1px solid var(--popup-border);
+  border-radius: 7px;
+}
+
+.details > summary {
+  cursor: pointer;
+  padding: 7px 9px;
+  color: var(--popup-accent);
+}
+
+.details-body {
+  padding: 2px 9px 7px;
+}
+
+.grammar-row,
+.nonlemma-row {
+  margin: 6px 0;
+}
+
+.grammar-row strong,
+.nonlemma-row strong {
+  color: var(--popup-accent);
+}
+
+.nonlemma-lemma {
+  font-weight: 600;
+}
+
+.glossary-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.84rem;
+}
+
+.glossary-list {
+  margin: 7px 0;
+  padding-inline-start: 1.25rem;
+}
+
+.structured-content {
+  line-height: 1.45;
+}
+
+.structured-content > :first-child {
+  margin-top: 0;
+}
+
+.structured-content > :last-child {
+  margin-bottom: 0;
+}
+
+.structured-content table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.84rem;
+}
+
+.structured-content td,
+.structured-content th {
+  padding: 4px 5px;
+  border: 1px solid var(--popup-border);
+  vertical-align: top;
+  text-align: start;
+}
+
+.structured-content details {
+  margin: 8px 0;
+  border: 1px solid var(--popup-border);
+  border-radius: 7px;
+}
+
+.structured-content summary {
+  cursor: pointer;
+  padding: 7px 9px;
+  color: var(--popup-accent);
+}
+
+.glossary-table td {
+  padding: 4px 5px;
+  border: 1px solid var(--popup-border);
+  vertical-align: top;
+}
+
+::selection {
+  background: var(--popup-selection);
+}
+
+body.custom-light {
+  color-scheme: light;
+  --popup-background: rgba(250, 250, 252, 0.97);
+  --popup-foreground: #202124;
+  --popup-muted: #61646e;
+  --popup-accent: #125dcc;
+  --popup-border: rgba(0, 0, 0, 0.16);
+  --popup-selection: rgba(27, 94, 210, 0.22);
+}
