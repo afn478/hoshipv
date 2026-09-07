@@ -48,7 +48,7 @@
         "scripts/e2e/mpv-launcher-smoke.js (opt-in real stock-mpv run)"
       ],
       "status": "native-file-picker-and-explicit-path-bootstrap;launch-time-session-script-and-private-ipc-only;no-config-mutation;platform-named-pipe-contract-tested",
-      "nativeDesktopStatus": "GUI-menu-launch-unverified;real-stock-mpv-launcher-descriptor-and-IPC-smoke-passed"
+      "nativeDesktopStatus": "macos-arm64-packaged-GUI-menu-file-picker-launch-passed;real-stock-mpv-process-loaded-bundled-session-script-and-private-IPC;real-stock-mpv-launcher-descriptor-and-IPC-smoke-passed"
     },
     {
       "id": "explicit-session-identity",
@@ -121,7 +121,7 @@
       "implementation": "src/interaction/interaction-controller.js",
       "tests": ["tests/core.test.js", "scripts/e2e/browser-integration.js"],
       "status": "unit-tested;browser-document-selection-focus-context-menu-and-native-wheel-coverage;native-scroll-selection-outside-dismissal-matrix-passed;smooth-popup-approach-regression-passed;live-hoshi-smooth-approach-passed",
-      "nativeDesktopStatus": "macos-supplied-media-native-selection-scroll-and-outside-dismissal-passed;nonmacos-focus-and-input-unverified"
+      "nativeDesktopStatus": "macos-supplied-media-native-selection-scroll-focus-transition-focus-restoration-and-outside-dismissal-passed;nonmacos-focus-and-input-unverified"
     },
     {
       "id": "phase-a-demo-vertical-slice",
@@ -132,7 +132,7 @@
         "scripts/e2e/desktop-vertical-slice.js (including optional additional native pointer probes)"
       ],
       "status": "controller-integration-tested;real-media-native-geometry-tested;windowed-and-fullscreen-native-harness-passed-with-instrumented-geometry;four-unit-multi-pointer-probe-passed-on-macos;native-selection-scroll-outside-dismissal-matrix-passed;smooth-popup-approach-regression-passed;live-hoshi-smooth-approach-passed",
-      "nativeDesktopStatus": "macos-windowed-and-supplied-media-fullscreen-hover-popup-click-selection-scroll-outside-dismissal-escape-combined-capture-and-live-hoshi-tested;four-unit-multi-pointer-probe-passed;stock-glyph-equivalence-open"
+      "nativeDesktopStatus": "macos-windowed-and-supplied-media-fullscreen-hover-popup-click-selection-scroll-focus-restoration-outside-dismissal-escape-combined-capture-and-live-hoshi-tested;four-unit-multi-pointer-probe-passed;real-pgs-bitmap-ocr-live-hoshi-replay-passed-with-approximate-geometry;stock-glyph-equivalence-open"
     },
     {
       "id": "pause-ownership",
@@ -161,7 +161,7 @@
         "scripts/e2e/recommended-dictionary-download-smoke.js"
       ],
       "status": "bounded-lookup-cancellation-and-timeouts; macos-arm64-full-backend-bundled; windows-linux-portable-dictionary-worker-built; portable-helper-revision-attested-and-smoked; platform-geometry-backends-unverified",
-      "nativeDesktopStatus": "macos-windowed-live-hoshi-popup-and-input-tested;nonmacos-native-desktop-unverified"
+      "nativeDesktopStatus": "macos-windowed-live-hoshi-popup-and-input-tested;real-pgs-live-hoshi-popup-and-input-passed;nonmacos-native-desktop-unverified"
     },
     {
       "id": "six-lookup-languages",
@@ -177,7 +177,7 @@
       "implementation": "src/services/dictionary-catalog.js; src/services/dictionary-download.js; src/services/recommended-dictionaries.js; src/settings/settings-store.js; app/settings-renderer.js",
       "tests": ["tests/core.test.js", "scripts/e2e/settings-integration.js"],
       "status": "managed-import-ordering-profiles-and-bounded-recommended-download-update;live-jitendex-download-import-worker-lookup-smoke-passed",
-      "nativeDesktopStatus": "unverified"
+      "nativeDesktopStatus": "macos-live-recommended-download-import-and-hoshi-popup-passed;profile-switch-native-unverified"
     },
     {
       "id": "structured-dictionary-rendering",
@@ -185,7 +185,7 @@
       "implementation": "app/renderer.js; src/services/content-security.js",
       "tests": ["tests/core.test.js", "scripts/e2e/browser-integration.js"],
       "status": "secure-structured-content-renderer-with-scoped-etymology-grammar-and-non-lemma-presentation",
-      "nativeDesktopStatus": "unverified"
+      "nativeDesktopStatus": "macos-live-structured-popup-native-selection-scroll-and-combined-capture-passed;nonmacos-native-rendering-unverified"
     },
     {
       "id": "browser-document-integration",
@@ -196,8 +196,8 @@
         "scripts/validate-release.js",
         ".github/workflows/native-release.yml (Linux Xvfb document-integration job)"
       ],
-      "status": "real-electron-chromium-document-smoke-with-structured-content-input-events-context-menu-focus-layout-reflow-capability-handshake-and-release-security-contract",
-      "nativeDesktopStatus": "browser-only-evidence; OS-focus-and-click-through-unverified"
+      "status": "real-electron-chromium-document-smoke-with-structured-content-input-events-context-menu-focus-layout-reflow-capability-handshake-nested-click-hover-shift-hover-parent-navigation-request-correlated-audio-and-release-security-contract",
+      "nativeDesktopStatus": "macos-native-live-popup-selection-scroll-focus-dismissal-and-measured-action-clicks-passed;nonmacos-native-desktop-unverified"
     },
     {
       "id": "phase-a-performance-and-lifecycle-stress",
@@ -232,23 +232,26 @@
         "scripts/e2e/sentence-audio-smoke.js"
       ],
       "status": "host-rendered-cards-duplicates-selected-text-word-media-screenshot-and-bounded-sentence-audio-markers;loopback-mock-ankiconnect-discovery-media-and-note-smoke;anki-media-controller-integration-passed;macos-bundled-ffmpeg-package-tested;cross-platform-codec-acceptance-open",
-      "nativeDesktopStatus": "unverified"
+      "nativeDesktopStatus": "macos-signed-live-popup-native-action-added-through-loopback-mock;real-user-collection-unmodified;nonmacos-native-action-unverified"
     },
     {
       "id": "audio-sources",
       "source": "reference audio service",
       "implementation": "src/services/audio-service.js; app/renderer.js; src/player/application-controller.js",
-      "tests": ["tests/core.test.js"],
-      "status": "bounded-resolution-with-source-selection",
-      "nativeDesktopStatus": "unverified"
+      "tests": ["tests/core.test.js", "scripts/e2e/browser-integration.js"],
+      "status": "bounded-resolution-with-source-selection-request-correlation-and-cancellation",
+      "nativeDesktopStatus": "macos-signed-live-popup-native-audio-action-and-five-candidate-resolution-passed;nonmacos-native-audio-unverified"
     },
     {
       "id": "ocr-migration-limit",
       "source": "reference OCR capability",
-      "implementation": "src/settings/defaults.js",
-      "tests": ["tests/core.test.js"],
-      "status": "settings-preserved-but-not-advertised",
-      "nativeDesktopStatus": "unsupported-until-platform-implementation"
+      "implementation": "src/settings/defaults.js; src/services/native-bitmap-ocr-client.js; src/services/native-bitmap-ocr-worker.js; src/player/player-bridge.js; src/player/application-controller.js; src/geometry/subtitle-geometry-provider.js; app/main.js",
+      "tests": [
+        "tests/core.test.js",
+        "tests/integration/application-controller.test.js"
+      ],
+      "status": "macos-vision-decoded-bitmap-subtitle-and-opt-in-paused-screenshot-diff-boundaries;bounded-language-and-response-validation;approximate-lookup-geometry-only",
+      "nativeDesktopStatus": "macos-helper-capability-and-host-lifecycle-tested;real-pgs-media-decoded-subtitle-and-native-desktop-ocr-acceptance-passed-with-approximate-geometry;live-wty-en-en-hoshi-popup-and-native-input-passed;windows-linux-unverified"
     },
     {
       "id": "settings-migration",
@@ -272,7 +275,7 @@
         ".github/workflows/native-release.yml (Linux Xvfb document-integration job)"
       ],
       "status": "real-electron-sandboxed-settings-document-preload-and-capability-diagnostics-smoke",
-      "nativeDesktopStatus": "macos-settings-window-visibility-geometry-and-activation-passed;native-menu-keystroke-invocation-unverified"
+      "nativeDesktopStatus": "macos-settings-window-visibility-geometry-and-activation-passed;trusted-Cmd-comma-helper-path-recorded;profile-lifecycle-covered-by-settings-document-smoke;other-menu-accelerators-unverified"
     },
     {
       "id": "custom-css-boundary",
@@ -295,7 +298,7 @@
         "scripts/e2e/stock-mpv-window-smoke.js (opt-in; windowed/fullscreen request, mpv property, and macOS AppKit style-mask observation when shimmed)"
       ],
       "status": "native-helper-built-with-focus-boundary",
-      "nativeDesktopStatus": "windowed-and-supplied-media-fullscreen-content-sidecar-smoke;idle-only-fullscreen-style-mask-mismatch-remains-explicit;compositor-and-input-unverified"
+      "nativeDesktopStatus": "windowed-and-supplied-media-fullscreen-content-sidecar-smoke;idle-only-fullscreen-style-mask-mismatch-remains-explicit;supplied-media-combined-compositor-and-native-input-passed"
     },
     {
       "id": "macos-in-process-content-shim",

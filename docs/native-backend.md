@@ -28,6 +28,16 @@ corresponding source for the checked-in macOS artifact; the portable
 Windows/Linux target described below intentionally exposes a smaller
 capability set.
 
+The Electron host uses the helper's `bitmap-subtitle-ocr` command for selected
+PGS/DVD/VobSub/DVB/bitmap tracks. `src/services/native-bitmap-ocr-client.js`
+validates the request and response contract, while
+`src/player/application-controller.js` keeps one bounded result per subtitle
+cue and treats its boxes as approximate lookup geometry. The paused screenshot
+diff path is opt-in; it remains a native mpv screenshot command boundary and is
+not a renderer-pixel transport. Apple Vision recognition is on-device and
+language capability is taken from the helper rather than assumed; see Apple's
+[Vision text-recognition documentation](https://developer.apple.com/documentation/vision/recognizing-text-in-images).
+
 ## Dependency review
 
 The dependency refresh on 2026-09-07 kept the already-current top-level pins

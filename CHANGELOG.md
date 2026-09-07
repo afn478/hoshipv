@@ -2,9 +2,74 @@
 
 ## Unreleased
 
+- Added a signed macOS feature-parity replay for popup actions. The native
+  harness now targets renderer-measured audio and Anki controls, verifies five
+  live audio candidates, and adds one note through an ephemeral loopback
+  AnkiConnect mock without touching the user's collection; the same run still
+  passes native selection, scroll, focus, dismissal, pause, and combined-capture
+  gates.
+- Hardened macOS player-focus restoration by retrying native activation until
+  the probe reports verified foreground ownership. The current signed
+  deterministic and supplied-media replays now verify both the app's completed
+  activation result and the subsequent mpv window readback after Escape and
+  outside-popup dismissal.
+- Added signed macOS native keyboard/focus evidence to the popup interaction
+  matrix. The helper now verifies Tab and Shift-Tab focus transitions while the
+  popup remains open, and the deterministic replay selected `samp`, preserved
+  pause ownership, dismissed through both native paths, and produced a usable
+  desktop interaction recording under `/tmp/iinatan-e2e-macos-keyboard-recorded-demo/`.
+- Added a signed macOS native Settings-window acceptance path: the helper
+  records the application-menu Settings item and trusted `Cmd+,` input path,
+  then verifies focused settings-window bounds and foreground ownership against
+  the AppKit probe. Profile lifecycle remains covered by the real settings
+  document smoke; other menu accelerators remain explicitly outside this test.
+- Replayed the packaged macOS `Open media in mpv…` menu path through the native
+  file picker. The selected file was handed to the user's stock mpv with the
+  bundled session script and a private IPC endpoint, without a terminal or
+  mpv-configuration mutation; the desktop evidence is recorded separately from
+  the explicit-path launcher smoke.
+- Hardened macOS startup and resize recovery against mpv publishing subtitle
+  properties before positive OSD dimensions exist; the controller now
+  suspends geometry/input until the renderer dimensions are valid. Released
+  mpv plain-subtitle observations also remain usable as a conservative
+  approximate event target when `sub-text/ass-full` is unavailable.
+- Tightened the supplied-media native selection replay to begin inside the
+  measured popup headword region, and retained bounded native-input diagnostics
+  when popup opening times out. The current signed macOS replay covers live
+  Jitendex/Hoshi lookup, smooth popup transit, native selection and scroll,
+  outside-click dismissal, and combined capture; screen recording remains a
+  separate opt-in diagnostic.
+- Replayed the current selectable-text telemetry against the required
+  MARRIAGETOXIN English ASS track using the managed `wty-en-en` download path;
+  the signed macOS run passed native `wit` selection, scroll, smooth transit,
+  four source-unit probes, outside/Escape dismissal, pause preservation, and
+  combined desktop capture.
+- Repeated that current required-media acceptance in native macOS fullscreen;
+  AppKit reported exact `1470x923` content bounds and the live lookup,
+  selection, scroll, dismissal, pause, and combined-capture gates remained
+  green.
+- Restored the popup's nested-reference parity surface for the Electron slice:
+  click, hover, and Shift+hover modes now carry explicit depth, expose a visible
+  parent-navigation control, and are covered by the browser smoke. Audio
+  playback is stopped when popup context changes, and stale audio responses are
+  ignored by request ID.
 - Added X11 and Win32 desktop-test backends with native pointer/keyboard input
   and self-contained PNG desktop capture; the required CI smokes now exercise
   transparent Electron popup text selection on both targets.
+- Wired the bundled macOS Apple Vision bitmap-subtitle OCR capability into the
+  stock-mpv host: selected image subtitle tracks use bounded decoded-subtitle
+  requests, paused primary subtitles may opt into screenshot-diff fallback, and
+  validated OCR boxes remain explicitly approximate rather than closing the
+  exact stock-mpv glyph-equivalence gate. Added request cancellation, per-cue
+  caching, settings controls, and controller/geometry coverage.
+- Accepted the macOS bitmap-subtitle path against a real PGS track from the
+  mounted Hunter × Hunter Blu-ray fixture. The signed native replay now covers
+  OCR-created character targets, popup capture, native selection, three
+  additional character probes, Escape/outside dismissal, and pause ownership;
+  Linux/Windows OCR remains deferred.
+- Replayed that bitmap path with the app's live `wty-en-en` Hoshi dictionary,
+  including managed download/import, structured popup content, native scroll,
+  and the same selection/probe/dismissal matrix.
 - Extended the combined stock-mpv/Electron harness to Linux X11 and Windows,
   including named-pipe IPC, platform helper selection, DPI-aware input
   coordinates, and virtual-desktop capture origins. Required hosted jobs are
@@ -148,8 +213,8 @@
   mpv survival.
 - Added an opt-in macOS native settings-window smoke that verifies the shipped
   Settings application-menu item, CoreGraphics window-probe bounds against
-  Electron bounds, and native activation/foreground ownership; native menu
-  keystroke invocation remains explicitly unverified.
+  Electron bounds, and native activation/foreground ownership; the signed
+  `Cmd+,` menu-keystroke path is covered by the newer acceptance replay.
 - Extended the native desktop latency report with a combined-capture popup
   sample: native pointer injection to the first changed-pixel result in a
   compositor capture containing both mpv and Electron. The report labels this

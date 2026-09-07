@@ -105,6 +105,12 @@ cannot universally position and attach to another client's surface.
   smoke also downloaded Jitendex over HTTPS, staged it under a disposable
   managed root, and passed the same real lookup. The user dictionary is not
   bundled.
+- macOS bitmap OCR: the signed helper reports Vision revision 3 and the
+  supported recognition-language list. The host/controller boundary,
+  approximate hit mapping, real PGS decoding, and the signed native desktop
+  replay pass on the mounted Hunter × Hunter Blu-ray fixture, including native
+  popup input and dismissal. OCR remains deliberately approximate and the
+  portable worker reports it unavailable on Windows/Linux.
 - Electron: pinned to `44.2.0` in `package.json`; the direct runtime startup
   smoke test passed on this macOS arm64 host, including the settings
   BrowserWindow load. Headless stock-mpv IPC attachment and the signed

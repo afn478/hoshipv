@@ -11,6 +11,12 @@ Evidence is reported separately for:
 - unverified: no authoritative test has run;
 - blocked: a concrete platform or dependency gate prevents the test.
 
+For the current implementation pass, macOS arm64 is the active validation
+slice. Linux and Windows native-desktop execution is intentionally deferred
+until this workspace is moved to native Linux and Windows hosts; their matrix
+rows remain explicitly unverified rather than being inferred from macOS or CI
+source coverage.
+
 The initial commands are:
 
 ```sh
@@ -24,7 +30,7 @@ npm outdated --json
 
 On the 2026-09-07 dependency/security review, `npm outdated --json` returned
 `{}`, both regular and production-only `npm audit` runs reported zero
-vulnerabilities, and `validate:release` reported 34 feature-matrix rows and 48
+vulnerabilities, and `validate:release` reported 34 feature-matrix rows and 50
 runtime files. The native refresh kept libass `0.17.5` and the current
 HoshiDicts `main` revision while updating FFmpeg `9.0.1`, HarfBuzz `14.4.0`,
 FreeType `2.14.3`, FriBidi `1.0.16`, libunibreak `7.0`, zlib `1.3.2`, and
@@ -71,9 +77,12 @@ large structured dictionary entry, nested lookup, selection reporting, audio
 source menus, controller commands, keyboard/wheel/outside-pointer messages,
 highlight rendering, accessibility semantics, stale-generation rejection,
 right-click/context-menu pass-through, focus retention, content security policy,
-and unsafe custom-CSS rejection. It is intentionally separate from native
-desktop evidence: synthetic DOM events and hidden browser windows cannot prove
-OS focus, compositor stacking, click-through, or native input. It also delivers
+and unsafe custom-CSS rejection. Nested coverage includes click, hover, and
+Shift+hover gating, depth metadata, and the parent-navigation control; audio
+coverage includes request-ID stale-result rejection. It is intentionally
+separate from native desktop evidence: synthetic DOM events and hidden browser
+windows cannot prove OS focus, compositor stacking, click-through, or native
+input. It also delivers
 the typed `capabilities` event to both surfaces and asserts the
 passive-forwarded versus interactive-native input modes and the layout-only
 popup reflow path in the real Chromium document.
@@ -174,11 +183,13 @@ The opt-in macOS native settings-window smoke is:
 IINATAN_NATIVE_SETTINGS=1 npm run test:settings:native
 ```
 
-It launches the shipped `--settings` path in a disposable Electron user-data
-directory, checks the real application-menu Settings item, compares the
-CoreGraphics window-probe frame with Electron's window bounds, and verifies
-native activation plus foreground ownership. It does not synthesize a native
-menu keystroke, so menu invocation remains a separate unverified boundary.
+It launches the normal Electron application with the Settings window visible in
+a disposable user-data directory, checks the real application-menu Settings
+item, exercises the signed native `Cmd+,` input path and records both macOS
+trust checks, compares the CoreGraphics window-probe frame with Electron's
+window bounds, and verifies native activation plus foreground ownership for the
+focused Settings window. Profile create/switch/delete remains covered by the
+real settings-document smoke; other menu accelerators remain outside this test.
 
 The profile runtime timing controls are bounded during settings normalization and
 are applied to the live session: dictionary lookup and hover-request deadlines,
@@ -239,6 +250,16 @@ The application resolves that path, starts the user's existing mpv through the
 same private session/IPC contract, and relies on ordinary descriptor discovery
 for attachment. This is a cross-platform bootstrap path; it is not evidence of
 native window placement or input behavior.
+
+The packaged macOS arm64 menu path has also been replayed against the real
+desktop surface. The signed app opened the native `Open media in mpv…` file
+picker; selecting a media file started `/opt/homebrew/bin/mpv` without a
+terminal, with the bundled `mpv/iinatan-session.lua`, a private Unix IPC socket,
+and the selected path. The resulting process and descriptor were observed in
+`/tmp/iinatan-menu-launch-E7N18n/packaged-status.json`; the picker and launch
+screen capture are in the same directory. This proves the macOS GUI bootstrap
+and selected-file handoff, while the separate native overlay/input replay
+remains the evidence for subtitle interaction.
 
 The multiple-instance isolation smoke is:
 
@@ -349,11 +370,14 @@ activation and observes the foreground HWND, then verifies movement and
 resize. This is a native Win32 window-boundary result only; it does not claim
 stock-mpv overlay, subtitle geometry, or popup input evidence.
 
-The latest macOS activation-only retry on this host was denied before native
+An earlier macOS activation-only retry on this host was denied before native
 input: the helper reported `activated:false`, `requestAccepted:false`,
 `foregroundVerified:false`, `displayAsleep:true`, and foreground PID `408`
-(`loginwindow`). This is host-state evidence for the blocked run, not a claim
-that AppKit activation is universally unavailable.
+(`loginwindow`). That remains host-state evidence for the blocked run, not a
+claim that AppKit activation is universally unavailable. A subsequent
+macOS arm64 stock-mpv window smoke passed with the signed helper's activation
+request accepted, foreground verification true, and the AppKit content shim
+reporting exact `480x270` content bounds for window ID `13693`.
 
 The same stock-mpv window smoke can request native fullscreen with
 `IINATAN_NATIVE_WINDOW_FULLSCREEN=1`. The combined desktop harness accepts
@@ -459,6 +483,48 @@ lookup. The macOS arm64 package supplies the helper; other platforms require
 skip. It is dictionary/backend evidence, not native desktop or stock-mpv
 geometry evidence.
 
+The macOS bitmap-subtitle OCR boundary is exercised by the core and controller
+tests:
+
+```sh
+npm test
+```
+
+The signed macOS helper reports `bitmapOcr.available:true`, Vision revision 3,
+and its supported recognition languages through `./bin/iina-hoshi-dicts version`.
+The host uses the decoded-subtitle request path for selected bitmap
+tracks and can use the paused screenshot-diff path when
+`bitmapSubtitleOcrScreenshotFallbackEnabled` is enabled. OCR results are
+lookupable approximate geometry (`exact:false`); this does not close the
+separate stock-mpv glyph-equivalence gate. Windows/Linux OCR remains
+unverified and is not run from this macOS workspace.
+
+The native desktop OCR acceptance also passed on 2026-09-07 using the real
+Hunter × Hunter Blu-ray MKV mounted at
+`/Volumes/Media Files/anime/Hunter x Hunter (2011)/Season 01/Hunter x Hunter
+(2011) - S01E13 - 013 - Letter x From x Gon [Bluray-1080p][10bit][h265][AAC
+2.0][EN+JA]-Anime Time.mkv`. The selected stock-mpv track was subtitle id `2`
+(`ff-index: 4`, `hdmv_pgs_subtitle`); Vision decoded the active cue as
+`Monsters and beasts...` and returned 20 bounded lookup units. The signed
+macOS vertical slice ran with approximate geometry explicitly allowed and
+passed the real popup, combined desktop capture, native selection drag,
+Escape/outside dismissal, pause ownership, and three additional character
+probes. Evidence is preserved under
+`/tmp/iinatan-e2e-evidence-macos-bitmap-r8`; the helper-only request measured
+519 ms end-to-end, while the native replay recorded pointer-to-popup 185.189
+ms and combined popup capture 554.516 ms. The harness accepts bitmap tracks
+with finite cue timing even though stock mpv does not expose a `sub-text`
+string for PGS; it does not relax the exact-geometry gate for ASS/text tracks.
+
+The same replay also passed with the app's live recommended-dictionary path on
+2026-09-07. `wty-en-en` downloaded and imported 102.0 MiB in 20.317 seconds,
+the Electron status reported the HoshiDicts backend with one enabled managed
+dictionary, and the popup used the real structured English result. The live
+replay recorded pointer-to-popup 34.860 ms, combined popup capture 428.114 ms,
+native selection 218.757 ms, native scroll 117.347 ms, and all three character
+probes. Evidence is preserved under
+`/tmp/iinatan-e2e-evidence-macos-bitmap-live-r2`.
+
 The non-macOS portable dictionary worker smoke is:
 
 ```sh
@@ -521,12 +587,12 @@ IINATAN_DICTIONARY_DOWNLOAD_REQUIRED=1 npm run test:dictionary:download
 
 This uses a disposable settings/install root, downloads the configured
 Jitendex release, validates and imports it through HoshiDicts, starts the
-worker from the managed path, and performs a real `猫を見る` lookup. On
-2026-09-06 it downloaded 36.9 MiB, installed one enabled dictionary, and
-returned two lookup results (`猫` and `見る`) in 2.64 seconds for download and
-import, 20 ms for worker readiness, and 14 ms for lookup. It is opt-in because
-it requires network access and an upstream archive; it does not modify the
-user's settings or dictionary directory.
+worker from the managed path, and performs a real `猫を見る` lookup. The
+latest macOS arm64 run on 2026-09-07 downloaded 36.9 MiB, installed one
+enabled dictionary, and returned two lookup results in 2.034 seconds for
+download/import, 15 ms for worker readiness, and 24 ms for lookup. It is
+opt-in because it requires network access and an upstream archive; it does
+not modify the user's settings or dictionary directory.
 
 The AnkiConnect loopback mock smoke is:
 
@@ -936,6 +1002,25 @@ the drag and distinguish Escape dismissal from the separate outside-panel
 click. The default bounded duration is 20 seconds and can be changed with
 `IINATAN_E2E_RECORD_SECONDS=N`; Screen Recording permission is required for
 the process that launches the harness.
+
+A screen-recording attempt on 2026-09-07 did not reach native interaction:
+macOS `screencapture` changed foreground verification during recorder startup,
+so it adds no recording or popup-input evidence. Screen Recording remains an
+optional diagnostic and is separate from the successful signed acceptance run
+below.
+
+A subsequent signed windowed replay on 2026-09-07 used the same supplied media
+and track with the current helper, live Jitendex/Hoshi lookup, and four native
+pointer probes. It passed with `accessibilityTrusted:true`,
+`postEventTrusted:true`, native selection text `人`, popup scroll offset `480`,
+all 12 smooth-approach samples keeping the popup visible and focused, exact
+AppKit content bounds, outside-panel dismissal, Escape dismissal, pause
+preservation, and mpv survival. Its combined `2940x1912` capture reported a
+popup visual-change fraction of `0.9819818833`. The harness now ends the drag at
+80% of the measured one-glyph headword region so the native selection crosses
+the caret midpoint; this is test targeting, not widened product hit geometry.
+Evidence is in
+`/tmp/iinatan-e2e-evidence-macos-feature-parity-r3/run-50056-1788773343949/`.
 `IINATAN_E2E_SMOOTH_POPUP_APPROACH=1` adds a 12-sample native cursor transit
 from the subtitle target into the measured popup content before selection. A
 diagnostic run initially exposed a false `geometry-invalidated` dismissal:
@@ -948,6 +1033,83 @@ Evidence is preserved under
 Rebuilding the
 helper still requires signing and re-adding that exact bundle to macOS
 Accessibility before another TCC acceptance run.
+
+The latest signed windowed live replay on 2026-09-07 used the current helper,
+the supplied MARRIAGETOXIN MKV, external Japanese subtitle track `15`, live
+Jitendex/Hoshi lookup, smooth popup approach, and four additional pointer
+probes. It passed with `accessibilityTrusted:true`, `postEventTrusted:true`,
+exact AppKit content bounds, native selection text `人`, popup scroll offset
+`480`, all 12 transit samples keeping the popup visible and focused,
+outside-panel dismissal, Escape dismissal, pause preservation, and mpv
+survival. Its combined `2940x1912` capture changed `98.200745%` of the
+requested popup region; pointer-to-popup was `31.523 ms`, and the combined
+capture upper-bound was `604.658 ms`. Screen recording was disabled for this
+acceptance run. Evidence is in
+`/tmp/iinatan-e2e-evidence-macos-feature-parity-r8/run-72519-1788777032571/`.
+
+The latest signed windowed replay on 2026-09-07 used the required
+MARRIAGETOXIN file's native English ASS track `1` and the application's own
+managed `wty-en-en` download/import path. With the current selectable-text
+region telemetry, the native drag selected `wit` from the measured popup text
+range; the 12 smooth-approach samples retained popup visibility and focus,
+the native wheel reached offset `480`, and four additional native probes each
+resolved the expected source unit (`i`, `n`, `u`, and `e`). Trusted
+Accessibility and post-event access, exact AppKit content bounds, combined
+`2940x1912` capture, outside-panel dismissal, Escape dismissal, pause
+preservation, and mpv survival all passed. Pointer-to-popup was `213.246 ms`,
+combined-capture upper-bound `1179.587 ms`, native selection `217.546 ms`, and
+native scroll `112.845 ms`; the capture changed `98.714844%` of the requested
+popup region. Evidence is in
+`/tmp/iinatan-e2e-macos-current/`.
+
+The current signed fullscreen replay then repeated the same required-media
+English ASS path with live managed `wty-en-en`, smooth popup transit, native
+selection (`wit`), native scroll to `480`, two additional source-unit probes,
+outside-panel dismissal, Escape dismissal, pause preservation, and mpv
+survival. AppKit reported `fullscreenObserved:true` with exact content bounds
+`1470x923`; trusted Accessibility and post-event access remained true, and
+the combined `2940x1912` capture changed `99.896267%` of the requested popup
+region. Pointer-to-popup was `188.170 ms`, combined-capture upper-bound
+`724.433 ms`, native selection `221.819 ms`, and native scroll `112.160 ms`.
+Evidence is in `/tmp/iinatan-e2e-macos-fullscreen-current/`.
+
+The current signed windowed Japanese replay on 2026-09-07 used stock mpv
+`0.41.0`, the supplied MARRIAGETOXIN file, external subtitle track `15`, and a
+fresh managed Jitendex import. The popup selected `Jitendex.o`, reached native
+scroll offset `1283.5`, and passed Tab/Shift-Tab focus transitions, Escape and
+outside-panel dismissal, pause preservation, exact `640x360` AppKit content
+bounds, and combined `2940x1912` capture. Accessibility and post-event access
+were both true. Pointer-to-popup was `200.595 ms`, combined-capture upper-bound
+`756.381 ms`, native selection `221.508 ms`, native scroll `39.669 ms`, and the
+popup-region changed fraction was `0.982002`. The app's native focus result and
+the follow-up window readback both reported verified mpv foreground ownership
+after dismissal.
+
+The macOS feature-parity extension used the same signed helper, live Jitendex/
+Hoshi lookup, and the supplied Japanese subtitle track. With
+`IINATAN_E2E_FEATURE_PARITY=1`, the harness clicked measured native action
+rectangles for audio and Anki before the selection/scroll phase. Audio opened
+the popup's `audio-menu-active` state and returned five bounded candidates; the
+Anki path used an ephemeral loopback mock, recorded `findNotes` followed by one
+`addNote`, and never contacted the user's collection. The replay then completed
+native selection (`Jitendex.o`), smooth transit, scroll to `1675`, Tab/
+Shift-Tab focus, Escape/outside dismissal, pause preservation, exact `640x360`
+AppKit content bounds, and combined capture. Accessibility and post-event access
+were both true; pointer-to-popup was `195.519 ms`, combined-capture upper-bound
+`782.651 ms`, native selection `223.417 ms`, native scroll `33.228 ms`, and the
+popup capture changed `98.250603%` of the requested region. Evidence is in
+`/tmp/iinatan-e2e-macos-feature-parity-anki/run-25195-1788789373468/`.
+
+The signed macOS native-focus extension was also exercised in a deterministic
+demo replay on 2026-09-07. After the native text drag selected `samp`, the
+helper sent Tab and Shift-Tab while the popup remained open: focus changed from
+`popup-panel` to `button:close-popup`, then to `button:audio-source`. The run
+preserved pause ownership, passed Escape and outside-panel dismissal, and left
+mpv alive. Its desktop recording is
+`/tmp/iinatan-e2e-macos-keyboard-recorded-demo/run-20512-1788787004223/desktop-interaction.mov`;
+the structured result and still captures are in the same directory. This is
+macOS native keyboard/focus evidence; Linux and Windows validation are deferred
+to native hosts.
 
 The geometry comparison utility is intentionally independent of the subtitle
 provider:

@@ -20,6 +20,10 @@ helper on macOS but keeps it disabled for ordinary stock attachment while the
 full stock-mpv acceptance oracle remains open; an explicit
 `--enable-patched-native-geometry` or `--native-geometry-executable` opts into
 that separate backend path.
+The same signed macOS helper exposes Apple Vision OCR for selected bitmap
+subtitle tracks through a bounded host request boundary. OCR boxes remain
+approximate lookup geometry (`exact:false`) and are not used to close the
+stock-mpv glyph-equivalence gate; Windows/Linux OCR is unverified.
 Read `docs/native-geometry.md`, `docs/platform-capability-matrix.md`,
 `docs/deinflection.md`, `docs/mpv-compatibility.md`, `docs/feature-matrix.json`, and
 `docs/settings-migration.md`, and `docs/validation.md` before treating a test as
@@ -99,6 +103,15 @@ engine and checks large structured entries, nested lookup, selection, audio
 menus, keyboard/wheel/outside-pointer messages, accessibility semantics, stale
 generations, highlight rendering, CSP, and custom-CSS rejection. It is browser
 integration evidence, not OS-level focus or click-through evidence.
+Nested references support the configured click, hover, and Shift+hover modes;
+the popup keeps a bounded lookup stack with an explicit parent control, and
+audio responses are correlated to the active request. These are renderer and
+host behaviors; their separate native-desktop evidence remains labeled in the
+feature matrix.
+Selected macOS bitmap subtitle tracks use the bundled Vision OCR helper through
+the decoded-subtitle path; the optional screenshot-diff fallback is restricted
+to paused primary subtitles and is disabled by default. `npm test` covers the
+request validation, response-to-hit geometry mapping, and controller lifecycle.
 `test:settings` runs the real sandboxed profile/settings document and checks
 profile rendering and save, dictionary enablement, capability diagnostics, CSP,
 and preload request allowlisting. It does not prove native menu invocation or
@@ -117,10 +130,12 @@ stock-mpv subtitle attachment or combined mpv/overlay evidence.
 discovery, duplicate lookup/open, media storage, and note creation without
 contacting or modifying the user's real Anki collection.
 `test:settings:native` is an opt-in macOS graphical smoke. Set
-`IINATAN_NATIVE_SETTINGS=1` to launch the real `--settings` path, verify the
-application-menu Settings item, compare the native window-probe frame with
-Electron's reported bounds, and verify native activation/foreground ownership.
-It does not synthesize a native menu keystroke; that boundary remains explicit.
+`IINATAN_NATIVE_SETTINGS=1` to launch the normal app with Settings visible,
+verify the application-menu Settings item, exercise the signed native `Cmd+,`
+input path and its two macOS trust checks, compare the native window-probe frame
+with Electron's reported bounds, and verify native activation/foreground
+ownership. Profile create/switch/delete is covered by the real settings-document
+smoke; other menu accelerators remain outside this test.
 `test:sentence-audio` generates a bounded local fixture and runs the real
 host-side ffmpeg capture boundary. It requires `ffmpeg` on PATH or an explicit
 `IINATAN_FFMPEG` override and does not substitute for package-level codec
@@ -194,6 +209,16 @@ targets offscreen content. The signed macOS run against the supplied
 MARRIAGETOXIN media selected `unter`, reached scroll offset `480`, preserved
 pause ownership, dismissed with native Escape, and left mpv alive; it also
 reopened the popup and consumed an outside-panel click without toggling mpv.
+On macOS, the same matrix also sends signed native Tab and Shift-Tab events
+after selection and records the observed focus targets; the popup must remain
+visible and focused while Tab moves from `popup-panel` to a real control and
+Shift-Tab moves to a different popup control. A deterministic signed run
+selected `samp`, passed those focus transitions, preserved pause ownership,
+and left mpv alive.
+The current native adapter also retries macOS player activation until foreground
+ownership is verified; the supplied-media replay confirms both the completed
+activation result and the follow-up mpv window readback after Escape and
+outside-panel dismissal.
 Set `IINATAN_E2E_RECORD_SCREEN=1` with this interaction matrix to add a
 macOS `.mov` screen recording with the cursor and native click indicators.
 The recording is stored as `desktop-interaction.mov` in the evidence directory
@@ -209,6 +234,15 @@ hover-to-popup path, rather than a synthetic DOM event. The current regression
 run kept the popup visible and focused at all 12 transit samples and completed
 native selection, Escape, and outside-panel dismissal; evidence is preserved
 under `/tmp/iinatan-e2e-evidence-smooth-fixed/run-71669-1788729618818/`.
+Set `IINATAN_E2E_FEATURE_PARITY=1` with the native interaction matrix on macOS
+to click the renderer-measured audio and Anki action rectangles. This opt-in
+replay uses live Hoshi lookup, resolves the audio menu through the configured
+sources, and sends the Anki note to an ephemeral loopback mock; it never opens
+or modifies the user's Anki collection. Action rectangles are derived from the
+open popup's DOM viewport geometry and are rejected if they fall outside the
+native panel. The latest signed replay returned five audio candidates and one
+successful mock `addNote`; evidence is in
+`/tmp/iinatan-e2e-macos-feature-parity-anki/run-25195-1788789373468/`.
 Evidence is recorded under
 `/tmp/iinatan-e2e-evidence-native-interaction-live5/`. This remains an opt-in
 test matrix because rebuilding the native helper requires re-signing and

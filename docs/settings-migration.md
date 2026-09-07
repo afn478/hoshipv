@@ -37,9 +37,11 @@ as equivalent behavior:
 
 - `hideNativeSubtitles` is not applied. This implementation does not draw a
   replacement subtitle text layer, so native mpv subtitles remain visible.
-- Bitmap/OCR and experimental native-hit-layer flags remain preserved but are
-  explicitly unsupported until a platform-specific implementation and evidence
-  exist. They are not used as a substitute for native ASS/SRT geometry.
+- Bitmap/OCR preferences are now active on macOS when the signed Vision-capable
+  helper is present. The decoded-subtitle path and optional paused screenshot
+  fallback produce approximate lookup boxes only; they are not a substitute for
+  native ASS/SRT geometry. Windows/Linux keep the values preserved but
+  unverified.
 - `enabledByDefault` is retained for profile compatibility; the current host
   discovers live session descriptors rather than exposing an IINA-style per-
   window enable toggle.
