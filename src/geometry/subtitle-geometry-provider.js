@@ -1,7 +1,7 @@
 "use strict";
 
-const { createTextIndex } = require("./unicode-index");
 const { buildPlainSubtitleGeometry, stripAssTags } = require("./plain-subtitle");
+const { segmentText } = require("./unicode-index");
 
 function parseAssTime(value) {
   const match = String(value || "")
@@ -69,6 +69,55 @@ function contentBoundsAreAuthoritative(windowGeometry) {
   return true;
 }
 
+function bitmapRectKey(rects) {
+  return rects
+    .map((rect) =>
+      [rect.x, rect.y, rect.width, rect.height]
+        .map((value) => Number(value).toFixed(4))
+        .join(","),
+    )
+    .join(";");
+}
+
+function distributeBitmapWordRects(units) {
+  const next = units.map((unit) => ({
+    ...unit,
+    rects: unit.rects.map((rect) => ({ ...rect })),
+  }));
+  for (let start = 0; start < next.length;) {
+    const key = bitmapRectKey(next[start].rects);
+    let end = start + 1;
+    while (end < next.length && bitmapRectKey(next[end].rects) === key) end++;
+    const group = next.slice(start, end);
+    const baseRects = group[0].rects;
+    if (group.length > 1 && baseRects.length === 1) {
+      const clusterCounts = group.map((unit) =>
+        Math.max(1, segmentText(unit.text).length),
+      );
+      const totalClusters = clusterCounts.reduce((total, count) => total + count, 0);
+      let clusterOffset = 0;
+      group.forEach((unit, index) => {
+        const base = baseRects[0];
+        const left = base.x + (base.width * clusterOffset) / totalClusters;
+        const right =
+          base.x +
+          (base.width * (clusterOffset + clusterCounts[index])) / totalClusters;
+        unit.rects = [
+          {
+            x: left,
+            y: base.y,
+            width: Math.max(0.5, right - left),
+            height: base.height,
+          },
+        ];
+        clusterOffset += clusterCounts[index];
+      });
+    }
+    start = end;
+  }
+  return next;
+}
+
 function makeEventGeometry(trackId, role, event, index, input, positionOffset = 0) {
   const text = stripAssTags(event.text);
   const approximation = buildPlainSubtitleGeometry({
@@ -126,7 +175,13 @@ class SubtitleGeometryProvider {
     const contentExact = contentBoundsAreAuthoritative(windowGeometry);
     let positionOffset = 0;
     const makeTrack = (id, role, raw) => {
-      const events = sourceEvents(raw.assFull).map((event, index) => {
+      // Some released mpv versions expose the rendered plain subtitle text
+      // before (or instead of) sub-text/ass-full. Keep the exact ASS payload
+      // intact when present, but retain a conservative event target so the
+      // bridge can fail over to approximate geometry rather than dropping the
+      // active subtitle entirely.
+      const observedText = raw.assFull || raw.plainText;
+      const events = sourceEvents(observedText).map((event, index) => {
         const geometry = makeEventGeometry(
           id,
           role,
@@ -142,6 +197,7 @@ class SubtitleGeometryProvider {
         id,
         role,
         selected: raw.selected !== false,
+        track: raw.track ? { ...raw.track } : null,
         source: raw.source || null,
         assFull: String(raw.assFull || ""),
         assExtradata: String(raw.extradata || ""),
@@ -286,6 +342,128 @@ class SubtitleGeometryProvider {
             }
           : {}),
         diagnostics: response.diagnostics || null,
+      },
+      tracks,
+    };
+  }
+
+  applyBitmapOcrResponse(snapshotInput, response, role, raw = {}, positionOffset = 0) {
+    if (
+      !snapshotInput ||
+      !response ||
+      response.ok !== true ||
+      response.protocol !== 1 ||
+      typeof response.text !== "string" ||
+      !response.text ||
+      !Array.isArray(response.units) ||
+      !response.units.length ||
+      Number(response.rendererWidth) !== Number(snapshotInput.osd.width) ||
+      Number(response.rendererHeight) !== Number(snapshotInput.osd.height)
+    )
+      return null;
+    const surface = role === "secondary" ? "secondary" : "primary";
+    const text = response.text;
+    const units = [];
+    for (const [unitIndex, value] of response.units.entries()) {
+      const start = Number(value?.displayStartUtf16);
+      const end = Number(value?.displayEndUtf16);
+      if (
+        !Number.isInteger(start) ||
+        !Number.isInteger(end) ||
+        start < 0 ||
+        end <= start ||
+        end > text.length ||
+        !Array.isArray(value?.rects) ||
+        !value.rects.length ||
+        value.rects.length > 8
+      )
+        continue;
+      const rects = value.rects
+        .map((item) => ({
+          x: Number(item?.x),
+          y: Number(item?.y),
+          width: Number(item?.w ?? item?.width),
+          height: Number(item?.h ?? item?.height),
+        }))
+        .filter(
+          (item) =>
+            [item.x, item.y, item.width, item.height].every(Number.isFinite) &&
+            item.x >= 0 &&
+            item.y >= 0 &&
+            item.width > 0 &&
+            item.height > 0 &&
+            item.x + item.width <= Number(snapshotInput.osd.width) + 0.5 &&
+            item.y + item.height <= Number(snapshotInput.osd.height) + 0.5,
+        );
+      if (!rects.length) continue;
+      const unitText = text.slice(start, end);
+      const utf8Start = Buffer.byteLength(text.slice(0, start), "utf8");
+      units.push({
+        id: `${surface}:bitmap-ocr:unit:${unitIndex}`,
+        position: positionOffset + unitIndex,
+        text: unitText,
+        sourceText: text,
+        utf16Range: [start, end],
+        utf8Range: [utf8Start, utf8Start + Buffer.byteLength(unitText, "utf8")],
+        rects,
+        lookupable: !/^\s*$/.test(unitText),
+      });
+    }
+    if (!units.some((unit) => unit.lookupable)) return null;
+    const positionedUnits = distributeBitmapWordRects(units);
+    const startMs = Number.isFinite(Number(response.cueStartMs))
+      ? Number(response.cueStartMs)
+      : Number.isFinite(Number(raw.startMs))
+        ? Number(raw.startMs)
+        : null;
+    const endMs = Number.isFinite(Number(response.cueEndMs))
+      ? Number(response.cueEndMs)
+      : Number.isFinite(Number(raw.endMs))
+        ? Number(raw.endMs)
+        : null;
+    const track = {
+      id: surface,
+      role: surface,
+      selected: raw.selected !== false,
+      track: raw.track ? { ...raw.track } : null,
+      source: raw.source || null,
+      assFull: "",
+      assExtradata: "",
+      startMs,
+      endMs,
+      renderer: raw.renderer ? { ...raw.renderer } : null,
+      events: [
+        {
+          id: `${surface}:bitmap-ocr:${startMs ?? "na"}:${endMs ?? "na"}`,
+          sourceText: text,
+          rawText: text,
+          startMs,
+          endMs,
+          layer: 0,
+          drawing: false,
+          units: positionedUnits,
+        },
+      ],
+    };
+    const tracks = [
+      ...snapshotInput.tracks.filter((value) => value.role !== surface),
+      track,
+    ].sort((left, right) =>
+      left.role === "primary" ? -1 : right.role === "primary" ? 1 : 0,
+    );
+    return {
+      ...snapshotInput,
+      source: {
+        ...snapshotInput.source,
+        mode: "bitmap-ocr",
+        exact: false,
+        lookupAllowed: true,
+        bitmapOcr: true,
+        contentExact: snapshotInput.source?.contentExact === true,
+        recognitionConfidence: Number(response.confidence) || 0,
+        recognitionMode: String(response.mode || ""),
+        reason:
+          "Apple Vision OCR geometry is approximate and remains separate from exact stock glyph geometry",
       },
       tracks,
     };

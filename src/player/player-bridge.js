@@ -382,6 +382,17 @@ class PlayerBridge extends EventEmitter {
       };
       return {
         selected: !!track && booleanProperty(this.properties, visibilityName, true),
+        track: track
+          ? {
+              id: Number(track.id),
+              codec: String(track.codec || track["codec-desc"] || ""),
+              ffIndex,
+              external: !!externalPath,
+              externalFilename: externalPath ? String(externalPath) : "",
+              language: String(track.lang || track.language || ""),
+              title: String(track.title || ""),
+            }
+          : null,
         assFull: String(this.property(textName, "") || ""),
         plainText: String(this.property(plainTextName, "") || ""),
         extradata: String(this.property(extraName, "") || ""),
@@ -446,11 +457,20 @@ class PlayerBridge extends EventEmitter {
   }
 
   async screenshotToFile(filePath, quality = 85) {
-    const target = String(filePath || "");
-    if (!path.isAbsolute(target)) throw new Error("screenshot path must be absolute");
+    return this.#screenshotToFile(filePath, quality, "video");
+  }
+
+  async screenshotSubtitlesToFile(filePath, quality = 85) {
+    return this.#screenshotToFile(filePath, quality, "subtitles");
+  }
+
+  async #screenshotToFile(filePath, quality, screenshotTarget) {
+    const outputPath = String(filePath || "");
+    if (!path.isAbsolute(outputPath))
+      throw new Error("screenshot path must be absolute");
     const jpegQuality = Math.max(1, Math.min(100, Math.round(Number(quality) || 85)));
     await this.ipc.setProperty("screenshot-jpeg-quality", jpegQuality).catch(() => {});
-    return this.ipc.command("screenshot-to-file", target, "video");
+    return this.ipc.command("screenshot-to-file", outputPath, screenshotTarget);
   }
 
   close() {

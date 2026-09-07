@@ -70,7 +70,13 @@ function normalizeTrack(track, trackIndex) {
       };
     },
   );
-  return { id, role, selected: track.selected !== false, events };
+  return {
+    id,
+    role,
+    selected: track.selected !== false,
+    track: track.track ? { ...track.track } : null,
+    events,
+  };
 }
 
 function createGeometrySnapshot(input) {

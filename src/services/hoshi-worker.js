@@ -276,6 +276,7 @@ class HoshiWorker extends EventEmitter {
       capability: null,
     });
     if (!worker) return;
+    await fs.mkdir(this.root, { recursive: true, mode: 0o700 }).catch(() => {});
     await fs
       .writeFile(path.join(this.root, "stop"), "stop\n", { mode: 0o600 })
       .catch(() => {});

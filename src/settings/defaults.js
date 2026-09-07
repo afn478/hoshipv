@@ -244,7 +244,9 @@ function normalizePreferences(input) {
   )
     ? "shift-hover"
     : "hover";
-  result.nestedPopupMode = ["off", "click", "hover"].includes(result.nestedPopupMode)
+  result.nestedPopupMode = ["off", "click", "hover", "shift-hover"].includes(
+    result.nestedPopupMode,
+  )
     ? result.nestedPopupMode
     : "off";
   result.popupTheme = ["inherit", "dark", "light"].includes(result.popupTheme)
