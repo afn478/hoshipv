@@ -2,6 +2,7 @@
 
 const fs = require("node:fs/promises");
 const fsSync = require("node:fs");
+const http = require("node:http");
 const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
@@ -83,6 +84,24 @@ async function waitForValue(predicate, timeoutMs, description) {
   );
 }
 
+function isBitmapSubtitleTrack(track) {
+  return /pgs|hdmv|dvd|dvb|vobsub|xsub|bitmap/i.test(
+    String(track?.codec || track?.["codec-desc"] || ""),
+  );
+}
+
+function stockSubtitleEventReady(bridge) {
+  if (bridge.property("sub-text/ass-full", "") || bridge.property("sub-text", ""))
+    return true;
+  const selectedId = bridge.property("sid");
+  const selectedTrack = (bridge.property("track-list", []) || []).find(
+    (track) => track?.type === "sub" && String(track.id) === String(selectedId),
+  );
+  if (!isBitmapSubtitleTrack(selectedTrack)) return false;
+  const input = bridge.geometryInput();
+  return Number.isFinite(input.primary.startMs) && Number.isFinite(input.primary.endMs);
+}
+
 function commandOutput(executable, args, description) {
   const result = spawnSync(executable, args, {
     cwd: root,
@@ -133,6 +152,56 @@ function run(executable, args, description) {
         );
     });
     child.stdout.resume();
+  });
+}
+
+function startAnkiConnectMock() {
+  const calls = [];
+  const server = http.createServer((request, response) => {
+    if (request.method !== "POST") {
+      response.writeHead(405, { "content-type": "application/json" });
+      response.end(JSON.stringify({ result: null, error: "method not allowed" }));
+      return;
+    }
+    const chunks = [];
+    let size = 0;
+    request.on("data", (chunk) => {
+      size += chunk.length;
+      if (size <= 1024 * 1024) chunks.push(chunk);
+    });
+    request.on("end", () => {
+      let message;
+      try {
+        if (size > 1024 * 1024) throw new Error("request too large");
+        message = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      } catch (error) {
+        response.writeHead(400, { "content-type": "application/json" });
+        response.end(JSON.stringify({ result: null, error: error.message }));
+        return;
+      }
+      const action = String(message.action || "");
+      calls.push(action);
+      let result = null;
+      if (action === "version") result = 6;
+      else if (action === "findNotes") result = [];
+      else if (action === "addNote") result = 424242;
+      else if (action === "storeMediaFile") result = message.params?.filename || null;
+      else if (action === "guiBrowse") result = [424242];
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ result, error: null }));
+    });
+  });
+  return new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      server.removeListener("error", reject);
+      const address = server.address();
+      resolve({
+        server,
+        calls,
+        url: `http://127.0.0.1:${address.port}`,
+      });
+    });
   });
 }
 
@@ -327,7 +396,12 @@ function lookupableUnits(session) {
   return (session?.tracks || []).flatMap((track) =>
     (track.events || []).flatMap((event) =>
       (event.units || [])
-        .filter((unit) => unit.lookupable !== false && unit.rects?.[0])
+        .filter(
+          (unit) =>
+            unit.lookupable !== false &&
+            /[\p{L}\p{N}]/u.test(String(unit.text || "")) &&
+            unit.rects?.[0],
+        )
         .map((unit) => ({ track, event, unit })),
     ),
   );
@@ -629,6 +703,7 @@ async function main() {
     Math.floor(Number(process.env.IINATAN_E2E_ADDITIONAL_POINTER_PROBES) || 0),
   );
   const nativeInteractionMatrix = process.env.IINATAN_E2E_NATIVE_INTERACTION === "1";
+  const nativeMacosFeatureParity = process.env.IINATAN_E2E_FEATURE_PARITY === "1";
   const smoothPopupApproach = process.env.IINATAN_E2E_SMOOTH_POPUP_APPROACH === "1";
   const screenRecordingEnabled = process.env.IINATAN_E2E_RECORD_SCREEN === "1";
   const screenRecordingSeconds = Math.max(
@@ -639,8 +714,24 @@ async function main() {
     1000,
     Math.floor(Number(process.env.IINATAN_E2E_POPUP_CAPTURE_TIMEOUT_MS) || 8000),
   );
+  // A fresh live Hoshi worker can take several seconds to start on macOS.
+  // Keep the cold lookup wait bounded, but do not turn worker startup variance
+  // into a false native-input failure.
+  const popupOpenTimeoutMs = Math.max(
+    1000,
+    Math.min(
+      30000,
+      Math.floor(Number(process.env.IINATAN_E2E_POPUP_OPEN_TIMEOUT_MS) || 15000),
+    ),
+  );
   if (screenRecordingEnabled && process.platform !== "darwin")
     throw new Error("IINATAN_E2E_RECORD_SCREEN currently requires macOS screencapture");
+  if (nativeMacosFeatureParity && process.platform !== "darwin")
+    throw new Error("IINATAN_E2E_FEATURE_PARITY currently requires macOS");
+  if (nativeMacosFeatureParity && !nativeInteractionMatrix)
+    throw new Error(
+      "IINATAN_E2E_FEATURE_PARITY requires IINATAN_E2E_NATIVE_INTERACTION=1",
+    );
   const lookupLanguage = process.env.IINATAN_E2E_LOOKUP_LANGUAGE || "en";
   const liveDictionaryId = process.env.IINATAN_E2E_DICTIONARY_DOWNLOAD_ID || "";
   const liveDictionary = liveDictionaryId.length > 0;
@@ -769,6 +860,7 @@ async function main() {
   const pointerProbeEscapes = [];
   let clickResult = null;
   let escapeResult = null;
+  let dismissalFocusResult = null;
   let popupStatus = null;
   let clickPause = null;
   let dismissalPause = null;
@@ -776,6 +868,8 @@ async function main() {
   let outsideFocusResult = null;
   let outsideDismissalPause = null;
   let nativeInteraction = null;
+  let nativeFeatureParity = null;
+  let keyboardFocus = null;
   let selectionApproach = null;
   let screenRecorder = null;
   let screenRecordingResult = screenRecordingEnabled
@@ -798,6 +892,8 @@ async function main() {
   let fullscreenEvidence = "mpv-property-only";
   let liveDictionaryWorker = null;
   let liveDictionaryEvidence = null;
+  let ankiMock = null;
+  let ankiMockEvidence = null;
   let finalStatus = null;
   let descriptor = null;
   let playerWindow = null;
@@ -864,6 +960,23 @@ async function main() {
       };
       await liveDictionaryWorker.stop();
       liveDictionaryWorker = null;
+    }
+    if (nativeMacosFeatureParity) {
+      ankiMock = await startAnkiConnectMock();
+      const featureSettings = new SettingsStore(
+        path.join(userDataPath, "settings.json"),
+      );
+      await featureSettings.load();
+      const activeProfileId = featureSettings.current().activeProfileId;
+      await featureSettings.updateProfile(activeProfileId, (profile) => {
+        profile.preferences.ankiEnabled = true;
+        profile.preferences.ankiConnectUrl = ankiMock.url;
+        profile.preferences.ankiDeckName = "Iinatan E2E";
+        profile.preferences.ankiModelName = "Basic";
+        profile.preferences.ankiFieldTemplatesJson = JSON.stringify({
+          Front: "{expression}",
+        });
+      });
     }
     if (externalMediaPath) {
       const mediaStat = await fs.stat(externalMediaPath);
@@ -1025,7 +1138,7 @@ async function main() {
     fullscreenObserved = bridge.property("fullscreen");
     try {
       await waitForValue(
-        () => bridge.property("sub-text/ass-full", ""),
+        () => stockSubtitleEventReady(bridge),
         5000,
         "stock mpv subtitle event",
       );
@@ -1044,7 +1157,12 @@ async function main() {
           path: bridge.property("path"),
           sid: bridge.property("sid"),
           tracks: bridge.property("track-list"),
-          subtitle: bridge.property("sub-text/ass-full"),
+          subtitle: {
+            assFull: bridge.property("sub-text/ass-full"),
+            plainText: bridge.property("sub-text"),
+            startMs: bridge.geometryInput().primary.startMs,
+            endMs: bridge.geometryInput().primary.endMs,
+          },
         })}`,
       );
     }
@@ -1183,6 +1301,7 @@ async function main() {
       ["--move", String(nativeTarget.x), String(nativeTarget.y)],
       "native pointer move",
     );
+    trace("native-pointer-move-result", JSON.stringify(moveResult));
     inputCapability = {
       accessibilityTrusted: moveResult.accessibilityTrusted ?? null,
       postEventTrusted: moveResult.postEventTrusted ?? null,
@@ -1203,9 +1322,29 @@ async function main() {
           ? session
           : null;
       },
-      5000,
+      popupOpenTimeoutMs,
       "dictionary popup after native pointer move",
     ).catch(() => null);
+    if (!popupStatus) {
+      const timeoutStatus = await statusAt(statusPath);
+      const timeoutSession = sessionStatus(timeoutStatus, descriptor.sessionId);
+      trace(
+        "native-pointer-move-timeout",
+        JSON.stringify({
+          move: moveResult,
+          session: timeoutSession
+            ? {
+                source: timeoutSession.source,
+                cursorDiagnostic: timeoutSession.cursorDiagnostic,
+                geometryGeneration: timeoutSession.geometryGeneration,
+                popupVisible: timeoutSession.popupVisible,
+                highlightWindow: timeoutSession.highlightWindow,
+                popupWindow: timeoutSession.popupWindow,
+              }
+            : null,
+        }),
+      );
+    }
     if (popupStatus)
       trace(
         "popup-ready",
@@ -1280,17 +1419,24 @@ async function main() {
         );
         const panelRegion = interactionStatus.popupRegions.panel;
         const contentRegion = interactionStatus.popupRegions.content;
-        const selectionRegion = contentRegion;
+        // The scroll viewport can contain large blank areas around a short
+        // dictionary entry. Prefer the renderer's measured non-control text
+        // range so the native drag begins on selectable text rather than an
+        // arbitrary point in the popup.
+        const selectionRegion =
+          interactionStatus.popupRegions.selection ||
+          interactionStatus.popupRegions.headword ||
+          contentRegion;
         const selectionStart = popupRegionPoint(
           interactionStatus,
           selectionRegion,
-          0.08,
+          0.02,
           0.5,
         );
         const selectionEnd = popupRegionPoint(
           interactionStatus,
           selectionRegion,
-          0.92,
+          0.8,
           0.5,
         );
         const nativeSelectionStart = nativePoint(selectionStart, inputScale);
@@ -1317,6 +1463,101 @@ async function main() {
           "native-popup-selection-target",
           JSON.stringify({ selectionRegion, selectionStart, selectionEnd }),
         );
+        if (nativeMacosFeatureParity) {
+          const featureStatus = interactionStatus;
+          const audioRegion = featureStatus.popupRegions["action-audio-source"];
+          if (!audioRegion)
+            throw new Error(
+              "native popup audio action region is unavailable before selection",
+            );
+          const audioPoint = popupRegionPoint(featureStatus, audioRegion, 0.5, 0.5);
+          if (
+            !pointInRect(audioPoint, featureStatus.popupWindow?.bounds) ||
+            !pointInRect(audioPoint, popupPanelBounds)
+          )
+            throw new Error(
+              `native audio action coordinate escaped the open popup: ${JSON.stringify({
+                audioPoint,
+                popupWindowBounds: featureStatus.popupWindow?.bounds,
+                popupPanelBounds,
+              })}`,
+            );
+          const nativeAudioPoint = nativePoint(audioPoint, inputScale);
+          const audioStartedAt = performance.now();
+          const audioClick = commandOutput(
+            desktopTest,
+            ["--click", String(nativeAudioPoint.x), String(nativeAudioPoint.y), "left"],
+            "native popup audio action click",
+          );
+          const audioMenuStatus = await waitForValue(
+            async () => {
+              const status = await statusAt(statusPath);
+              const session = sessionStatus(status, descriptor.sessionId);
+              return session?.interactionSnapshot?.state === "audio-menu-active" &&
+                session.audioResult
+                ? session
+                : null;
+            },
+            5000,
+            "native popup audio menu",
+          );
+          nativeFeatureParity = {
+            audio: {
+              point: audioPoint,
+              input: audioClick,
+              state: audioMenuStatus.interactionSnapshot.state,
+              result: audioMenuStatus.audioResult,
+              latencyMs: Number((performance.now() - audioStartedAt).toFixed(3)),
+            },
+          };
+          const audioClose = commandOutput(
+            desktopTest,
+            ["--key", "escape"],
+            "native popup audio menu Escape",
+          );
+          nativeFeatureParity.audio.close = audioClose;
+          await delay(150);
+          const ankiRegion = featureStatus.popupRegions["action-anki-add"];
+          if (!ankiRegion)
+            throw new Error("native popup Anki action region is unavailable");
+          const ankiPoint = popupRegionPoint(featureStatus, ankiRegion, 0.5, 0.5);
+          if (
+            !pointInRect(ankiPoint, featureStatus.popupWindow?.bounds) ||
+            !pointInRect(ankiPoint, popupPanelBounds)
+          )
+            throw new Error(
+              `native Anki action coordinate escaped the open popup: ${JSON.stringify({
+                ankiPoint,
+                popupWindowBounds: featureStatus.popupWindow?.bounds,
+                popupPanelBounds,
+              })}`,
+            );
+          const nativeAnkiPoint = nativePoint(ankiPoint, inputScale);
+          const ankiStartedAt = performance.now();
+          const ankiClick = commandOutput(
+            desktopTest,
+            ["--click", String(nativeAnkiPoint.x), String(nativeAnkiPoint.y), "left"],
+            "native popup Anki action click",
+          );
+          const ankiStatus = await waitForValue(
+            async () => {
+              const status = await statusAt(statusPath);
+              const session = sessionStatus(status, descriptor.sessionId);
+              return session?.ankiResult?.state === "added" &&
+                session.ankiResult.ok === true
+                ? session
+                : null;
+            },
+            5000,
+            "native popup Anki note",
+          );
+          nativeFeatureParity.anki = {
+            point: ankiPoint,
+            input: ankiClick,
+            result: ankiStatus.ankiResult,
+            latencyMs: Number((performance.now() - ankiStartedAt).toFixed(3)),
+          };
+        }
         if (smoothPopupApproach) {
           selectionApproach = await movePointerSmoothly(
             desktopTest,
@@ -1378,6 +1619,83 @@ async function main() {
             text: selectedStatus.popupSelectionText,
           },
         };
+        if (process.platform === "darwin") {
+          const focusedPanel = await waitForValue(
+            async () => {
+              const status = await statusAt(statusPath);
+              const session = sessionStatus(status, descriptor.sessionId);
+              return session?.popupVisible &&
+                session.popupWindow?.visible === true &&
+                session.popupWindow?.focused === true &&
+                session.popupFocusTarget === "popup-panel"
+                ? session
+                : null;
+            },
+            5000,
+            "native popup panel focus",
+          );
+          const tab = commandOutput(desktopTest, ["--key", "tab"], "native Tab");
+          if (!nativeInputReady(tab))
+            throw new Error(`native Tab lost trusted input: ${JSON.stringify(tab)}`);
+          const tabFocused = await waitForValue(
+            async () => {
+              const status = await statusAt(statusPath);
+              const session = sessionStatus(status, descriptor.sessionId);
+              return session?.popupVisible &&
+                session.popupWindow?.visible === true &&
+                session.popupWindow?.focused === true &&
+                session.popupFocusTarget &&
+                session.popupFocusTarget !== focusedPanel.popupFocusTarget
+                ? session
+                : null;
+            },
+            5000,
+            "native Tab focus transition",
+          );
+          const shiftTab = commandOutput(
+            desktopTest,
+            ["--shortcut", "shift", "tab"],
+            "native Shift-Tab",
+          );
+          if (!nativeInputReady(shiftTab))
+            throw new Error(
+              `native Shift-Tab lost trusted input: ${JSON.stringify(shiftTab)}`,
+            );
+          const shiftTabFocused = await waitForValue(
+            async () => {
+              const status = await statusAt(statusPath);
+              const session = sessionStatus(status, descriptor.sessionId);
+              return session?.popupVisible &&
+                session.popupWindow?.visible === true &&
+                session.popupWindow?.focused === true &&
+                session.popupFocusTarget &&
+                session.popupFocusTarget !== tabFocused.popupFocusTarget
+                ? session
+                : null;
+            },
+            5000,
+            "native Shift-Tab focus transition",
+          );
+          keyboardFocus = {
+            initial: focusedPanel.popupFocusTarget,
+            tab: {
+              input: tab,
+              target: tabFocused.popupFocusTarget,
+            },
+            shiftTab: {
+              input: shiftTab,
+              target: shiftTabFocused.popupFocusTarget,
+            },
+          };
+          nativeInteraction.keyboard = keyboardFocus;
+          trace("native-popup-keyboard-focus", JSON.stringify(keyboardFocus));
+        } else {
+          keyboardFocus = {
+            skipped: true,
+            reason: "macOS-native-focus-evidence-only",
+          };
+          nativeInteraction.keyboard = keyboardFocus;
+        }
         const popupScrollable =
           interactionStatus.popupMeasuredSize?.scrollable === true;
         nativeInteraction.scrollable = popupScrollable;
@@ -1457,6 +1775,29 @@ async function main() {
         5000,
         "popup dismissal after native Escape",
       );
+      if (nativeInteractionMatrix) {
+        dismissalFocusResult = await waitForValue(
+          async () => {
+            const status = await statusAt(statusPath);
+            const session = sessionStatus(status, descriptor.sessionId);
+            const activation = session?.focusPlayer;
+            if (
+              activation?.isForeground !== true ||
+              activation?.foregroundVerified !== true
+            )
+              return null;
+            let readback;
+            try {
+              readback = await nativeWindow.read(descriptor);
+            } catch (error) {
+              readback = { ok: false, reason: String(error?.message || error) };
+            }
+            return { activation, readback };
+          },
+          5000,
+          "app-reported stock mpv foreground after native Escape",
+        );
+      }
       latencySamples.popupDismissalMs.push(performance.now() - dismissalStartedAt);
       dismissalPause = bridge.property("pause");
       if (dismissalPause !== startPaused)
@@ -1732,13 +2073,22 @@ async function main() {
           lookupLanguage,
           dictionaryMode: liveDictionary ? "live-hoshi" : "demo",
           dictionary: liveDictionaryEvidence,
+          ankiMock: ankiMock
+            ? {
+                calls: [...ankiMock.calls],
+                addNoteCount: ankiMock.calls.filter((action) => action === "addNote")
+                  .length,
+              }
+            : null,
           fullscreenRequested: fullscreen,
           fullscreenObserved,
           fullscreenEvidence,
           allowApproximateGeometry,
           additionalPointerProbeCount,
           nativeInteractionMatrix,
+          nativeMacosFeatureParity,
           nativeInteraction,
+          nativeFeatureParity,
           latency: summarizeLatencies(latencySamples),
           pointerProbes,
           pointerProbeEscapes,
@@ -1758,6 +2108,7 @@ async function main() {
             move: moveResult,
             click: clickResult,
             escape: escapeResult,
+            escapeFocus: dismissalFocusResult,
             outsideClick: outsideClickResult,
           },
           capture: {
@@ -1821,6 +2172,14 @@ async function main() {
       }
       screenRecorder = null;
     }
+    if (ankiMock) {
+      ankiMockEvidence = {
+        calls: [...ankiMock.calls],
+        addNoteCount: ankiMock.calls.filter((action) => action === "addNote").length,
+      };
+      await new Promise((resolve) => ankiMock.server.close(resolve));
+      ankiMock = null;
+    }
     await liveDictionaryWorker?.stop().catch(() => {});
     bridge?.close();
     await stopProcess(electronProcess);
@@ -1862,13 +2221,16 @@ async function main() {
         lookupLanguage,
         dictionaryMode: liveDictionary ? "live-hoshi" : "demo",
         dictionary: liveDictionaryEvidence,
+        ankiMock: ankiMockEvidence,
         fullscreenRequested: fullscreen,
         fullscreenObserved,
         fullscreenEvidence,
         allowApproximateGeometry,
         additionalPointerProbeCount,
         nativeInteractionMatrix,
+        nativeMacosFeatureParity,
         nativeInteraction,
+        nativeFeatureParity,
         latency: summarizeLatencies(latencySamples),
         pointerProbes,
         pointerProbeEscapes,
@@ -1886,6 +2248,7 @@ async function main() {
           move: moveResult,
           click: clickResult,
           escape: escapeResult,
+          escapeFocus: dismissalFocusResult,
           outsideClick: outsideClickResult,
         },
         capture: {

@@ -64,6 +64,8 @@ class NativeWindowAdapter {
       options.activate ||
       ((descriptor) =>
         runProbe(this.probeExecutable, descriptor, options.timeoutMs || 1200, true));
+    this.focusAttempts = Math.max(1, Number(options.focusAttempts) || 5);
+    this.focusRetryDelayMs = Math.max(0, Number(options.focusRetryDelayMs) || 100);
     this.last = null;
   }
 
@@ -280,7 +282,26 @@ class NativeWindowAdapter {
 
   async focus(descriptor) {
     if (!descriptor) return { ok: false, reason: "missing-descriptor" };
-    return this.activate(descriptor);
+    let lastResult = null;
+    let lastError = null;
+    for (let attempt = 0; attempt < this.focusAttempts; attempt++) {
+      try {
+        lastResult = await this.activate(descriptor);
+        const hasForegroundSignal =
+          typeof lastResult?.isForeground === "boolean" ||
+          typeof lastResult?.foregroundVerified === "boolean";
+        const foregroundVerified =
+          lastResult?.isForeground === true && lastResult?.foregroundVerified !== false;
+        if (lastResult?.ok !== false && (foregroundVerified || !hasForegroundSignal))
+          return lastResult;
+      } catch (error) {
+        lastError = error;
+      }
+      if (attempt + 1 < this.focusAttempts && this.focusRetryDelayMs > 0)
+        await new Promise((resolve) => setTimeout(resolve, this.focusRetryDelayMs));
+    }
+    if (lastResult) return lastResult;
+    throw lastError || new Error("player focus failed without a native result");
   }
 }
 

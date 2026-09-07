@@ -181,4 +181,16 @@ std::string press_key(const std::string& key) {
              : R"({"ok":false,"reason":"win32-key-failed","backend":"win32"})";
 }
 
+std::string press_shortcut(const std::string&, const std::string&) {
+  return R"({"ok":false,"reason":"shortcut-not-implemented","backend":"win32"})";
+}
+
+std::string type_text(const std::string&) {
+  return R"({"ok":false,"reason":"type-not-implemented","backend":"win32"})";
+}
+
+std::string activate_process(int) {
+  return R"({"ok":false,"reason":"process-activation-not-implemented","backend":"win32"})";
+}
+
 }  // namespace iinatan::native

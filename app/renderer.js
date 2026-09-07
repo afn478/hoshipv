@@ -9,6 +9,7 @@
   const headword = document.getElementById("popup-headword");
   const reading = document.getElementById("popup-reading");
   const popupHeader = document.getElementById("popup-header");
+  const popupBack = document.getElementById("popup-back");
   const surface =
     new URLSearchParams(window.location.search).get("surface") || "highlight";
   root.dataset.surface = surface;
@@ -21,6 +22,11 @@
   let audioSources = [];
   let audioAutoPlay = false;
   let audioSelectionIndex = 0;
+  let activeAudioRequestId = "";
+  let nestedPopupMode = "off";
+  let nestedDepth = 0;
+  let nestedHoverTimer = null;
+  let nestedHoverKey = "";
   let selectionPointerId = null;
   let hostCapabilities = null;
   let lastPopupSize = null;
@@ -33,6 +39,19 @@
     return !target.closest(
       'button, a, input, select, textarea, summary, [contenteditable="true"]',
     );
+  }
+
+  function focusTarget(element) {
+    if (!element || !popup.contains(element)) return "";
+    if (element === popup) return "popup-panel";
+    const tag = String(element.tagName || "element").toLowerCase();
+    const action = element.dataset?.action || element.id || "focusable";
+    return `${tag}:${String(action).slice(0, 120)}`;
+  }
+
+  function reportFocus() {
+    const target = focusTarget(document.activeElement);
+    if (target) host.send("popup-action", { action: "focus-changed", target });
   }
 
   function setPointerCapture(pointerId) {
@@ -63,6 +82,61 @@
     host.send("popup-action", { action, pointerId: activePointerId });
     selectionPointerId = null;
     return true;
+  }
+
+  function stopAudioPlayback() {
+    const active = audioElement;
+    audioElement = null;
+    if (!active) return;
+    active.pause?.();
+    active.removeAttribute?.("src");
+    active.load?.();
+  }
+
+  function clearNestedHoverTimer() {
+    if (nestedHoverTimer) clearTimeout(nestedHoverTimer);
+    nestedHoverTimer = null;
+    nestedHoverKey = "";
+  }
+
+  function updateNestedNavigation() {
+    const visible = nestedDepth > 0;
+    popupBack.hidden = !visible;
+    popupBack.setAttribute("aria-hidden", String(!visible));
+    popupBack.disabled = !visible;
+    popup.setAttribute("data-nested-depth", String(nestedDepth));
+    popup.setAttribute("data-nested-mode", nestedPopupMode);
+  }
+
+  function scheduleNestedHover(target, event) {
+    const mode = nestedPopupMode;
+    if (mode !== "hover" && mode !== "shift-hover") {
+      clearNestedHoverTimer();
+      return;
+    }
+    if (mode === "shift-hover" && event.shiftKey !== true) {
+      clearNestedHoverTimer();
+      return;
+    }
+    const link = target?.closest?.('.nested-link[data-action="nested-lookup"]');
+    if (!link || !popup.contains(link) || !link.dataset.term) {
+      clearNestedHoverTimer();
+      return;
+    }
+    const key = `${nestedDepth}:${link.dataset.term}`;
+    if (key === nestedHoverKey) return;
+    clearNestedHoverTimer();
+    nestedHoverKey = key;
+    nestedHoverTimer = setTimeout(() => {
+      nestedHoverTimer = null;
+      if (
+        popupState?.visible &&
+        nestedHoverKey === key &&
+        (nestedPopupMode === "hover" ||
+          (nestedPopupMode === "shift-hover" && event.shiftKey === true))
+      )
+        host.send("nested-lookup", { term: link.dataset.term });
+    }, 180);
   }
 
   function startGamepadPolling() {
@@ -595,19 +669,69 @@
     host.send("popup-size", { width: bounds.width, height: bounds.height, scrollable });
   }
 
+  function selectableTextBounds() {
+    const walker = document.createTreeWalker(content, 4);
+    while (walker.nextNode()) {
+      const textNode = walker.currentNode;
+      const textValue = textNode.nodeValue || "";
+      const start = textValue.search(/\S/);
+      if (
+        start < 0 ||
+        textNode.parentElement?.closest(
+          'button, a, input, select, textarea, summary, [contenteditable="true"]',
+        )
+      )
+        continue;
+      const end = Math.min(textValue.length, start + 12);
+      if (end <= start) continue;
+      const range = document.createRange();
+      range.setStart(textNode, start);
+      range.setEnd(textNode, end);
+      const bounds = range.getClientRects()[0] || range.getBoundingClientRect();
+      if (
+        textValue.slice(start).trim().length >= 3 &&
+        bounds.width >= 24 &&
+        bounds.height > 0
+      )
+        return bounds;
+    }
+    for (const element of content.querySelectorAll(
+      ".glossary-meta, .entry-meta, .entry-heading, .glossary",
+    )) {
+      const bounds = element.getBoundingClientRect();
+      if (bounds.width > 8 && bounds.height > 0) return bounds;
+    }
+    return null;
+  }
+
   function updatePopupRegions() {
     if (surface !== "popup" || popup.hidden) return;
     const panelBounds = popup.getBoundingClientRect();
     const headerBounds = popupHeader.getBoundingClientRect();
+    const selectableBounds = selectableTextBounds();
+    const actionElements = [
+      ["action-audio-source", '[data-action="audio-source"]'],
+      ["action-audio-close", '[data-action="audio-close"]'],
+      ["action-anki-add", '[data-action="anki-add"]'],
+      ["action-anki-open", '[data-action="anki-open"]'],
+    ].flatMap(([name, selector]) => {
+      const element = content.querySelector(selector);
+      return element && !element.hidden && !element.disabled ? [[name, element]] : [];
+    });
     const elements = [
       ["panel", popup],
       ["headword", headword],
       ["content", content],
+      ...(selectableBounds ? [["selection", selectableBounds]] : []),
+      ...actionElements,
     ];
     for (const [name, element] of elements) {
-      const bounds = element.getBoundingClientRect();
+      const bounds =
+        typeof element.getBoundingClientRect === "function"
+          ? element.getBoundingClientRect()
+          : element;
       const clip =
-        name === "content"
+        name === "content" || name === "selection" || name.startsWith("action-")
           ? {
               left: panelBounds.left,
               top: Math.max(panelBounds.top, headerBounds.bottom),
@@ -659,7 +783,7 @@
       !/^http:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?(?:\/|$)/i.test(url)
     )
       return;
-    audioElement?.pause();
+    stopAudioPlayback();
     audioElement = new Audio(url);
     audioElement.play().catch(() => {});
   }
@@ -719,6 +843,7 @@
     menu._candidates = values;
     content.prepend(menu);
     updateAudioSelection();
+    requestAnimationFrame(updatePopupRegions);
     if (audioAutoPlay && values.length && !options.loading)
       playAudioCandidate(values[0]);
   }
@@ -784,13 +909,26 @@
       if (payload.command === "audio-down" || payload.command === "audio-right")
         moveAudioSelection(1);
       if (payload.command === "audio-activate") activateAudioSelection();
-      if (payload.command === "close-audio-menu")
+      if (payload.command === "close-audio-menu") {
         document.querySelector(".audio-menu")?.remove();
+        stopAudioPlayback();
+        activeAudioRequestId = "";
+      }
       return;
     }
     if (message.type === "popup-state") {
       popupState = payload;
       currentResult = payload.result;
+      clearNestedHoverTimer();
+      stopAudioPlayback();
+      activeAudioRequestId = "";
+      nestedDepth = Math.max(0, Number(payload.nestedDepth) || 0);
+      nestedPopupMode = ["click", "hover", "shift-hover"].includes(
+        payload.nestedPopupMode,
+      )
+        ? payload.nestedPopupMode
+        : "off";
+      updateNestedNavigation();
       ankiState =
         payload.anki && typeof payload.anki === "object"
           ? {
@@ -829,6 +967,7 @@
       applyCustomCss(payload.customCss);
       renderResult(currentResult);
       popup.focus({ preventScroll: true });
+      reportFocus();
       requestAnimationFrame(updatePopupMetrics);
       return;
     }
@@ -844,6 +983,7 @@
       return;
     }
     if (message.type === "audio-result") {
+      if (message.requestId && message.requestId !== activeAudioRequestId) return;
       renderAudioCandidates(payload.candidates, {
         loading: payload.loading === true,
         error: payload.error,
@@ -890,6 +1030,10 @@
   });
 
   if (surface === "popup") {
+    root.addEventListener("focusin", (event) => {
+      const target = focusTarget(event.target);
+      if (target) host.send("popup-action", { action: "focus-changed", target });
+    });
     root.addEventListener("pointerdown", (event) => {
       if (!popup.contains(event.target)) {
         event.preventDefault();
@@ -897,6 +1041,8 @@
         return;
       }
       if (event.button === 0 && isTextSelectionTarget(event.target)) {
+        popup.focus({ preventScroll: true });
+        reportFocus();
         selectionPointerId = event.pointerId;
         setPointerCapture(event.pointerId);
         host.send("popup-action", {
@@ -925,6 +1071,10 @@
     root.addEventListener("lostpointercapture", (event) => {
       finishSelection("selection-cancel", event.pointerId);
     });
+    root.addEventListener("pointermove", (event) => {
+      scheduleNestedHover(event.target, event);
+    });
+    root.addEventListener("pointerleave", () => clearNestedHoverTimer());
     window.addEventListener("blur", () => finishSelection("selection-cancel"));
     root.addEventListener("click", (event) => {
       const action = event.target.closest?.("[data-action]");
@@ -932,8 +1082,9 @@
         event.preventDefault();
         event.stopPropagation();
         if (action.dataset.action === "audio-source") {
+          activeAudioRequestId = `audio-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
           host.send("audio-source", {
-            requestId: `audio-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            requestId: activeAudioRequestId,
             term: action.dataset.term || "",
             reading: action.dataset.reading || "",
             sources: audioSources,
@@ -953,6 +1104,12 @@
         }
         if (action.dataset.action === "audio-close") {
           host.send("popup-action", { action: "close-audio-list" });
+          stopAudioPlayback();
+          activeAudioRequestId = "";
+          return;
+        }
+        if (action.dataset.action === "back-nested") {
+          host.send("dismiss-popup", { reason: "nested-back" });
           return;
         }
         if (

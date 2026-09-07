@@ -5,10 +5,17 @@ const fs = require("node:fs/promises");
 const fsSync = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { spawn } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
 const { NativeWindowAdapter } = require("../../src/platform/native-window-adapter");
 
 const root = path.resolve(__dirname, "../..");
+
+function trace(message, value) {
+  if (process.env.IINATAN_NATIVE_SETTINGS_DEBUG !== "1") return;
+  console.error(
+    `[iinatan-settings-native] ${message}${value === undefined ? "" : `: ${JSON.stringify(value)}`}`,
+  );
+}
 
 function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -93,6 +100,29 @@ function nativeProbeExecutable() {
   );
 }
 
+function desktopTestExecutable() {
+  const name =
+    process.platform === "win32" ? "iinatan-desktop-test.exe" : "iinatan-desktop-test";
+  return (
+    process.env.IINATAN_DESKTOP_TEST ||
+    [
+      path.join(root, "bin", name),
+      path.join(
+        root,
+        "build",
+        "native",
+        "iinatan-desktop-test.app",
+        "Contents",
+        "MacOS",
+        name,
+      ),
+      path.join(root, "build", "native", name),
+      path.join(root, "build", "native", "Release", name),
+    ].find((candidate) => fsSync.existsSync(candidate)) ||
+    ""
+  );
+}
+
 function boundsDelta(nativeBounds, electronBounds) {
   return {
     x: Math.abs(Number(nativeBounds.x) - Number(electronBounds.x)),
@@ -102,13 +132,38 @@ function boundsDelta(nativeBounds, electronBounds) {
   };
 }
 
+function nativeCommand(executable, args, description) {
+  trace("command", { description, args });
+  const result = spawnSync(executable, args, {
+    cwd: root,
+    encoding: "utf8",
+    maxBuffer: 2 * 1024 * 1024,
+  });
+  if (result.error || result.status !== 0)
+    throw new Error(
+      `${description} failed: ${result.error?.message || result.stderr || `exit ${result.status}`}`,
+    );
+  try {
+    const parsed = JSON.parse(
+      String(result.stdout || "")
+        .trim()
+        .split(/\r?\n/)
+        .pop(),
+    );
+    trace("result", parsed);
+    return parsed;
+  } catch (error) {
+    throw new Error(`${description} returned invalid JSON: ${error.message}`);
+  }
+}
+
 async function main() {
   if (process.env.IINATAN_NATIVE_SETTINGS !== "1") {
     console.log(
       "SKIP: native settings-window evidence requires IINATAN_NATIVE_SETTINGS=1 in an isolated graphical session.",
     );
     console.log(
-      "This checks the real Electron settings window and native activation; it does not synthesize a native menu keystroke.",
+      "This checks the real Electron settings window, Cmd+, menu accelerator, and native activation.",
     );
     return;
   }
@@ -120,6 +175,9 @@ async function main() {
   const probeExecutable = nativeProbeExecutable();
   if (!probeExecutable)
     throw new Error("the native window probe executable is unavailable");
+  const inputExecutable = desktopTestExecutable();
+  if (!inputExecutable)
+    throw new Error("the native desktop input helper executable is unavailable");
 
   const temporaryRoot = await fs.mkdtemp(
     path.join(os.tmpdir(), "iinatan-settings-native-window-"),
@@ -153,15 +211,52 @@ async function main() {
   try {
     const ready = await waitFor(async () => {
       const status = await readJson(statusPath);
-      return status?.settingsWindow?.visible === true && status;
-    }, "native settings window visibility");
+      return status?.applicationMenu?.settings?.enabled === true && status;
+    }, "application menu readiness");
     assert.equal(ready.applicationMenu?.settings?.label, "Settings…");
     assert.match(ready.applicationMenu.settings.accelerator || "", /,/);
     assert.equal(ready.applicationMenu.settings.enabled, true);
     assert.equal(ready.applicationMenu.settings.visible, true);
-    assert.equal(ready.settingsWindow.focused, true);
-    assert.ok(ready.settingsWindow.bounds?.width > 0);
-    assert.ok(ready.settingsWindow.bounds?.height > 0);
+
+    await waitFor(
+      async () => (await readJson(statusPath))?.settingsWindow?.visible === true,
+      "initial native settings window visibility",
+    );
+
+    const activationResult = await waitFor(
+      () => {
+        const result = nativeCommand(
+          inputExecutable,
+          ["--activate", String(ready.pid)],
+          "native app activation",
+        );
+        return result.ok && result.foregroundVerified === true ? result : null;
+      },
+      "native app foreground ownership",
+      5000,
+    );
+    await delay(500);
+
+    const shortcut = nativeCommand(
+      inputExecutable,
+      ["--activate-shortcut", String(ready.pid), "command", "comma"],
+      "native Settings shortcut",
+    );
+    assert.equal(shortcut.ok, true);
+    assert.equal(shortcut.accessibilityTrusted, true);
+    assert.equal(shortcut.postEventTrusted, true);
+
+    const settingsOpened = await waitFor(async () => {
+      const status = await readJson(statusPath);
+      trace("status-after-settings-shortcut", {
+        settingsWindow: status?.settingsWindow,
+        settings: status?.settings,
+      });
+      return status?.settingsWindow?.visible === true && status;
+    }, "native settings window visibility after Cmd+, shortcut");
+    assert.equal(settingsOpened.settingsWindow.focused, true);
+    assert.ok(settingsOpened.settingsWindow.bounds?.width > 0);
+    assert.ok(settingsOpened.settingsWindow.bounds?.height > 0);
 
     const adapter = new NativeWindowAdapter({
       probeExecutable,
@@ -180,7 +275,7 @@ async function main() {
     assert.ok(nativeWindow.content?.height > 0);
     const geometryDelta = boundsDelta(
       nativeWindow.content,
-      ready.settingsWindow.bounds,
+      settingsOpened.settingsWindow.bounds,
     );
     for (const [axis, delta] of Object.entries(geometryDelta))
       assert.ok(delta <= 4, `settings ${axis} bound differs by ${delta}`);
@@ -205,6 +300,9 @@ async function main() {
         {
           ok: true,
           electron: ready,
+          appActivation: activationResult,
+          settingsWindow: settingsOpened.settingsWindow,
+          shortcut,
           nativeWindow: {
             windowId: nativeWindow.windowId,
             content: nativeWindow.content,
@@ -216,7 +314,7 @@ async function main() {
           activation,
           mode: "native-settings-window-visibility-and-activation",
           boundary:
-            "Native menu keystroke invocation remains unverified; the application-menu item definition and command-line settings path were exercised.",
+            "The signed macOS helper reported trusted Cmd+, input and native activation while the deterministic settings window was visible; profile controls remain covered by the real settings-document smoke, and other menu accelerators remain outside this test.",
         },
         null,
         2,

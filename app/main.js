@@ -30,6 +30,8 @@ const { AnkiConnectClient } = require("../src/services/anki-connect");
 const { normalizeTemplates } = require("../src/services/anki-card");
 const { NativeGeometryClient } = require("../src/services/native-geometry-client");
 const { NativeGeometryWorker } = require("../src/services/native-geometry-worker");
+const { NativeBitmapOcrClient } = require("../src/services/native-bitmap-ocr-client");
+const { NativeBitmapOcrWorker } = require("../src/services/native-bitmap-ocr-worker");
 const { SentenceAudioService } = require("../src/services/sentence-audio-service");
 const {
   sanitizeDiagnosticError,
@@ -125,6 +127,10 @@ function controllerConfigFor(preferences, overrides = {}) {
     fontScale: preferences.fontScale,
     nestedPopupMode: preferences.nestedPopupMode,
     nestedPopupMaxDepth: preferences.nestedPopupMaxDepth,
+    bitmapSubtitleOcrEnabled: preferences.bitmapSubtitleOcrEnabled,
+    bitmapSubtitleOcrPrefetchEnabled: preferences.bitmapSubtitleOcrPrefetchEnabled,
+    bitmapSubtitleOcrScreenshotFallbackEnabled:
+      preferences.bitmapSubtitleOcrScreenshotFallbackEnabled,
     etymologyCollapseDefault: preferences.etymologyCollapseDefault,
     wiktionaryEtymologyCollapseOverride:
       preferences.wiktionaryEtymologyCollapseOverride,
@@ -516,6 +522,26 @@ async function createNativeGeometryRuntime(geometryProvider) {
   }
 }
 
+async function createBitmapOcrRuntime(preferences) {
+  if (process.platform !== "darwin") return null;
+  const executable =
+    argumentValue("--bitmap-ocr-executable") ||
+    argumentValue("--hoshi-executable") ||
+    path.join(resourceRoot(), "bin", "iina-hoshi-dicts");
+  try {
+    await fs.access(executable);
+    const worker = new NativeBitmapOcrWorker({
+      executable,
+      root: path.join(app.getPath("userData"), "bitmap-ocr"),
+      timeoutMs: preferences?.backendTimeoutMs,
+    });
+    return new NativeBitmapOcrClient(worker);
+  } catch (error) {
+    console.warn("[iinatan] bitmap subtitle OCR unavailable", error.message);
+    return null;
+  }
+}
+
 async function main() {
   if (process.platform === "darwin" && app.dock) app.dock.hide();
   await app.whenReady();
@@ -524,7 +550,9 @@ async function main() {
   const runtime = await createDictionaryRuntime();
   const geometryProvider = new SubtitleGeometryProvider();
   const nativeGeometry = await createNativeGeometryRuntime(geometryProvider);
+  const bitmapOcr = await createBitmapOcrRuntime(runtime.preferences);
   runtime.nativeGeometry = nativeGeometry;
+  runtime.bitmapOcr = bitmapOcr;
   const sentenceAudio = await createSentenceAudioRuntime();
   const controllerOverrides = {
     lookupLanguage: argumentValue("--lookup-language"),
@@ -596,6 +624,12 @@ async function main() {
           : null,
       },
       settingsWindow: windowStatus(settingsWindow),
+      settings: {
+        activeProfileId: runtime.settingsStore.current().activeProfileId,
+        profiles: Object.values(runtime.settingsStore.current().profiles).map(
+          (profile) => ({ id: profile.id, name: profile.name }),
+        ),
+      },
       dictionary: {
         backend: runtime.worker
           ? "hoshidicts"
@@ -625,9 +659,13 @@ async function main() {
         popupRegions: controller.popupRegions || null,
         popupScroll: controller.popupScroll || null,
         popupSelectionText: controller.popupSelectionText || "",
+        popupFocusTarget: controller.popupFocusTarget || "",
+        audioResult: controller.lastAudioResult || null,
+        ankiResult: controller.lastAnkiResult || null,
         lastPopupCloseReason: controller.lastPopupCloseReason || null,
         surfaceReadiness: controller.browserHost?.surfaceReadiness?.() || null,
         popupPlacement: controller.popupPlacement || null,
+        focusPlayer: controller.focusPlayerResult || null,
         highlightWindow: windowStatus(controller.browserHost?.highlightWindow),
         popupWindow: windowStatus(controller.browserHost?.popupWindow),
       })),
@@ -673,6 +711,7 @@ async function main() {
       screen,
       shell,
       dictionary: runtime.dictionary,
+      bitmapOcr: runtime.bitmapOcr,
       sentenceAudio,
       anki: runtime.anki,
       ankiConfig: ankiConfigFor(runtime.preferences, runtime.anki),
@@ -694,6 +733,9 @@ async function main() {
     controller.on("popup-region", () => publishE2EStatus("popup-region"));
     controller.on("popup-scroll", () => publishE2EStatus("popup-scroll"));
     controller.on("popup-selection", () => publishE2EStatus("popup-selection"));
+    controller.on("popup-focus", () => publishE2EStatus("popup-focus"));
+    controller.on("audio-result", () => publishE2EStatus("audio-result"));
+    controller.on("anki-result", () => publishE2EStatus("anki-result"));
     controller.on("cursor-diagnostic", () => publishE2EStatus("cursor-diagnostic"));
     browserHost.on("popup-closed", () => publishE2EStatus("popup-closed"));
     browserHost.on("stacking-error", (error) =>
@@ -703,7 +745,20 @@ async function main() {
       if (process.platform === "darwin" && typeof app.hide === "function") app.hide();
       nativeWindow
         .focus(controller.descriptor)
-        .catch((error) => console.warn("[iinatan] player activation failed", error));
+        .then((result) => {
+          controller.focusPlayerResult = result;
+          if (process.env.IINATAN_E2E_DEBUG === "1")
+            console.error(`[iinatan] focus-player result: ${JSON.stringify(result)}`);
+          publishE2EStatus("focus-player");
+        })
+        .catch((error) => {
+          controller.focusPlayerResult = {
+            ok: false,
+            reason: String(error?.message || error),
+          };
+          console.warn("[iinatan] player activation failed", error);
+          publishE2EStatus("focus-player-error");
+        });
     });
     return controller;
   }

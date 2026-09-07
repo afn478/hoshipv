@@ -94,6 +94,231 @@ test("demo controller uses one geometry snapshot for highlight, lookup, popup, a
   }
 });
 
+test("controller promotes macOS bitmap OCR into lookupable approximate geometry", async () => {
+  const browserHost = new FakeBrowserHost();
+  const values = new Map([
+    ["pid", 42],
+    ["path", "/tmp/bitmap-episode.mkv"],
+    [
+      "track-list",
+      [
+        {
+          type: "sub",
+          id: 7,
+          selected: true,
+          codec: "hdmv_pgs_subtitle",
+          "ff-index": 4,
+        },
+      ],
+    ],
+    ["sid", 7],
+    ["pause", true],
+    ["time-pos", 1.25],
+    ["sub-start/full", 1000],
+    ["sub-end/full", 2000],
+    ["osd-dimensions", { w: 1280, h: 720, par: 1 }],
+    ["video-out-params", { w: 1920, h: 1080 }],
+  ]);
+  class FakeIpc extends EventEmitter {
+    async connect() {}
+    async getProperty(name) {
+      return values.get(name);
+    }
+    async observeProperty() {}
+    async setProperty(name, value) {
+      values.set(name, value);
+    }
+    async command() {}
+    close() {}
+  }
+  const requests = [];
+  const controller = new ApplicationController({
+    browserHost,
+    windowAdapter: {
+      async read() {
+        return {
+          content: { x: 0, y: 0, width: 1280, height: 720 },
+          contentExact: true,
+          contentSource: "test-window",
+          desktopScale: 1,
+          browserScale: 1,
+          isForeground: true,
+        };
+      },
+    },
+    screen: {
+      getCursorScreenPoint: () => ({ x: 250, y: 630 }),
+      getDisplayNearestPoint: () => ({ scaleFactor: 1 }),
+    },
+    dictionary: new DictionaryService({ demo: true }),
+    bitmapOcr: {
+      async recognize(request) {
+        requests.push(request);
+        return {
+          ok: true,
+          protocol: 1,
+          mode: "decoded-subtitle",
+          rendererWidth: request.renderer.width,
+          rendererHeight: request.renderer.height,
+          text: "猫を見る",
+          confidence: 0.91,
+          cueStartMs: request.cueStartMs,
+          cueEndMs: request.cueEndMs,
+          units: [0, 1, 2, 3].map((index) => ({
+            displayStartUtf16: index,
+            displayEndUtf16: index + 1,
+            rects: [{ x: 240 + index * 32, y: 620, w: 28, h: 42 }],
+          })),
+        };
+      },
+    },
+    config: { lookupLanguage: "ja", bitmapSubtitleOcrEnabled: true },
+  });
+  try {
+    await controller.attach(
+      { sessionId: "bitmap-session", pid: 42, ipcEndpoint: "ipc://bitmap" },
+      { bridgeOptions: { ipc: new FakeIpc() } },
+    );
+    for (
+      let attempt = 0;
+      attempt < 20 && !controller.snapshot?.source?.bitmapOcr;
+      attempt++
+    )
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].source.ffIndex, 4);
+    assert.equal(controller.snapshot.source.mode, "bitmap-ocr");
+    assert.equal(controller.snapshot.source.exact, false);
+    assert.equal(controller.snapshot.source.lookupAllowed, true);
+    assert.equal(controller.snapshot.tracks[0].events[0].units[0].text, "猫");
+    assert.ok(controller.lastHit);
+  } finally {
+    await controller.detach("bitmap-ocr-test");
+  }
+});
+
+test("controller falls back to paused mpv screenshot-diff OCR for bitmap subtitles", async () => {
+  const browserHost = new FakeBrowserHost();
+  const values = new Map([
+    ["pid", 43],
+    ["path", "/tmp/bitmap-screenshot-episode.mkv"],
+    [
+      "track-list",
+      [
+        {
+          type: "sub",
+          id: 8,
+          selected: true,
+          codec: "dvd_subtitle",
+          "ff-index": 5,
+        },
+      ],
+    ],
+    ["sid", 8],
+    ["pause", true],
+    ["time-pos", 4.25],
+    ["sub-start/full", 4000],
+    ["sub-end/full", 5000],
+    ["osd-dimensions", { w: 1280, h: 720, par: 1 }],
+    ["video-out-params", { w: 1920, h: 1080 }],
+  ]);
+  const commands = [];
+  class FakeIpc extends EventEmitter {
+    async connect() {}
+    async getProperty(name) {
+      return values.get(name);
+    }
+    async observeProperty() {}
+    async setProperty(name, value) {
+      values.set(name, value);
+    }
+    async command(...args) {
+      commands.push(args);
+    }
+    close() {}
+  }
+  const requests = [];
+  const controller = new ApplicationController({
+    browserHost,
+    windowAdapter: {
+      async read() {
+        return {
+          content: { x: 0, y: 0, width: 1280, height: 720 },
+          contentExact: true,
+          contentSource: "test-window",
+          desktopScale: 1,
+          browserScale: 1,
+          isForeground: true,
+        };
+      },
+    },
+    screen: {
+      getCursorScreenPoint: () => ({ x: 400, y: 620 }),
+      getDisplayNearestPoint: () => ({ scaleFactor: 1 }),
+    },
+    dictionary: new DictionaryService({ demo: true }),
+    bitmapOcr: {
+      async recognize(request) {
+        requests.push(request);
+        if (request.mode === "decoded-subtitle")
+          throw new Error("decoded subtitle demux unavailable");
+        return {
+          ok: true,
+          protocol: 1,
+          mode: "screenshot-diff",
+          rendererWidth: request.renderer.width,
+          rendererHeight: request.renderer.height,
+          text: "猫を見る",
+          confidence: 0.72,
+          cueStartMs: 4000,
+          cueEndMs: 5000,
+          units: [0, 1, 2, 3].map((index) => ({
+            displayStartUtf16: index,
+            displayEndUtf16: index + 1,
+            rects: [{ x: 360 + index * 32, y: 600, w: 28, h: 42 }],
+          })),
+        };
+      },
+    },
+    config: {
+      lookupLanguage: "ja",
+      bitmapSubtitleOcrEnabled: true,
+      bitmapSubtitleOcrScreenshotFallbackEnabled: true,
+    },
+  });
+  try {
+    await controller.attach(
+      {
+        sessionId: "bitmap-screenshot-session",
+        pid: 43,
+        ipcEndpoint: "ipc://bitmap-screenshot",
+      },
+      { bridgeOptions: { ipc: new FakeIpc() } },
+    );
+    for (
+      let attempt = 0;
+      attempt < 20 && !controller.snapshot?.source?.bitmapOcr;
+      attempt++
+    )
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepEqual(
+      requests.map((request) => request.mode),
+      ["decoded-subtitle", "screenshot-diff"],
+    );
+    assert.deepEqual(
+      commands
+        .filter((command) => command[0] === "screenshot-to-file")
+        .map((command) => command[2]),
+      ["video", "subtitles"],
+    );
+    assert.equal(controller.snapshot.source.recognitionMode, "screenshot-diff");
+    assert.equal(controller.snapshot.source.recognitionConfidence, 0.72);
+    assert.equal(controller.snapshot.tracks[0].track.codec, "dvd_subtitle");
+  } finally {
+    await controller.detach("bitmap-screenshot-fallback-test");
+  }
+});
+
 test("controller reflows popup placement from the rendered popup size", async () => {
   const browserHost = new FakeBrowserHost();
   const controller = new ApplicationController({
@@ -364,6 +589,84 @@ test("controller suspends surfaces while the player window is unavailable and re
     assert.equal(controller.interaction.sessionId, "demo-session");
   } finally {
     await controller.detach("test");
+  }
+});
+
+test("controller waits for mpv OSD geometry during startup and resize recovery", async () => {
+  const browserHost = new FakeBrowserHost();
+  const values = new Map([
+    ["pid", 42],
+    ["path", "/tmp/startup-race.mkv"],
+    ["track-list", [{ type: "sub", id: 1, "ff-index": 0 }]],
+    ["sid", 1],
+    ["sub-text/ass-full", "Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,startup"],
+    ["osd-dimensions", { w: 0, h: 0, par: 1 }],
+  ]);
+  class FakeIpc extends EventEmitter {
+    async connect() {}
+    async getProperty(name) {
+      return values.get(name);
+    }
+    async observeProperty() {}
+    async setProperty(name, value) {
+      values.set(name, value);
+      this.emit("property-change", name, value);
+    }
+    close() {}
+  }
+  const ipc = new FakeIpc();
+  const controller = new ApplicationController({
+    browserHost,
+    windowAdapter: {
+      async read() {
+        return {
+          content: { x: 320, y: 180, width: 1280, height: 720 },
+          contentExact: true,
+          contentSource: "test-window",
+          desktopScale: 1,
+          browserScale: 1,
+          isForeground: true,
+        };
+      },
+    },
+    screen: {
+      getCursorScreenPoint: () => ({ x: 0, y: 0 }),
+      getDisplayNearestPoint: () => ({ scaleFactor: 1 }),
+    },
+    dictionary: new DictionaryService({ demo: true }),
+    allowApproximateGeometry: true,
+  });
+  const descriptor = {
+    sessionId: "startup-race",
+    pid: 42,
+    ipcEndpoint: "ipc://startup-race",
+  };
+  try {
+    await controller.attach(descriptor, { bridgeOptions: { ipc } });
+    assert.equal(controller.snapshot, null);
+    assert.equal(controller.windowUnavailable, true);
+    assert.equal(browserHost.highlightHidden, true);
+
+    values.set("osd-dimensions", { w: 1280, h: 720, par: 1 });
+    ipc.emit("property-change", "osd-dimensions", values.get("osd-dimensions"));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(controller.snapshot.osd.width, 1280);
+    assert.equal(controller.snapshot.osd.height, 720);
+    assert.equal(controller.windowUnavailable, false);
+
+    values.set("osd-dimensions", { w: 0, h: 0, par: 1 });
+    ipc.emit("property-change", "osd-dimensions", values.get("osd-dimensions"));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(controller.snapshot, null);
+    assert.equal(controller.windowUnavailable, true);
+
+    values.set("osd-dimensions", { w: 1280, h: 720, par: 1 });
+    ipc.emit("property-change", "osd-dimensions", values.get("osd-dimensions"));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(controller.snapshot.osd.width, 1280);
+    assert.equal(controller.windowUnavailable, false);
+  } finally {
+    await controller.detach("startup-race-test");
   }
 });
 

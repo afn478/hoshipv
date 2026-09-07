@@ -238,6 +238,7 @@
                 <option value="off">Off</option>
                 <option value="click">Click references</option>
                 <option value="hover">Hover references</option>
+                <option value="shift-hover">Shift + hover references</option>
               </select>
             </label>
             <label>
@@ -402,6 +403,26 @@
               values through the host.
             </p>
             <label class="check-row full-width">
+              <input data-pref="bitmapSubtitleOcrEnabled" type="checkbox" />
+              Enable macOS bitmap-subtitle OCR
+            </label>
+            <label class="check-row full-width">
+              <input data-pref="bitmapSubtitleOcrPrefetchEnabled" type="checkbox" />
+              Prefetch bitmap OCR while a subtitle is active
+            </label>
+            <label class="check-row full-width">
+              <input
+                data-pref="bitmapSubtitleOcrScreenshotFallbackEnabled"
+                type="checkbox"
+              />
+              Allow paused screenshot-diff OCR fallback
+            </label>
+            <p class="hint full-width">
+              OCR is on-device Apple Vision recognition for bitmap subtitles. Its text
+              boxes are usable for lookup but are not an exact stock-mpv glyph geometry
+              claim.
+            </p>
+            <label class="check-row full-width">
               <input data-pref="controllerEnabled" type="checkbox" />
               Enable browser Gamepad controls
             </label>
@@ -481,8 +502,8 @@
             <h2 id="diagnostics-heading">Diagnostics</h2>
             <p class="hint">
               Runtime capability and current-session evidence. These values describe
-              what is configured; they do not promote an unverified native desktop
-              path to supported status.
+              what is configured; they do not promote an unverified native desktop path
+              to supported status.
             </p>
           </div>
         </div>
@@ -516,9 +537,9 @@
         <div class="recommended-dictionaries">
           <h3>Recommended dictionaries</h3>
           <p class="hint">
-            Downloads use HTTPS in the host process, are size-bounded, and are
-            imported into the managed dictionary directory. Existing entries can
-            be refreshed without touching unrelated dictionaries.
+            Downloads use HTTPS in the host process, are size-bounded, and are imported
+            into the managed dictionary directory. Existing entries can be refreshed
+            without touching unrelated dictionaries.
           </p>
           <div id="recommended-list" class="dictionary-list"></div>
         </div>

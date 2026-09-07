@@ -35,9 +35,19 @@ const { PauseOwnership } = require("../interaction/pause-ownership");
 const { ControllerRouter } = require("../interaction/controller-runtime");
 const { PlayerBridge } = require("./player-bridge");
 const { requestFor } = require("../services/language-registry");
+const {
+  bitmapOcrLanguages,
+  isBitmapSubtitleCodec,
+} = require("../services/native-bitmap-ocr-client");
 
 function requestId() {
   return `lookup-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function geometryInputReady(input) {
+  const width = Number(input?.osd?.width);
+  const height = Number(input?.osd?.height);
+  return Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0;
 }
 
 function lookupTimeoutError(message = "Lookup request timed out") {
@@ -161,6 +171,7 @@ class ApplicationController extends EventEmitter {
     };
     this.geometryProvider = options.geometryProvider || new SubtitleGeometryProvider();
     this.nativeGeometry = options.nativeGeometry || null;
+    this.bitmapOcr = options.bitmapOcr || null;
     this.interaction = options.interaction || new InteractionController();
     this.pauseOwnership = new PauseOwnership();
     this.controllerRouter =
@@ -186,10 +197,17 @@ class ApplicationController extends EventEmitter {
     this.popupScroll = Object.freeze({ left: 0, top: 0 });
     this.popupContext = null;
     this.popupSelectionText = "";
+    this.popupFocusTarget = "";
+    this.lastAudioResult = null;
+    this.lastAnkiResult = null;
     this.lastPopupCloseReason = null;
     this.windowUnavailable = false;
     this.nativeGeometryErrorKey = null;
     this.nativeGeometryError = null;
+    this.bitmapOcrGenerationKey = null;
+    this.bitmapOcrCache = new Map();
+    this.bitmapOcrFailures = new Map();
+    this.bitmapOcrInFlight = new Map();
     this.modifierPressed = false;
     this.cursorPoint = null;
     this.cursorDiagnostic = null;
@@ -214,6 +232,9 @@ class ApplicationController extends EventEmitter {
       hoverRequestTimeoutMs: 15000,
       backendTimeoutMs: 30000,
       subtitlePollMs: 120,
+      bitmapSubtitleOcrEnabled: true,
+      bitmapSubtitleOcrPrefetchEnabled: false,
+      bitmapSubtitleOcrScreenshotFallbackEnabled: false,
       preferredSide: "below",
       lookupLanguage: "ja",
       scanLength: 24,
@@ -378,6 +399,7 @@ class ApplicationController extends EventEmitter {
     if (config.controllerBindings)
       this.controllerRouter.setBindings(config.controllerBindings);
     if (config.controllerEnabled === false) this.controllerRouter.reset();
+    this.#resetBitmapOcr();
     this.lookupSerial++;
     this.lookupAbort?.abort();
     if (this.browserHost?.popupVisible)
@@ -486,15 +508,35 @@ class ApplicationController extends EventEmitter {
     );
     const browserScale = Number(windowGeometry.browserScale || 1);
     const bridgeInput = bridge.geometryInput();
+    // mpv can publish its window, IPC endpoint, and subtitle properties before
+    // the video output has completed OSD initialization. Do not construct a
+    // snapshot from a transient 0x0 renderer: CoordinateMapper would reject
+    // it, and a stale/partially initialized snapshot could otherwise receive
+    // pointer input during startup or a resize.
+    if (!geometryInputReady(bridgeInput)) {
+      const error = new Error("mpv OSD geometry is not ready");
+      error.code = "PLAYER_RENDER_GEOMETRY_NOT_READY";
+      await this.#suspendForUnavailableWindow(error);
+      return;
+    }
     const input = this.geometryProvider.snapshotInput(
       bridgeInput,
       { ...windowGeometry, desktopScale, browserScale },
       { layout: this.config.subtitleLayout },
     );
     let snapshotInput = input;
+    if (this.bitmapOcr && this.config.bitmapSubtitleOcrEnabled !== false)
+      snapshotInput = this.#applyBitmapOcr(
+        snapshotInput,
+        bridgeInput,
+        bridge,
+        windowGeometry,
+      );
     if (this.nativeGeometry) {
       try {
-        const exact = await this.nativeGeometry.apply(input);
+        const exact = snapshotInput.source?.bitmapOcr
+          ? null
+          : await this.nativeGeometry.apply(snapshotInput);
         if (exact) {
           snapshotInput = exact;
           this.nativeGeometryErrorKey = null;
@@ -587,6 +629,237 @@ class ApplicationController extends EventEmitter {
     this.emit("geometry", next);
   }
 
+  #resetBitmapOcr() {
+    for (const entry of this.bitmapOcrInFlight.values()) entry.abortController.abort();
+    this.bitmapOcrGenerationKey = null;
+    this.bitmapOcrCache.clear();
+    this.bitmapOcrFailures.clear();
+    this.bitmapOcrInFlight.clear();
+  }
+
+  #syncBitmapOcrGeneration(bridgeInput) {
+    const key = `${bridgeInput.mediaGeneration}:${bridgeInput.geometryGeneration}`;
+    if (this.bitmapOcrGenerationKey === key) return;
+    this.#resetBitmapOcr();
+    this.bitmapOcrGenerationKey = key;
+  }
+
+  #bitmapOcrRenderer(raw, bridgeInput) {
+    const osdWidth = Number(bridgeInput?.osd?.width);
+    const osdHeight = Number(bridgeInput?.osd?.height);
+    const renderer = raw?.renderer || {};
+    if (
+      !Number.isInteger(osdWidth) ||
+      !Number.isInteger(osdHeight) ||
+      osdWidth <= 0 ||
+      osdHeight <= 0
+    )
+      return null;
+    return {
+      width: osdWidth,
+      height: osdHeight,
+      storageWidth: Number(renderer.storageWidth) || osdWidth,
+      storageHeight: Number(renderer.storageHeight) || osdHeight,
+      marginLeft: Number(bridgeInput.osdProperties?.marginLeft) || 0,
+      marginRight: Number(bridgeInput.osdProperties?.marginRight) || 0,
+      marginTop: Number(bridgeInput.osdProperties?.marginTop) || 0,
+      marginBottom: Number(bridgeInput.osdProperties?.marginBottom) || 0,
+    };
+  }
+
+  #bitmapOcrRequest(raw, bridgeInput) {
+    const startMs = Number(raw?.startMs);
+    const endMs = Number(raw?.endMs);
+    const source = raw?.source;
+    const renderer = this.#bitmapOcrRenderer(raw, bridgeInput);
+    if (
+      !source ||
+      !path.isAbsolute(String(source.path || "")) ||
+      !Number.isFinite(startMs) ||
+      !Number.isFinite(endMs) ||
+      endMs <= startMs ||
+      !renderer
+    )
+      return null;
+    const timeMs = Math.min(
+      endMs - 1,
+      startMs + Math.min(500, Math.max(1, (endMs - startMs) / 2)),
+    );
+    return {
+      requestId: `bitmap-ocr-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+      mode: "decoded-subtitle",
+      languages: bitmapOcrLanguages(this.config.lookupLanguage),
+      source: {
+        ...source,
+        autoBitmapStream:
+          source.autoBitmapStream === true || Number(source.ffIndex) < 0,
+      },
+      timeMs: Math.round(timeMs),
+      cueStartMs: Math.round(startMs),
+      cueEndMs: Math.round(endMs),
+      renderer,
+    };
+  }
+
+  #bitmapOcrKey(role, request, raw, bridgeInput) {
+    return JSON.stringify({
+      generation: this.bitmapOcrGenerationKey,
+      role,
+      language: request.languages,
+      source: request.source || null,
+      cueStartMs: request.cueStartMs || null,
+      cueEndMs: request.cueEndMs || null,
+      renderer: request.renderer,
+      track: raw.track || null,
+      mediaGeneration: bridgeInput.mediaGeneration,
+    });
+  }
+
+  async #recognizeBitmapOcr(request, raw, bridge, bridgeInput, role, signal) {
+    if (request) {
+      try {
+        return await this.bitmapOcr.recognize(request, { signal });
+      } catch (error) {
+        if (
+          error?.name === "AbortError" ||
+          role === "secondary" ||
+          this.config.bitmapSubtitleOcrScreenshotFallbackEnabled !== true ||
+          bridge.property("pause") !== true
+        )
+          throw error;
+      }
+    } else if (
+      role === "secondary" ||
+      this.config.bitmapSubtitleOcrScreenshotFallbackEnabled !== true ||
+      bridge.property("pause") !== true
+    ) {
+      const error = new Error("bitmap OCR screenshot fallback is unavailable");
+      error.code = "BITMAP_OCR_SCREENSHOT_FALLBACK_UNAVAILABLE";
+      throw error;
+    }
+    const renderer = this.#bitmapOcrRenderer(raw, bridgeInput);
+    if (!renderer) throw new Error("bitmap OCR renderer dimensions are unavailable");
+    const temporaryRoot = await fs.mkdtemp(
+      path.join(os.tmpdir(), "iinatan-bitmap-ocr-"),
+    );
+    const videoPath = path.join(temporaryRoot, "video.png");
+    const subtitlesPath = path.join(temporaryRoot, "subtitles.png");
+    try {
+      await bridge.screenshotToFile(videoPath, 100);
+      await bridge.screenshotSubtitlesToFile(subtitlesPath, 100);
+      return await this.bitmapOcr.recognize(
+        {
+          requestId: request?.requestId || `bitmap-ocr-shot-${Date.now()}`,
+          mode: "screenshot-diff",
+          languages: bitmapOcrLanguages(this.config.lookupLanguage),
+          renderer,
+          images: { video: videoPath, subtitles: subtitlesPath },
+        },
+        { signal },
+      );
+    } finally {
+      await fs.rm(temporaryRoot, { recursive: true, force: true });
+    }
+  }
+
+  #applyBitmapOcr(snapshotInput, bridgeInput, bridge, windowGeometry) {
+    this.#syncBitmapOcrGeneration(bridgeInput);
+    const cursor = this.screen?.getCursorScreenPoint?.();
+    const content = windowGeometry?.content;
+    const cursorOverPlayer =
+      !!cursor &&
+      !!content &&
+      cursor.x >= content.x &&
+      cursor.x <= content.x + content.width &&
+      cursor.y >= content.y &&
+      cursor.y <= content.y + content.height;
+    const ocrTriggerAllowed =
+      this.config.bitmapSubtitleOcrPrefetchEnabled === true ||
+      bridge.property("pause") === true ||
+      cursorOverPlayer;
+    if (!ocrTriggerAllowed) return snapshotInput;
+    let next = snapshotInput;
+    for (const [role, raw] of [
+      ["primary", bridgeInput.primary],
+      ["secondary", bridgeInput.secondary],
+    ]) {
+      if (
+        !raw ||
+        !isBitmapSubtitleCodec(raw.track?.codec) ||
+        raw.assFull ||
+        raw.plainText
+      )
+        continue;
+      const request = this.#bitmapOcrRequest(raw, bridgeInput);
+      const renderer = this.#bitmapOcrRenderer(raw, bridgeInput);
+      if (!request && !renderer) continue;
+      const key = this.#bitmapOcrKey(
+        role,
+        request || {
+          mode: "screenshot-diff",
+          languages: bitmapOcrLanguages(this.config.lookupLanguage),
+          renderer,
+        },
+        raw,
+        bridgeInput,
+      );
+      const generationKey = this.bitmapOcrGenerationKey;
+      const cached = this.bitmapOcrCache.get(key);
+      if (cached) {
+        const positionOffset = next.tracks.reduce(
+          (total, track) =>
+            total +
+            track.events.reduce((count, event) => count + event.units.length, 0),
+          0,
+        );
+        const applied = this.geometryProvider.applyBitmapOcrResponse(
+          next,
+          cached,
+          role,
+          raw,
+          positionOffset,
+        );
+        if (applied) next = applied;
+        continue;
+      }
+      if (!this.bitmapOcrFailures.has(key) && !this.bitmapOcrInFlight.has(key)) {
+        const abortController = new AbortController();
+        const promise = this.#recognizeBitmapOcr(
+          request,
+          raw,
+          bridge,
+          bridgeInput,
+          role,
+          abortController.signal,
+        )
+          .then((response) => {
+            if (
+              this.bitmapOcrGenerationKey !== generationKey ||
+              bridge !== this.bridge ||
+              !this.descriptor
+            )
+              return;
+            this.bitmapOcrCache.set(key, response);
+            this.bitmapOcrFailures.delete(key);
+          })
+          .catch((error) => {
+            if (error?.name !== "AbortError") this.bitmapOcrFailures.set(key, error);
+          })
+          .finally(() => {
+            this.bitmapOcrInFlight.delete(key);
+            if (bridge === this.bridge && this.descriptor)
+              setTimeout(
+                () =>
+                  this.#refreshGeometry().catch((error) => this.emit("error", error)),
+                0,
+              );
+          });
+        this.bitmapOcrInFlight.set(key, { promise, abortController });
+      }
+    }
+    return next;
+  }
+
   async #suspendForUnavailableWindow(error) {
     if (this.windowUnavailable) return;
     this.windowUnavailable = true;
@@ -672,7 +945,8 @@ class ApplicationController extends EventEmitter {
       !hit ||
       (this.snapshot.source &&
         this.snapshot.source.exact === false &&
-        !this.config.allowApproximateGeometry)
+        !this.config.allowApproximateGeometry &&
+        this.snapshot.source.lookupAllowed !== true)
     ) {
       if (this.lastHit) {
         this.lastHit = null;
@@ -865,6 +1139,8 @@ class ApplicationController extends EventEmitter {
   async #showPopup(hit, result, snapshot) {
     const anchor = unionRects(highlightForHit(snapshot, hit));
     this.lastPopupCloseReason = null;
+    this.lastAudioResult = null;
+    this.lastAnkiResult = null;
     this.popupMeasuredSize = null;
     const placement = this.#placePopup(snapshot, anchor);
     this.popupPlacement = placement;
@@ -879,6 +1155,7 @@ class ApplicationController extends EventEmitter {
       ankiNoteIds: Object.create(null),
     };
     this.popupSelectionText = "";
+    this.popupFocusTarget = "";
     this.browserHost.showPopup(this.#popupPayload(result, snapshot));
   }
 
@@ -960,6 +1237,8 @@ class ApplicationController extends EventEmitter {
       popupMinWidth: (Number(this.config.popupMinWidth) || 250) * mapper.browserScale,
       popupMaxWidth: (Number(this.config.popupMaxWidth) || 440) * mapper.browserScale,
       fontScale: this.config.fontScale,
+      nestedDepth: this.popupContext?.stack?.length || 0,
+      nestedPopupMode: this.config.nestedPopupMode,
       anki: {
         enabled: this.ankiConfig.enabled,
         configured: this.ankiConfig.configured,
@@ -989,6 +1268,7 @@ class ApplicationController extends EventEmitter {
     const currentSnapshot = this.snapshot;
     const serial = ++this.lookupSerial;
     this.lookupAbort?.abort();
+    this.audioAbort?.abort();
     this.lookupAbort = new AbortController();
     try {
       const lookupController = this.lookupAbort;
@@ -1032,6 +1312,8 @@ class ApplicationController extends EventEmitter {
       });
       this.popupContext.result = this.#normalizeDictionaryResult(result);
       this.popupSelectionText = "";
+      this.lastAudioResult = null;
+      this.lastAnkiResult = null;
       this.popupMeasuredSize = null;
       this.popupRegions = Object.freeze({});
       this.popupScroll = Object.freeze({ left: 0, top: 0 });
@@ -1094,6 +1376,9 @@ class ApplicationController extends EventEmitter {
         } else if (payload.action === "selection-changed") {
           this.popupSelectionText = String(payload.text || "").slice(0, 20000);
           this.emit("popup-selection", this.popupSelectionText);
+        } else if (payload.action === "focus-changed" && surface === "popup") {
+          this.popupFocusTarget = String(payload.target || "").slice(0, 160);
+          this.emit("popup-focus", this.popupFocusTarget);
         } else if (payload.action === "close-popup") {
           await this.closePopup("escape");
         }
@@ -1138,6 +1423,8 @@ class ApplicationController extends EventEmitter {
               state: "opened",
               noteIds,
             });
+            this.lastAnkiResult = { entryId, ok: true, state: "opened" };
+            this.emit("anki-result", this.lastAnkiResult);
             break;
           }
           const popupContext = this.popupContext;
@@ -1183,13 +1470,21 @@ class ApplicationController extends EventEmitter {
             )
               throw new Error("Anki export became stale while checking duplicates");
             if (Array.isArray(duplicateIds) && duplicateIds.length) {
-              this.browserHost.send("popup", "anki-result", {
+              const result = {
                 entryId,
                 ok: false,
                 state: "duplicate",
                 noteIds: duplicateIds.slice(0, 32),
                 message: "A matching Anki note already exists.",
-              });
+              };
+              this.browserHost.send("popup", "anki-result", result);
+              this.lastAnkiResult = {
+                entryId,
+                ok: false,
+                state: "duplicate",
+                noteCount: result.noteIds.length,
+              };
+              this.emit("anki-result", this.lastAnkiResult);
               this.popupContext.ankiNoteIds ||= {};
               this.popupContext.ankiNoteIds[entryId] = duplicateIds.slice(0, 32);
               break;
@@ -1203,20 +1498,31 @@ class ApplicationController extends EventEmitter {
           )
             throw new Error("Anki export became stale while media was prepared");
           note = buildAnkiNote(this.ankiConfig, noteContext, resolvedMedia.media);
-          const result = await this.anki.addNote(note);
-          this.browserHost.send("popup", "anki-result", {
+          const noteResult = await this.anki.addNote(note);
+          const result = {
             entryId,
             ok: true,
             state: "added",
-            result,
+            result: noteResult,
             warnings: resolvedMedia.warnings,
-          });
+          };
+          this.browserHost.send("popup", "anki-result", result);
+          this.lastAnkiResult = {
+            entryId,
+            ok: true,
+            state: "added",
+            warnings: resolvedMedia.warnings,
+          };
+          this.emit("anki-result", this.lastAnkiResult);
         } catch (error) {
-          this.browserHost.send("popup", "anki-result", {
+          const result = {
             entryId,
             ok: false,
             error: error.message,
-          });
+          };
+          this.browserHost.send("popup", "anki-result", result);
+          this.lastAnkiResult = result;
+          this.emit("anki-result", this.lastAnkiResult);
         } finally {
           if (payload.action !== "open") this.ankiPending.delete(entryId);
         }
@@ -1325,6 +1631,7 @@ class ApplicationController extends EventEmitter {
     this.popupScroll = Object.freeze({ left: 0, top: 0 });
     this.popupContext = null;
     this.popupSelectionText = "";
+    this.popupFocusTarget = "";
   }
 
   async #releasePause(reason, generation = this.snapshot?.geometryGeneration) {
@@ -1436,6 +1743,13 @@ class ApplicationController extends EventEmitter {
     this.audioAbort?.abort();
     const audioAbort = new AbortController();
     this.audioAbort = audioAbort;
+    this.lastAudioResult = {
+      requestId,
+      loading: true,
+      candidateCount: 0,
+      error: null,
+    };
+    this.emit("audio-result", this.lastAudioResult);
     this.browserHost.send(
       "popup",
       "audio-result",
@@ -1445,14 +1759,33 @@ class ApplicationController extends EventEmitter {
     try {
       const candidates = await this.audio.resolve(payload, audioAbort.signal);
       this.browserHost.send("popup", "audio-result", { candidates }, { requestId });
+      this.lastAudioResult = {
+        requestId,
+        loading: false,
+        candidateCount: candidates.length,
+        names: candidates
+          .map((candidate) => candidate.name)
+          .filter(Boolean)
+          .slice(0, 16),
+        error: null,
+      };
+      this.emit("audio-result", this.lastAudioResult);
     } catch (error) {
-      if (error?.name !== "AbortError")
+      if (error?.name !== "AbortError") {
+        this.lastAudioResult = {
+          requestId,
+          loading: false,
+          candidateCount: 0,
+          error: error.message || "Audio lookup failed",
+        };
+        this.emit("audio-result", this.lastAudioResult);
         this.browserHost.send(
           "popup",
           "audio-result",
-          { candidates: [], error: error.message || "Audio lookup failed" },
+          { candidates: [], error: this.lastAudioResult.error },
           { requestId },
         );
+      }
     } finally {
       if (this.audioAbort === audioAbort) this.audioAbort = null;
     }
@@ -1587,6 +1920,7 @@ class ApplicationController extends EventEmitter {
 
   async #detach(reason) {
     this.geometryRefreshSerial++;
+    this.#resetBitmapOcr();
     this.geometryRefreshPromise = null;
     clearInterval(this.cursorTimer);
     clearInterval(this.geometryTimer);
@@ -1626,6 +1960,7 @@ class ApplicationController extends EventEmitter {
 module.exports = {
   ApplicationController,
   flattenSubtitleText,
+  geometryInputReady,
   subtitleLookupText,
   unionRects,
 };

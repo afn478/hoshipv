@@ -46,7 +46,16 @@ const PLAYER_COMMANDS = new Set([
   "subtitle-next",
 ]);
 
-const POPUP_REGION_NAMES = new Set(["panel", "headword", "content"]);
+const POPUP_REGION_NAMES = new Set([
+  "panel",
+  "headword",
+  "content",
+  "selection",
+  "action-audio-source",
+  "action-audio-close",
+  "action-anki-add",
+  "action-anki-open",
+]);
 
 function isPlainObject(value) {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -178,6 +187,11 @@ function validateHostRequest(message) {
   if (message.type === "popup-action") {
     if (!isNonEmptyString(message.payload.action, 80))
       throw validationError("payload.action", "must be a non-empty string");
+    if (
+      message.payload.action === "focus-changed" &&
+      !isNonEmptyString(message.payload.target, 160)
+    )
+      throw validationError("payload.target", "must be a non-empty string");
     if (
       message.payload.action === "selection-changed" &&
       typeof message.payload.text !== "string"

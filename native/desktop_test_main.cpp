@@ -9,11 +9,15 @@ namespace {
 void usage() {
   std::cerr << "usage: iinatan-desktop-test --capture PATH\n"
             << "       iinatan-desktop-test --request-post-event\n"
+            << "       iinatan-desktop-test --activate PID\n"
+            << "       iinatan-desktop-test --activate-shortcut PID MODIFIER KEY\n"
             << "       iinatan-desktop-test --move X Y\n"
             << "       iinatan-desktop-test --click X Y [left|right]\n"
             << "       iinatan-desktop-test --scroll X Y DELTA_Y\n"
             << "       iinatan-desktop-test --drag START_X START_Y END_X END_Y\n"
-            << "       iinatan-desktop-test --key KEY\n";
+            << "       iinatan-desktop-test --key KEY\n"
+            << "       iinatan-desktop-test --shortcut MODIFIER KEY\n"
+            << "       iinatan-desktop-test --type TEXT\n";
 }
 
 bool number(const char* value, double& result) {
@@ -40,6 +44,31 @@ int main(int argc, char** argv) {
   if (command == "--request-post-event" && argc == 2) {
     std::cout << iinatan::native::request_post_event_access() << '\n';
     return 0;
+  }
+  if (command == "--activate" && argc == 3) {
+    try {
+      const int pid = std::stoi(argv[2]);
+      std::cout << iinatan::native::activate_process(pid) << '\n';
+      return 0;
+    } catch (...) {
+      usage();
+      return 2;
+    }
+  }
+  if (command == "--activate-shortcut" && argc == 5) {
+    try {
+      const int pid = std::stoi(argv[2]);
+      const std::string activation = iinatan::native::activate_process(pid);
+      if (activation.find(R"("foregroundVerified":true)") == std::string::npos) {
+        std::cout << activation << '\n';
+        return 0;
+      }
+      std::cout << iinatan::native::press_shortcut(argv[3], argv[4]) << '\n';
+      return 0;
+    } catch (...) {
+      usage();
+      return 2;
+    }
   }
   if (command == "--move" && argc == 4) {
     double x = 0;
@@ -96,6 +125,14 @@ int main(int argc, char** argv) {
   }
   if (command == "--key" && argc == 3) {
     std::cout << iinatan::native::press_key(argv[2]) << '\n';
+    return 0;
+  }
+  if (command == "--shortcut" && argc == 4) {
+    std::cout << iinatan::native::press_shortcut(argv[2], argv[3]) << '\n';
+    return 0;
+  }
+  if (command == "--type" && argc == 3) {
+    std::cout << iinatan::native::type_text(argv[2]) << '\n';
     return 0;
   }
   usage();

@@ -211,10 +211,17 @@ function createSurface(surface) {
   });
 }
 
-function sendEvent(window, type, payload, geometryGeneration = initialGeneration) {
+function sendEvent(
+  window,
+  type,
+  payload,
+  geometryGeneration = initialGeneration,
+  requestId,
+) {
   const envelope = makeEnvelope(type, payload, {
     sessionId: testSessionId,
     geometryGeneration,
+    ...(requestId ? { requestId } : {}),
   });
   validateHostEvent(envelope);
   window.webContents.send("host-event", envelope);
@@ -365,6 +372,8 @@ async function run() {
         fontScale: 1,
         theme: "light",
         customCss: "#popup .glossary { color: rgb(1, 2, 3); }",
+        nestedDepth: 0,
+        nestedPopupMode: "hover",
         audioSources: ["https://audio.example/{term}.mp3"],
         audioAutoPlay: false,
         anki: { enabled: true, configured: true },
@@ -377,6 +386,16 @@ async function run() {
         (await evaluate(popup, "!document.getElementById('popup-panel').hidden")) ===
         true,
       "popup rendering",
+    );
+    await waitFor(
+      () =>
+        messages.some(
+          (item) =>
+            item.message.type === "popup-action" &&
+            item.message.payload.action === "focus-changed" &&
+            item.message.payload.target === "popup-panel",
+        ),
+      "popup focus telemetry",
     );
     const initialState = await evaluate(
       popup,
@@ -410,6 +429,9 @@ async function run() {
           )?.open,
           tables: document.querySelectorAll('table').length,
           nested: document.querySelectorAll('[data-action="nested-lookup"]').length,
+          nestedMode: panel.dataset.nestedMode || "",
+          nestedDepth: panel.dataset.nestedDepth || "",
+          backVisible: !document.getElementById("popup-back").hidden,
           links: document.querySelectorAll('[data-href]').length,
           audio: document.querySelectorAll('[data-action="dictionary-audio"]').length,
           anki: document.querySelectorAll('[data-action="anki-add"]').length,
@@ -443,6 +465,9 @@ async function run() {
     assert.equal(initialState.etymologyOpen, true);
     assert.equal(initialState.tables, 1);
     assert.equal(initialState.nested, 1);
+    assert.equal(initialState.nestedMode, "hover");
+    assert.equal(initialState.nestedDepth, "0");
+    assert.equal(initialState.backVisible, false);
     assert.equal(initialState.links, 1);
     assert.equal(initialState.audio, 1);
     assert.equal(initialState.anki, 2);
@@ -457,7 +482,14 @@ async function run() {
         )
         .map((item) => item.message.payload.name),
     );
-    for (const name of ["panel", "headword", "content"])
+    for (const name of [
+      "panel",
+      "headword",
+      "content",
+      "selection",
+      "action-audio-source",
+      "action-anki-add",
+    ])
       assert.equal(popupRegionNames.has(name), true, `missing popup region: ${name}`);
     const latestPopupRegion = (name) =>
       messages
@@ -490,6 +522,16 @@ async function run() {
         reportedContentRegion.y + reportedContentRegion.height <=
           visiblePopupBounds.panel.bottom + 0.5,
       "content region telemetry must stay inside the visible popup viewport",
+    );
+    const reportedSelectionRegion = latestPopupRegion("selection");
+    assert.ok(
+      reportedSelectionRegion.x >= visiblePopupBounds.content.left - 0.5 &&
+        reportedSelectionRegion.y >= visiblePopupBounds.content.top - 0.5 &&
+        reportedSelectionRegion.x + reportedSelectionRegion.width <=
+          visiblePopupBounds.content.right + 0.5 &&
+        reportedSelectionRegion.y + reportedSelectionRegion.height <=
+          visiblePopupBounds.content.bottom + 0.5,
+      "selection region telemetry must stay inside the visible content viewport",
     );
 
     sendEvent(
@@ -599,6 +641,8 @@ async function run() {
         fontScale: 1,
         theme: "light",
         customCss: "outline: 2px solid rgb(1, 2, 3);",
+        nestedDepth: 0,
+        nestedPopupMode: "hover",
         result: fixtureResult,
       },
       initialGeneration + 1,
@@ -767,6 +811,97 @@ async function run() {
       "text selection message",
     );
 
+    const nestedMessagesBeforeHover = messages.filter(
+      (item) => item.message.type === "nested-lookup",
+    ).length;
+    await evaluate(
+      popup,
+      `document.querySelector('[data-action="nested-lookup"]').dispatchEvent(new PointerEvent('pointermove', { bubbles: true, cancelable: true, shiftKey: false }))`,
+    );
+    await waitFor(
+      () =>
+        messages.filter((item) => item.message.type === "nested-lookup").length >
+        nestedMessagesBeforeHover,
+      "hover nested lookup message",
+    );
+    const nestedMessagesBeforeShiftHover = messages.filter(
+      (item) => item.message.type === "nested-lookup",
+    ).length;
+    sendEvent(
+      popup,
+      "popup-state",
+      {
+        visible: true,
+        position: { x: 40, y: 60 },
+        width: 640,
+        maxHeight: 520,
+        popupScale: 1,
+        popupMinWidth: 280,
+        popupMaxWidth: 640,
+        fontScale: 1,
+        theme: "light",
+        nestedDepth: 0,
+        nestedPopupMode: "shift-hover",
+        result: fixtureResult,
+      },
+      initialGeneration + 1,
+    );
+    await evaluate(
+      popup,
+      `document.querySelector('[data-action="nested-lookup"]').dispatchEvent(new PointerEvent('pointermove', { bubbles: true, cancelable: true, shiftKey: false }))`,
+    );
+    await delay(240);
+    assert.equal(
+      messages.filter((item) => item.message.type === "nested-lookup").length,
+      nestedMessagesBeforeShiftHover,
+      "shift-hover must not open without Shift",
+    );
+    await evaluate(
+      popup,
+      `document.querySelector('[data-action="nested-lookup"]').dispatchEvent(new PointerEvent('pointermove', { bubbles: true, cancelable: true, shiftKey: true }))`,
+    );
+    await waitFor(
+      () =>
+        messages.filter((item) => item.message.type === "nested-lookup").length >
+        nestedMessagesBeforeShiftHover,
+      "shift-hover nested lookup message",
+    );
+    sendEvent(
+      popup,
+      "popup-state",
+      {
+        visible: true,
+        position: { x: 40, y: 60 },
+        width: 640,
+        maxHeight: 520,
+        popupScale: 1,
+        popupMinWidth: 280,
+        popupMaxWidth: 640,
+        fontScale: 1,
+        theme: "light",
+        nestedDepth: 1,
+        nestedPopupMode: "click",
+        result: fixtureResult,
+      },
+      initialGeneration + 1,
+    );
+    await waitFor(
+      async () =>
+        (await evaluate(popup, "!document.getElementById('popup-back').hidden")) ===
+        true,
+      "nested back control",
+    );
+    await evaluate(popup, "document.getElementById('popup-back').click()");
+    await waitFor(
+      () =>
+        messages.some(
+          (item) =>
+            item.message.type === "dismiss-popup" &&
+            item.message.payload.reason === "nested-back",
+        ),
+      "nested back request",
+    );
+
     await evaluate(
       popup,
       `document.querySelector('[data-action="nested-lookup"]').click()`,
@@ -784,6 +919,23 @@ async function run() {
       () => messages.some((item) => item.message.type === "audio-source"),
       "audio source message",
     );
+    const audioRequestId = messages
+      .filter((item) => item.message.type === "audio-source")
+      .at(-1)?.message.payload.requestId;
+    assert.match(audioRequestId || "", /^audio-/);
+    sendEvent(
+      popup,
+      "audio-result",
+      { candidates: [{ name: "Stale", url: "https://audio.example/stale.mp3" }] },
+      initialGeneration + 1,
+      "audio-stale-request",
+    );
+    await delay(50);
+    assert.equal(
+      await evaluate(popup, "document.querySelectorAll('.audio-candidate').length"),
+      0,
+      "stale audio results must not replace the active request",
+    );
     sendEvent(
       popup,
       "audio-result",
@@ -794,6 +946,7 @@ async function run() {
         ],
       },
       initialGeneration + 1,
+      audioRequestId,
     );
     await waitFor(
       async () =>
@@ -802,6 +955,15 @@ async function run() {
           "document.querySelectorAll('.audio-candidate').length",
         )) === 2,
       "audio menu rendering",
+    );
+    await evaluate(
+      popup,
+      `window.__iinatanAudioEvents = []; window.Audio = class { constructor(url) { this.src = url; this.paused = false; window.__iinatanAudioEvents.push({ type: 'create', url }); window.__iinatanAudio = this; } play() { this.paused = false; window.__iinatanAudioEvents.push({ type: 'play' }); return Promise.resolve(); } pause() { this.paused = true; window.__iinatanAudioEvents.push({ type: 'pause' }); } removeAttribute(name) { if (name === 'src') this.src = ''; window.__iinatanAudioEvents.push({ type: 'remove-attribute', name }); } load() { window.__iinatanAudioEvents.push({ type: 'load' }); } }; document.querySelector('.audio-candidate').click()`,
+    );
+    assert.equal(
+      await evaluate(popup, "window.__iinatanAudio?.paused"),
+      false,
+      "audio candidate should start playback",
     );
     sendEvent(
       popup,
@@ -815,6 +977,36 @@ async function run() {
         "document.querySelector('.audio-candidate[aria-selected=\"true\"]')?.textContent",
       ),
       "Fallback",
+    );
+    sendEvent(
+      popup,
+      "popup-state",
+      {
+        visible: true,
+        position: { x: 40, y: 60 },
+        width: 640,
+        maxHeight: 520,
+        popupScale: 1,
+        popupMinWidth: 280,
+        popupMaxWidth: 640,
+        fontScale: 1,
+        theme: "light",
+        nestedDepth: 0,
+        nestedPopupMode: "hover",
+        result: fixtureResult,
+      },
+      initialGeneration + 1,
+    );
+    await delay(50);
+    assert.equal(
+      await evaluate(popup, "window.__iinatanAudio?.paused"),
+      true,
+      "popup-state should stop old audio playback",
+    );
+    assert.equal(
+      await evaluate(popup, "window.__iinatanAudio?.src"),
+      "",
+      "popup-state should release the old audio source",
     );
 
     await evaluate(popup, "document.querySelector('[data-href]').click()");

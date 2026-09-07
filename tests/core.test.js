@@ -108,6 +108,11 @@ const {
   geometryRequest,
 } = require("../src/services/native-geometry-client");
 const {
+  NativeBitmapOcrClient,
+  bitmapOcrLanguages,
+  bitmapOcrRequest,
+} = require("../src/services/native-bitmap-ocr-client");
+const {
   NativeSubtitleGeometryService,
   nativeDisplayIndex,
   nativeStrippedDisplayIndex,
@@ -649,6 +654,10 @@ test("settings inventory has the reference 59 profile and 2 global preferences",
     "shift-hover",
   );
   assert.equal(
+    normalizePreferences({ nestedPopupMode: "shift-hover" }).nestedPopupMode,
+    "shift-hover",
+  );
+  assert.equal(
     normalizePreferences({ wiktionaryEtymologyCollapseOverride: "inherit" })
       .wiktionaryEtymologyCollapseOverride,
     "inherit",
@@ -732,6 +741,44 @@ test("protocol validates sender-facing messages and external URL policy", () => 
       makeEnvelope(
         "popup-region",
         { name: "headword", x: 12, y: 18, width: 80, height: 24 },
+        { sessionId: "s-1", geometryGeneration: 2 },
+      ),
+    ),
+  );
+  assert.doesNotThrow(() =>
+    validateHostRequest(
+      makeEnvelope(
+        "popup-action",
+        { action: "focus-changed", target: "button:close-popup" },
+        { sessionId: "s-1", geometryGeneration: 2 },
+      ),
+    ),
+  );
+  assert.throws(
+    () =>
+      validateHostRequest(
+        makeEnvelope(
+          "popup-action",
+          { action: "focus-changed" },
+          { sessionId: "s-1", geometryGeneration: 2 },
+        ),
+      ),
+    /payload\.target/,
+  );
+  assert.doesNotThrow(() =>
+    validateHostRequest(
+      makeEnvelope(
+        "popup-region",
+        { name: "selection", x: 14, y: 42, width: 120, height: 18 },
+        { sessionId: "s-1", geometryGeneration: 2 },
+      ),
+    ),
+  );
+  assert.doesNotThrow(() =>
+    validateHostRequest(
+      makeEnvelope(
+        "popup-region",
+        { name: "action-audio-source", x: 14, y: 42, width: 80, height: 24 },
         { sessionId: "s-1", geometryGeneration: 2 },
       ),
     ),
@@ -1205,7 +1252,10 @@ test("subtitle provider keeps primary and secondary events independent and parse
       geometryGeneration: 1,
       timeMs: 1000,
       osd: { width: 1280, height: 720 },
-      primary: { assFull: "Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,日本語" },
+      primary: {
+        track: { id: 7, codec: "ass", language: "ja" },
+        assFull: "Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,日本語",
+      },
       secondary: {
         assFull: "Dialogue: 1,0:00:00.00,0:00:02.00,Default,,0,0,0,,English",
       },
@@ -1215,7 +1265,26 @@ test("subtitle provider keeps primary and secondary events independent and parse
   assert.equal(value.tracks.length, 2);
   assert.equal(value.tracks[0].role, "primary");
   assert.equal(value.tracks[1].role, "secondary");
+  assert.deepEqual(value.tracks[0].track, {
+    id: 7,
+    codec: "ass",
+    language: "ja",
+  });
   assert.equal(value.source.exact, false);
+  const plainFallback = provider.snapshotInput(
+    {
+      sessionId: "s-plain-fallback",
+      mediaGeneration: 0,
+      geometryGeneration: 1,
+      timeMs: 1000,
+      osd: { width: 1280, height: 720 },
+      primary: { assFull: "", plainText: "日本語" },
+    },
+    { content: { x: 0, y: 0, width: 1280, height: 720 } },
+  );
+  assert.equal(plainFallback.tracks.length, 1);
+  assert.equal(plainFallback.tracks[0].events[0].sourceText, "日本語");
+  assert.equal(plainFallback.tracks[0].assFull, "");
   const capabilityInexact = provider.snapshotInput(
     {
       sessionId: "s",
@@ -1273,6 +1342,134 @@ test("subtitle provider keeps primary and secondary events independent and parse
     }),
     null,
   );
+});
+
+test("bitmap OCR requests are bounded and map Vision units into approximate hit geometry", async () => {
+  assert.deepEqual(bitmapOcrLanguages("ja"), ["ja-JP"]);
+  const request = bitmapOcrRequest({
+    requestId: "ocr-test",
+    mode: "decoded-subtitle",
+    languages: ["ja-JP"],
+    source: { path: "/tmp/episode.mkv", ffIndex: 4, external: false },
+    timeMs: 1250,
+    cueStartMs: 1000,
+    cueEndMs: 2000,
+    renderer: { width: 1280, height: 720, storageWidth: 1920, storageHeight: 1080 },
+  });
+  assert.equal(request.type, "bitmap-subtitle-ocr");
+  assert.equal(request.renderer.storageWidth, 1920);
+  assert.throws(
+    () => bitmapOcrRequest({ ...request, source: { path: "relative.mkv" } }),
+    /source\.path must be absolute/,
+  );
+
+  const provider = new SubtitleGeometryProvider();
+  const bitmapRaw = {
+    selected: true,
+    track: { codec: "hdmv_pgs_subtitle" },
+    source: { path: "/tmp/episode.mkv", ffIndex: 4 },
+    startMs: 1000,
+    endMs: 2000,
+  };
+  const input = provider.snapshotInput(
+    {
+      sessionId: "bitmap-ocr",
+      mediaGeneration: 0,
+      geometryGeneration: 1,
+      timeMs: 1250,
+      osd: { width: 1280, height: 720 },
+      primary: bitmapRaw,
+    },
+    { content: { x: 0, y: 0, width: 1280, height: 720 }, contentExact: true },
+  );
+  const enriched = provider.applyBitmapOcrResponse(
+    input,
+    {
+      ok: true,
+      protocol: 1,
+      mode: "decoded-subtitle",
+      rendererWidth: 1280,
+      rendererHeight: 720,
+      text: "猫を見る",
+      confidence: 0.94,
+      cueStartMs: 1000,
+      cueEndMs: 2000,
+      units: [0, 1, 2, 3].map((index) => ({
+        displayStartUtf16: index,
+        displayEndUtf16: index + 1,
+        rects: [{ x: 240 + index * 32, y: 620, w: 28, h: 42 }],
+      })),
+    },
+    "primary",
+    bitmapRaw,
+  );
+  assert.ok(enriched);
+  assert.equal(enriched.source.mode, "bitmap-ocr");
+  assert.equal(enriched.source.exact, false);
+  assert.equal(enriched.source.lookupAllowed, true);
+  assert.equal(enriched.tracks[0].track.codec, "hdmv_pgs_subtitle");
+  assert.equal(enriched.tracks[0].events[0].units[2].text, "見");
+  const snapshot = createGeometrySnapshot(enriched);
+  const hit = hitTest(snapshot, { x: 240 + 2 * 32 + 10, y: 620 + 10 });
+  assert.equal(hit.unit.text, "見");
+
+  const wordResponse = {
+    ok: true,
+    protocol: 1,
+    mode: "decoded-subtitle",
+    rendererWidth: 1280,
+    rendererHeight: 720,
+    text: "abc",
+    confidence: 0.94,
+    cueStartMs: 1000,
+    cueEndMs: 2000,
+    units: [0, 1, 2].map((index) => ({
+      displayStartUtf16: index,
+      displayEndUtf16: index + 1,
+      rects: [{ x: 100, y: 620, w: 90, h: 42 }],
+    })),
+  };
+  const distributed = provider.applyBitmapOcrResponse(
+    input,
+    wordResponse,
+    "primary",
+    bitmapRaw,
+  );
+  const distributedSnapshot = createGeometrySnapshot(distributed);
+  assert.equal(hitTest(distributedSnapshot, { x: 115, y: 630 }).unit.text, "a");
+  assert.equal(hitTest(distributedSnapshot, { x: 145, y: 630 }).unit.text, "b");
+  assert.equal(hitTest(distributedSnapshot, { x: 175, y: 630 }).unit.text, "c");
+
+  const client = new NativeBitmapOcrClient({
+    async lookup(value) {
+      assert.equal(value.requestId, "ocr-client");
+      return {
+        ok: true,
+        protocol: 1,
+        rendererWidth: 1280,
+        rendererHeight: 720,
+        text: "猫",
+        units: [
+          {
+            displayStartUtf16: 0,
+            displayEndUtf16: 1,
+            rects: [{ x: 10, y: 10, w: 20, h: 20 }],
+          },
+        ],
+      };
+    },
+  });
+  const recognized = await client.recognize({
+    requestId: "ocr-client",
+    mode: "decoded-subtitle",
+    languages: ["ja-JP"],
+    source: { path: "/tmp/episode.mkv", ffIndex: 4 },
+    timeMs: 1,
+    cueStartMs: 0,
+    cueEndMs: 2,
+    renderer: { width: 1280, height: 720 },
+  });
+  assert.equal(recognized.text, "猫");
 });
 
 test("native subtitle geometry maps browser graphemes to validated libass units", async () => {
@@ -1953,6 +2150,15 @@ test("player bridge exports exact-geometry track and renderer inputs", async () 
   assert.equal(input.primary.renderer.pixelAspect, 1.25);
   assert.equal(input.primary.renderer.linePosition, 18);
   assert.equal(input.primary.renderer.overrideMode, "scale");
+  assert.deepEqual(input.primary.track, {
+    id: 3,
+    codec: "",
+    ffIndex: 7,
+    external: false,
+    externalFilename: "",
+    language: "",
+    title: "",
+  });
   assert.equal(input.secondary.renderer.overrideMode, "strip");
   assert.equal(input.secondary.selected, false);
   await bridge.screenshotToFile("/tmp/iinatan-frame.jpg", 90);
@@ -1960,6 +2166,12 @@ test("player bridge exports exact-geometry track and renderer inputs", async () 
     "screenshot-to-file",
     "/tmp/iinatan-frame.jpg",
     "video",
+  ]);
+  await bridge.screenshotSubtitlesToFile("/tmp/iinatan-subtitles.png", 90);
+  assert.deepEqual(ipc.commands.at(-1), [
+    "screenshot-to-file",
+    "/tmp/iinatan-subtitles.png",
+    "subtitles",
   ]);
   bridge.close();
 });
@@ -3276,6 +3488,22 @@ test("native window adapter preserves foreground state and keeps focus behind an
   assert.equal(geometry.isForeground, false);
   assert.deepEqual(await adapter.focus(descriptor), { ok: true, activated: true });
   assert.deepEqual(calls, ["s-1"]);
+});
+
+test("native window adapter retries macOS-style activation until foreground is verified", async () => {
+  const results = [
+    { ok: true, activated: true, isForeground: false, foregroundVerified: false },
+    { ok: true, activated: true, isForeground: true, foregroundVerified: true },
+  ];
+  const adapter = new NativeWindowAdapter({
+    platform: "darwin",
+    focusAttempts: 3,
+    focusRetryDelayMs: 0,
+    activate: async () => results.shift(),
+  });
+  const result = await adapter.focus({ sessionId: "s-focus", pid: 42 });
+  assert.equal(result.foregroundVerified, true);
+  assert.equal(results.length, 0);
 });
 
 test("native window adapter converts Windows physical bounds into Electron DIP bounds", async () => {

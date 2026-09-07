@@ -11,6 +11,7 @@
 #include <dlfcn.h>
 #include <sstream>
 #include <thread>
+#include <vector>
 
 namespace iinatan::native {
 
@@ -55,7 +56,23 @@ CGKeyCode key_code(const std::string& key) {
   if (key == "return") return 36;
   if (key == "space") return 49;
   if (key == "tab") return 48;
+  if (key == "delete") return 51;
+  if (key == "left") return 123;
+  if (key == "right") return 124;
+  if (key == "down") return 125;
+  if (key == "up") return 126;
+  if (key == "home") return 115;
+  if (key == "end") return 119;
+  if (key == "comma") return 43;
   return UINT16_MAX;
+}
+
+CGEventFlags shortcut_flags(const std::string& modifier) {
+  if (modifier == "command" || modifier == "cmd") return kCGEventFlagMaskCommand;
+  if (modifier == "control" || modifier == "ctrl") return kCGEventFlagMaskControl;
+  if (modifier == "option" || modifier == "alt") return kCGEventFlagMaskAlternate;
+  if (modifier == "shift") return kCGEventFlagMaskShift;
+  return 0;
 }
 
 }  // namespace
@@ -82,6 +99,31 @@ std::string request_post_event_access() {
            << '\n';
     return stream.str();
   }
+}
+
+std::string activate_process(int pid) {
+  if (pid <= 0)
+    return R"({"ok":false,"reason":"invalid-process-id","backend":"macos"})";
+  NSRunningApplication* application =
+      [NSRunningApplication runningApplicationWithProcessIdentifier:static_cast<pid_t>(pid)];
+  if (!application)
+    return R"({"ok":false,"reason":"process-not-found","backend":"macos"})";
+  const BOOL activated = [application activateWithOptions:NSApplicationActivateAllWindows];
+  bool foreground = false;
+  const NSDate* deadline = [NSDate dateWithTimeIntervalSinceNow:2.0];
+  while ([deadline timeIntervalSinceNow] > 0) {
+    foreground =
+        NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier == application.processIdentifier;
+    if (foreground) break;
+    NSDate* next = [NSDate dateWithTimeIntervalSinceNow:0.05];
+    [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:next];
+  }
+  std::ostringstream stream;
+  stream << R"({"ok":)" << (activated ? "true" : "false")
+         << R"(,"backend":"macos","operation":"activate","pid":)" << pid
+         << R"(,"foregroundVerified":)" << (foreground ? "true" : "false")
+         << R"(,"isForeground":)" << (foreground ? "true" : "false") << "}";
+  return stream.str();
 }
 
 std::string capture_desktop(const std::string& output_path) {
@@ -266,6 +308,65 @@ std::string press_key(const std::string& key) {
   CFRelease(down);
   CFRelease(up);
   return input_status(key.c_str(), accessibility_trusted());
+}
+
+std::string press_shortcut(const std::string& modifier, const std::string& key) {
+  const CGKeyCode code = key_code(key);
+  const CGEventFlags flags = shortcut_flags(modifier);
+  if (code == UINT16_MAX || flags == 0)
+    return R"({"ok":false,"reason":"unsupported-shortcut","backend":"macos"})";
+  CGEventRef down = CGEventCreateKeyboardEvent(nullptr, code, true);
+  CGEventRef up = CGEventCreateKeyboardEvent(nullptr, code, false);
+  if (!down || !up) {
+    if (down) CFRelease(down);
+    if (up) CFRelease(up);
+    return R"({"ok":false,"reason":"keyboard-event-create-failed","backend":"macos"})";
+  }
+  CGEventSetFlags(down, flags);
+  CGEventSetFlags(up, flags);
+  CGEventPost(kCGHIDEventTap, down);
+  CGEventPost(kCGHIDEventTap, up);
+  CFRelease(down);
+  CFRelease(up);
+  return input_status("shortcut", accessibility_trusted());
+}
+
+std::string type_text(const std::string& text) {
+  if (text.empty() || text.size() > 4096)
+    return R"({"ok":false,"reason":"invalid-text","backend":"macos"})";
+  @autoreleasepool {
+    NSString* string = [[NSString alloc]
+        initWithBytes:text.data()
+               length:text.size()
+             encoding:NSUTF8StringEncoding];
+    if (!string)
+      return R"({"ok":false,"reason":"invalid-utf8-text","backend":"macos"})";
+    const NSUInteger length = [string length];
+    std::vector<UniChar> characters(length);
+    [string getCharacters:characters.data() range:NSMakeRange(0, length)];
+    for (NSUInteger index = 0; index < length;) {
+      NSUInteger count = 1;
+      if (index + 1 < length &&
+          CFStringIsSurrogateHighCharacter(characters[index]) &&
+          CFStringIsSurrogateLowCharacter(characters[index + 1]))
+        count = 2;
+      CGEventRef down = CGEventCreateKeyboardEvent(nullptr, 0, true);
+      CGEventRef up = CGEventCreateKeyboardEvent(nullptr, 0, false);
+      if (!down || !up) {
+        if (down) CFRelease(down);
+        if (up) CFRelease(up);
+        return R"({"ok":false,"reason":"keyboard-event-create-failed","backend":"macos"})";
+      }
+      CGEventKeyboardSetUnicodeString(down, count, characters.data() + index);
+      CGEventKeyboardSetUnicodeString(up, count, characters.data() + index);
+      CGEventPost(kCGHIDEventTap, down);
+      CGEventPost(kCGHIDEventTap, up);
+      CFRelease(down);
+      CFRelease(up);
+      index += count;
+    }
+    return input_status("type", accessibility_trusted());
+  }
 }
 
 }  // namespace iinatan::native

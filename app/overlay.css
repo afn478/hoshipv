@@ -89,12 +89,29 @@ body {
   top: 0;
   z-index: 2;
   display: grid;
-  grid-template-columns: 1fr auto auto;
+  grid-template-columns: auto 1fr auto auto;
   gap: 10px;
   align-items: baseline;
   padding: 14px 14px 10px;
   border-bottom: 1px solid var(--popup-border);
   background: color-mix(in srgb, var(--popup-background) 92%, transparent);
+}
+
+#popup-back {
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--popup-muted);
+  cursor: pointer;
+  font-size: 1.35rem;
+  line-height: 1;
+  padding: 2px 5px;
+}
+
+#popup-back:hover,
+#popup-back:focus-visible {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--popup-foreground);
 }
 
 #popup-headword {
