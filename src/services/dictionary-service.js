@@ -177,6 +177,10 @@ function sampleResult(request) {
                 type: "note",
                 text: "Production lookups are disabled until a HoshiDicts worker is configured.",
               },
+              {
+                type: "cross-reference",
+                text: "related reference",
+              },
             ],
           },
         ],

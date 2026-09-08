@@ -7,7 +7,7 @@ const { EventEmitter } = require("node:events");
 const { CoordinateMapper } = require("../geometry/coordinate-mapper");
 const {
   createGeometrySnapshot,
-  highlightForHit,
+  highlightForUnits,
   hitTest,
   isSnapshotCurrent,
 } = require("../geometry/snapshot");
@@ -40,8 +40,21 @@ const {
   isBitmapSubtitleCodec,
 } = require("../services/native-bitmap-ocr-client");
 
+const CONTROLLER_HOLD_MS = 650;
+const CONTROLLER_HOLD_TICK_MS = 16;
+
 function requestId() {
   return `lookup-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function popupSessionId() {
+  return `popup-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
+function debugTrace(event, value = null) {
+  if (process.env.IINATAN_E2E_DEBUG !== "1") return;
+  const suffix = value === null ? "" : ` ${JSON.stringify(value)}`;
+  console.error(`[iinatan] ${event}${suffix}`);
 }
 
 function geometryInputReady(input) {
@@ -149,6 +162,297 @@ function unionRects(rects) {
   return { x, y, width: right - x, height: bottom - y };
 }
 
+function visualRectsForUnit(unit) {
+  return Array.isArray(unit?.envelopeRects) && unit.envelopeRects.length
+    ? unit.envelopeRects
+    : Array.isArray(unit?.rects)
+      ? unit.rects
+      : [];
+}
+
+function isWideSubtitleGlyph(value) {
+  return /[\u1100-\u11ff\u2e80-\u303f\u3040-\u30ff\u3130-\u318f\u31a0-\u31ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff]/u.test(
+    String(value || ""),
+  );
+}
+
+function coalesceHighlightRects(items, options = {}) {
+  if (!Array.isArray(items) || !items.length) return [];
+  const rows = [];
+  const sorted = items
+    .filter((item) => item?.rect && item.rect.width > 0 && item.rect.height > 0)
+    .slice()
+    .sort((left, right) => {
+      const leftCenter = left.rect.y + left.rect.height / 2;
+      const rightCenter = right.rect.y + right.rect.height / 2;
+      return leftCenter === rightCenter
+        ? left.rect.x - right.rect.x
+        : leftCenter - rightCenter;
+    });
+  sorted.forEach((item) => {
+    const centerY = item.rect.y + item.rect.height / 2;
+    const row = rows.find(
+      (candidate) =>
+        Math.abs(candidate.centerY - centerY) <=
+        Math.max(2, Math.min(candidate.height, item.rect.height) * 0.55),
+    );
+    if (row) {
+      row.items.push(item);
+      row.centerY =
+        row.items.reduce(
+          (sum, value) => sum + value.rect.y + value.rect.height / 2,
+          0,
+        ) / row.items.length;
+      row.height = Math.max(row.height, item.rect.height);
+    } else {
+      rows.push({ centerY, height: item.rect.height, items: [item] });
+    }
+  });
+  return rows
+    .map((row) => {
+      const rect = unionRects(row.items.map((item) => item.rect));
+      if (!rect) return null;
+      const wideUnitTexts = new Map();
+      row.items.forEach((item) => {
+        if (isWideSubtitleGlyph(item.text)) wideUnitTexts.set(item.unitId, item.text);
+      });
+      const wideGlyphCount = [...wideUnitTexts.values()].reduce(
+        (count, text) =>
+          count + Math.max(1, [...String(text)].filter(isWideSubtitleGlyph).length),
+        0,
+      );
+      const approximate = options.approximate === true;
+      // Plain geometry uses a conservative fixed character advance. Expand
+      // only the display highlight for wide scripts so CJK/Kana glyphs are
+      // covered without changing hit testing or popup placement.
+      const paddingX = approximate
+        ? wideGlyphCount
+          ? row.height * 0.1 * Math.min(24, wideGlyphCount)
+          : row.height * 0.04
+        : 0;
+      const paddingY = approximate ? row.height * 0.05 : 0;
+      return {
+        x: rect.x - paddingX,
+        y: rect.y - paddingY,
+        width: rect.width + paddingX * 2,
+        height: rect.height + paddingY * 2,
+      };
+    })
+    .filter(Boolean);
+}
+
+function lookupHighlightRects(snapshot, hit, units) {
+  if (!snapshot || !hit || !Array.isArray(units) || !units.length) return [];
+  const mapper = new CoordinateMapper(snapshot);
+  const items = units.flatMap((unit) =>
+    visualRectsForUnit(unit).map((value) => ({
+      rect: mapper.osdRectToDesktop(value),
+      unitId: unit.id,
+      text: unit.text,
+    })),
+  );
+  return coalesceHighlightRects(items, {
+    approximate: snapshot.source?.exact === false,
+  });
+}
+
+function pointInRect(point, value) {
+  return (
+    !!point &&
+    !!value &&
+    point.x >= value.x &&
+    point.x <= value.x + value.width &&
+    point.y >= value.y &&
+    point.y <= value.y + value.height
+  );
+}
+
+function sameHit(left, right) {
+  return (
+    !!left &&
+    !!right &&
+    left.track?.id === right.track?.id &&
+    left.event?.id === right.event?.id &&
+    left.unit?.id === right.unit?.id
+  );
+}
+
+function rangesOverlap(left, right) {
+  return left[0] < right[1] && right[0] < left[1];
+}
+
+function lookupGeometryForHit(hit, config = {}) {
+  if (!hit?.unit) return { request: null, units: [] };
+  const rawSourceText = hit.unit.sourceText || hit.event?.sourceText || hit.unit.text;
+  const lookupLanguage = config.lookupLanguage || "ja";
+  const scanLength = config.scanLength || 24;
+  // Keep a request against the unmodified event text for geometry. The
+  // dictionary request may flatten line breaks, but the native unit ranges
+  // always refer to the original subtitle event.
+  const rawRequest = requestFor(
+    lookupLanguage,
+    rawSourceText,
+    hit.unit.utf16Range[0],
+    scanLength,
+  );
+  const sourceText = subtitleLookupText(
+    rawSourceText,
+    hit.unit.utf16Range[0],
+    config.flattenSubtitleLineBreaks === true,
+  );
+  const request = requestFor(
+    lookupLanguage,
+    sourceText.text,
+    sourceText.utf16Start,
+    scanLength,
+  );
+  const geometryRequest = rawRequest || request;
+  const ranges =
+    geometryRequest?.units?.map((unit) => [unit.utf16Start, unit.utf16End]) || [];
+  const units = (hit.event?.units || []).filter(
+    (unit) =>
+      unit.lookupable && ranges.some((range) => rangesOverlap(unit.utf16Range, range)),
+  );
+  return {
+    request,
+    units: units.length ? units : [hit.unit],
+  };
+}
+
+function controllerTargetsForSnapshot(snapshot, config = {}) {
+  if (!snapshot) return [];
+  const mapper = new CoordinateMapper(snapshot);
+  const targets = [];
+  const seen = new Set();
+  snapshot.tracks.forEach((track, trackIndex) => {
+    if (!track.selected) return;
+    track.events.forEach((event, eventIndex) => {
+      event.units.forEach((unit) => {
+        if (!unit.lookupable || !String(unit.text || "").trim()) return;
+        const hit = { track, event, unit };
+        const lookupGeometry = lookupGeometryForHit(hit, config);
+        if (!lookupGeometry.request) return;
+        const request = lookupGeometry.request;
+        // Whole-word languages expose one controller target for the entire
+        // word. Character languages intentionally keep one target per
+        // character while their lookup/highlight span can extend rightward.
+        const targetKey =
+          request.mode === "exact"
+            ? `${track.id}/${event.id}/${request.utf16Start}/${request.utf16End}`
+            : `${track.id}/${event.id}/${unit.id}`;
+        if (seen.has(targetKey)) return;
+        seen.add(targetKey);
+        const lookupUnits = lookupGeometry.units.length ? lookupGeometry.units : [unit];
+        const rect = unionRects(
+          lookupUnits.flatMap((value) =>
+            value.rects.map((item) => mapper.osdRectToDesktop(item)),
+          ),
+        );
+        if (!rect || rect.width <= 0 || rect.height <= 0) return;
+        targets.push({
+          key: targetKey,
+          hit,
+          units: lookupUnits,
+          rect,
+          centerX: rect.x + rect.width / 2,
+          centerY: rect.y + rect.height / 2,
+          order: [trackIndex, eventIndex, unit.position, unit.utf16Range[0]],
+        });
+      });
+    });
+  });
+  return targets.sort((left, right) => {
+    for (let index = 0; index < left.order.length; index++) {
+      if (left.order[index] !== right.order[index])
+        return left.order[index] - right.order[index];
+    }
+    return left.key.localeCompare(right.key);
+  });
+}
+
+function controllerTargetRows(targets) {
+  const rows = [];
+  targets
+    .slice()
+    .sort((left, right) =>
+      left.centerY === right.centerY
+        ? left.centerX - right.centerX
+        : left.centerY - right.centerY,
+    )
+    .forEach((target) => {
+      let row = rows[rows.length - 1];
+      const tolerance = Math.max(8, target.rect.height * 0.55);
+      if (!row || Math.abs(row.centerY - target.centerY) > tolerance) {
+        row = { centerY: target.centerY, targets: [] };
+        rows.push(row);
+      }
+      row.targets.push(target);
+      row.centerY =
+        row.targets.reduce((sum, value) => sum + value.centerY, 0) / row.targets.length;
+    });
+  rows.forEach((row) =>
+    row.targets.sort((left, right) => left.centerX - right.centerX),
+  );
+  return rows;
+}
+
+function controllerTargetContainsHit(target, hit) {
+  return !!(
+    target?.hit &&
+    hit &&
+    target.hit.track?.id === hit.track?.id &&
+    target.hit.event?.id === hit.event?.id &&
+    (target.hit.unit?.id === hit.unit?.id ||
+      target.units?.some((unit) => unit.id === hit.unit?.id))
+  );
+}
+
+function controllerTargetForDirection(
+  targets,
+  currentHit,
+  direction,
+  currentTargetKey = null,
+) {
+  if (!targets.length) return null;
+  const ordered = targets.slice();
+  // Japanese lookup targets intentionally overlap: the target beginning at
+  // character N also contains the following characters in its rightward
+  // lookup span. Prefer the controller's exact target identity before doing
+  // hit-based fallback, otherwise moving from N+1 resolves back to N and the
+  // stick appears to stop at the second character.
+  const current =
+    (currentTargetKey && ordered.find((target) => target.key === currentTargetKey)) ||
+    (currentHit
+      ? ordered.find((target) => controllerTargetContainsHit(target, currentHit))
+      : null);
+  if (!current) return ordered[0];
+  if (direction === "left" || direction === "right") {
+    const currentIndex = ordered.indexOf(current);
+    const nextIndex = Math.max(
+      0,
+      Math.min(ordered.length - 1, currentIndex + (direction === "left" ? -1 : 1)),
+    );
+    return nextIndex === currentIndex ? null : ordered[nextIndex];
+  }
+  const rows = controllerTargetRows(ordered);
+  let rowIndex = rows.findIndex((row) => row.targets.includes(current));
+  if (rowIndex < 0) rowIndex = 0;
+  const nextRowIndex = Math.max(
+    0,
+    Math.min(rows.length - 1, rowIndex + (direction === "up" ? -1 : 1)),
+  );
+  if (nextRowIndex === rowIndex) return null;
+  return rows[nextRowIndex].targets.reduce(
+    (best, target) =>
+      !best ||
+      Math.abs(target.centerX - current.centerX) <
+        Math.abs(best.centerX - current.centerX)
+        ? target
+        : best,
+    null,
+  );
+}
+
 class ApplicationController extends EventEmitter {
   constructor(options = {}) {
     super();
@@ -181,12 +485,17 @@ class ApplicationController extends EventEmitter {
     this.bridge = null;
     this.snapshot = null;
     this.lastHit = null;
+    this.controllerTarget = null;
+    this.controllerEntryIndex = -1;
+    this.controllerHold = null;
     this.cursorTimer = null;
+    this.cursorPollPromise = null;
     this.geometryTimer = null;
     this.geometryRefreshSerial = 0;
     this.geometryRefreshPromise = null;
     this.detachPromise = null;
     this.lookupAbort = null;
+    this.nestedLookupRequests = new Map();
     this.audioAbort = null;
     this.surfaceRecoveryPromise = null;
     this.ankiPending = new Set();
@@ -194,11 +503,14 @@ class ApplicationController extends EventEmitter {
     this.popupPlacement = null;
     this.popupMeasuredSize = null;
     this.popupRegions = Object.freeze({});
+    this.popupStyle = Object.freeze({});
     this.popupScroll = Object.freeze({ left: 0, top: 0 });
     this.popupContext = null;
+    this.popupSessionId = null;
     this.popupSelectionText = "";
     this.popupFocusTarget = "";
     this.lastAudioResult = null;
+    this.lastAudioCandidates = [];
     this.lastAnkiResult = null;
     this.lastPopupCloseReason = null;
     this.windowUnavailable = false;
@@ -211,9 +523,12 @@ class ApplicationController extends EventEmitter {
     this.modifierPressed = false;
     this.cursorPoint = null;
     this.cursorDiagnostic = null;
+    this.popupHoverClosePromise = null;
     this.config = {
       allowApproximateGeometry: !!options.allowApproximateGeometry,
       subtitleLookupMode: "hover",
+      nestedPopupMode: "off",
+      nestedPopupMaxDepth: 3,
       pauseWhilePopupVisible: true,
       popupGap: 18,
       popupMinWidth: 250,
@@ -224,8 +539,6 @@ class ApplicationController extends EventEmitter {
       audioSources: [],
       audioAutoPlay: false,
       flattenSubtitleLineBreaks: false,
-      nestedPopupMode: "off",
-      nestedPopupMaxDepth: 3,
       etymologyCollapseDefault: "collapsed",
       wiktionaryEtymologyCollapseOverride: "collapsed",
       lookupTimeoutMs: 9000,
@@ -241,6 +554,7 @@ class ApplicationController extends EventEmitter {
       ...(options.config || {}),
     };
     this.controllerRouter.setBindings(this.config.controllerBindings || {});
+    this.nativeControllerConnected = false;
     this.#bindHost();
   }
 
@@ -398,10 +712,17 @@ class ApplicationController extends EventEmitter {
     if (ankiConfig) this.ankiConfig = { ...this.ankiConfig, ...ankiConfig };
     if (config.controllerBindings)
       this.controllerRouter.setBindings(config.controllerBindings);
-    if (config.controllerEnabled === false) this.controllerRouter.reset();
+    if (config.controllerEnabled === false) {
+      this.controllerRouter.reset();
+      this.nativeControllerConnected = false;
+      this.#cancelControllerHold();
+    }
     this.#resetBitmapOcr();
+    const hadPendingLookup = this.interaction.state === STATES.LOOKUP_PENDING;
     this.lookupSerial++;
     this.lookupAbort?.abort();
+    if (hadPendingLookup && this.snapshot)
+      await this.#releasePause("settings-changed", this.snapshot.geometryGeneration);
     if (this.browserHost?.popupVisible)
       await this.closePopup("settings-changed", { focusPlayer: false, closeAll: true });
     if (this.snapshot) await this.#refreshGeometry();
@@ -409,14 +730,42 @@ class ApplicationController extends EventEmitter {
   }
 
   async handleControllerState(payload) {
-    if (this.config.controllerEnabled !== true) return;
+    if (this.config.controllerEnabled !== true) {
+      this.#cancelControllerHold();
+      return;
+    }
+    const source = payload?.source === "native-hid" ? "native-hid" : "browser-gamepad";
+    if (payload?.connected !== true) this.#cancelControllerHold();
+    if (source === "native-hid") {
+      this.nativeControllerConnected = payload?.connected === true;
+    } else if (this.nativeControllerConnected) {
+      // The macOS native helper and the browser Gamepad API may observe the
+      // same device. Native HID wins while it is connected; the browser path
+      // remains available for controllers the helper does not recognize.
+      return;
+    }
     if (
       this.snapshot?.source?.foreground === false &&
       !this.browserHost?.hasSessionFocus?.()
-    )
+    ) {
+      this.controllerRouter.reset();
+      this.#cancelControllerHold();
       return;
+    }
     const context = this.controllerRouter.contextFor(this.interaction.state);
     const actions = this.controllerRouter.actionsFor(payload, context);
+    if (
+      process.env.IINATAN_E2E_DEBUG === "1" &&
+      (actions.length || payload?.buttons?.audio)
+    )
+      debugTrace("controller-state-actions", {
+        context,
+        state: this.interaction.state,
+        source,
+        buttons: payload?.buttons || null,
+        axes: payload?.axes || null,
+        actions,
+      });
     for (const action of actions)
       await this.#performControllerAction(action.action, action);
   }
@@ -442,10 +791,16 @@ class ApplicationController extends EventEmitter {
   #startLoops() {
     clearInterval(this.cursorTimer);
     clearInterval(this.geometryTimer);
-    this.cursorTimer = setInterval(
-      () => this.#pollCursor().catch((error) => this.emit("error", error)),
-      16,
-    );
+    this.cursorTimer = setInterval(() => {
+      if (this.cursorPollPromise) return;
+      const promise = this.#pollCursor();
+      this.cursorPollPromise = promise;
+      promise
+        .catch((error) => this.emit("error", error))
+        .finally(() => {
+          if (this.cursorPollPromise === promise) this.cursorPollPromise = null;
+        });
+    }, 16);
     this.geometryTimer = setInterval(
       () => this.#refreshGeometry().catch((error) => this.emit("error", error)),
       Math.max(30, Number(this.config.subtitlePollMs) || 120),
@@ -467,11 +822,26 @@ class ApplicationController extends EventEmitter {
     if (!this.bridge || !this.descriptor) return;
     const refreshSerial = ++this.geometryRefreshSerial;
     const bridge = this.bridge;
+    if (bridge.property("window-minimized") === true) {
+      const error = new Error("mpv window is minimized");
+      error.code = "PLAYER_WINDOW_MINIMIZED";
+      await this.#suspendForUnavailableWindow(error);
+      return;
+    }
     let windowGeometry;
     try {
       windowGeometry = await this.windowAdapter.read(this.descriptor);
     } catch (error) {
       if (!this.snapshot) throw error;
+      await this.#suspendForUnavailableWindow(error);
+      return;
+    }
+    if (
+      windowGeometry.displayAsleep === true ||
+      windowGeometry.displayVisible === false
+    ) {
+      const error = new Error("player display is unavailable");
+      error.code = "PLAYER_DISPLAY_UNAVAILABLE";
       await this.#suspendForUnavailableWindow(error);
       return;
     }
@@ -607,9 +977,7 @@ class ApplicationController extends EventEmitter {
         this.lookupAbort?.abort();
         await this.#releasePause("geometry-invalidated", previousGeneration);
       } else if (
-        [STATES.POPUP_ACTIVE, STATES.NESTED_POPUP_ACTIVE, STATES.AUDIO_MENU].includes(
-          this.interaction.state,
-        )
+        [STATES.POPUP_ACTIVE, STATES.AUDIO_MENU].includes(this.interaction.state)
       ) {
         await this.closePopup("geometry-invalidated", {
           generation: previousGeneration,
@@ -620,6 +988,7 @@ class ApplicationController extends EventEmitter {
         geometryGeneration: next.geometryGeneration,
       });
       this.lastHit = null;
+      this.controllerTarget = null;
       this.browserHost.send("highlight", "geometry", {
         rects: [],
         exact: next.source?.exact !== false,
@@ -865,6 +1234,11 @@ class ApplicationController extends EventEmitter {
     this.windowUnavailable = true;
     this.lookupSerial++;
     this.lookupAbort?.abort();
+    if (this.interaction.state === STATES.LOOKUP_PENDING && this.snapshot)
+      await this.#releasePause(
+        "player-window-unavailable",
+        this.snapshot.geometryGeneration,
+      );
     if (this.browserHost?.popupVisible) {
       await this.closePopup("player-window-unavailable", { focusPlayer: false }).catch(
         () => {},
@@ -875,6 +1249,7 @@ class ApplicationController extends EventEmitter {
     this.browserHost?.setPassiveInput();
     this.snapshot = null;
     this.lastHit = null;
+    this.controllerTarget = null;
     this.popupPlacement = null;
     if (this.interaction.sessionId) {
       this.interaction.dispatch(EVENTS.SESSION_LOST, {
@@ -884,24 +1259,101 @@ class ApplicationController extends EventEmitter {
     this.emit("window-unavailable", error);
   }
 
-  async #pollCursor() {
+  #showLookupHighlight(hit, units = null) {
+    if (!this.snapshot || !hit) return;
+    const lookupUnits = units || lookupGeometryForHit(hit, this.config).units;
+    const mapper = new CoordinateMapper(this.snapshot);
+    this.browserHost.showHighlight({
+      rects: lookupHighlightRects(this.snapshot, hit, lookupUnits).map((value) =>
+        this.#desktopRectToBrowser(value, mapper),
+      ),
+      exact: this.snapshot.source?.exact !== false,
+    });
+  }
+
+  #controllerTargetForDirection(direction) {
+    const targets = controllerTargetsForSnapshot(this.snapshot, this.config);
+    if (!targets.length) return null;
+    const currentHit =
+      this.controllerTarget?.hit || this.popupContext?.hit || this.lastHit || null;
+    return controllerTargetForDirection(
+      targets,
+      currentHit,
+      direction,
+      this.controllerTarget?.key || null,
+    );
+  }
+
+  async #activateControllerTarget(target) {
+    if (!target?.hit || !this.snapshot) return false;
     if (
-      !this.snapshot ||
-      this.windowUnavailable ||
-      !this.browserHost ||
-      this.browserHost.popupVisible
+      this.controllerTarget?.key === target.key &&
+      this.interaction.state === STATES.LOOKUP_PENDING
     )
-      return;
+      return true;
+    if (this.browserHost?.popupVisible) {
+      if (this.controllerTarget?.key === target.key) return true;
+      await this.closePopup("controller-target-changed", {
+        focusPlayer: false,
+        closeAll: true,
+      });
+    }
+    if (this.interaction.state === STATES.LOOKUP_PENDING) {
+      this.lookupSerial++;
+      this.lookupAbort?.abort();
+      await this.#releasePause(
+        "controller-target-changed",
+        this.snapshot.geometryGeneration,
+      );
+    }
+    this.controllerTarget = {
+      key: target.key,
+      hit: target.hit,
+      units: target.units,
+    };
+    this.lastHit = target.hit;
+    this.#showLookupHighlight(target.hit, target.units);
+    this.interaction.dispatch(EVENTS.POINTER_TARGET, {
+      hit: {
+        trackId: target.hit.track.id,
+        eventId: target.hit.event.id,
+        unitId: target.hit.unit.id,
+      },
+    });
+    // Controller lookup is an explicit action and therefore remains usable
+    // even when mouse lookup is configured as shift-hover/manual.
+    await this.#beginLookup(target.hit);
+    return true;
+  }
+
+  async #moveControllerTarget(direction) {
+    const target = this.#controllerTargetForDirection(direction);
+    if (!target) return false;
+    return this.#activateControllerTarget(target);
+  }
+
+  #selectedPopupEntry() {
+    const entries = this.popupContext?.result?.entries;
+    if (!Array.isArray(entries) || !entries.length) return null;
+    const index = Number.isInteger(this.controllerEntryIndex)
+      ? this.controllerEntryIndex
+      : -1;
+    return entries[index >= 0 && index < entries.length ? index : 0] || entries[0];
+  }
+
+  async #pollCursor() {
+    if (!this.snapshot || this.windowUnavailable || !this.browserHost) return;
     if (this.snapshot.source?.foreground === false) {
       if (this.lastHit) {
         this.lastHit = null;
+        this.controllerTarget = null;
         this.browserHost.send("highlight", "geometry", { rects: [] });
         this.interaction.dispatch(EVENTS.POINTER_NONE);
       }
       return;
     }
     if (this.config.subtitleLookupMode === "shift-hover" && !this.modifierPressed) {
-      if (this.lastHit) {
+      if (this.lastHit && !this.controllerTarget) {
         this.lastHit = null;
         this.browserHost.send("highlight", "geometry", { rects: [] });
         this.interaction.dispatch(EVENTS.POINTER_NONE);
@@ -914,6 +1366,25 @@ class ApplicationController extends EventEmitter {
         : null;
     if (!point) return;
     this.cursorPoint = { x: point.x, y: point.y };
+    // The popup surface owns its panel, including text selection and scroll.
+    // Its transparent window still covers the player content, so only ignore
+    // polling while the cursor is actually inside that panel. Outside it,
+    // polling lets hover move from one subtitle unit to the next.
+    if (this.browserHost.popupVisible) {
+      if ([STATES.TEXT_SELECTION, STATES.AUDIO_MENU].includes(this.interaction.state))
+        return;
+      const panel = this.popupRegions?.panel;
+      const browserScale = Number(this.snapshot.browserScale) || 1;
+      const popupPanelBounds = panel
+        ? {
+            x: this.snapshot.content.x + panel.x / browserScale,
+            y: this.snapshot.content.y + panel.y / browserScale,
+            width: panel.width / browserScale,
+            height: panel.height / browserScale,
+          }
+        : this.popupPlacement;
+      if (pointInRect(this.cursorPoint, popupPanelBounds)) return;
+    }
     const hit = hitTest(this.snapshot, point);
     const diagnostic = {
       point: { ...this.cursorPoint },
@@ -948,10 +1419,48 @@ class ApplicationController extends EventEmitter {
         !this.config.allowApproximateGeometry &&
         this.snapshot.source.lookupAllowed !== true)
     ) {
-      if (this.lastHit) {
+      if (!this.browserHost.popupVisible && this.lastHit) {
+        if (this.controllerTarget) return;
         this.lastHit = null;
         this.browserHost.send("highlight", "geometry", { rects: [] });
         this.interaction.dispatch(EVENTS.POINTER_NONE);
+      }
+      return;
+    }
+    if (this.controllerTarget) {
+      // A controller-selected word owns the highlight until the pointer
+      // actually enters a different subtitle target. This is what makes the
+      // controller path independent of the cursor's current screen point.
+      if (controllerTargetContainsHit(this.controllerTarget, hit)) return;
+      this.controllerTarget = null;
+    }
+    if (this.browserHost.popupVisible) {
+      if (!sameHit(this.popupContext?.hit, hit) && !this.popupHoverClosePromise) {
+        debugTrace("hover-target-observed", {
+          from: this.popupContext?.hit?.unit?.id || null,
+          to: hit.unit.id,
+          text: hit.unit.text,
+          point: this.cursorPoint,
+          popupPlacement: this.popupPlacement,
+        });
+        const closePromise = this.closePopup("hover-target-changed", {
+          // The popup is a non-activating panel, but hiding it can leave the
+          // native player without a foreground signal. Restore player focus
+          // only for a hover handoff; popup clicks and text selection still
+          // remain entirely within the companion panel.
+          focusPlayer: true,
+          closeAll: true,
+        });
+        this.popupHoverClosePromise = closePromise;
+        await closePromise.catch((error) => this.emit("error", error));
+        if (this.popupHoverClosePromise === closePromise)
+          this.popupHoverClosePromise = null;
+        debugTrace("hover-handoff-closed", {
+          popupVisible: this.browserHost.popupVisible,
+          state: this.interaction.state,
+          lastHit: this.lastHit?.unit?.id || null,
+          point: this.cursorPoint,
+        });
       }
       return;
     }
@@ -961,13 +1470,27 @@ class ApplicationController extends EventEmitter {
       this.lastHit.event.id === hit.event.id
     )
       return;
+    if (this.interaction.state === STATES.LOOKUP_PENDING) {
+      // A new hover target supersedes the pending request. Without this,
+      // InteractionController intentionally ignores POINTER_TARGET while a
+      // lookup is pending, which makes rapid subtitle movement appear stuck.
+      this.lookupSerial++;
+      this.lookupAbort?.abort();
+      await this.#releasePause(
+        "hover-target-changed",
+        this.snapshot.geometryGeneration,
+      );
+    }
     this.lastHit = hit;
-    const highlightRects = highlightForHit(this.snapshot, hit);
-    const mapper = new CoordinateMapper(this.snapshot);
-    this.browserHost.showHighlight({
-      rects: highlightRects.map((value) => this.#desktopRectToBrowser(value, mapper)),
-      exact: this.snapshot.source?.exact !== false,
+    const lookupGeometry = lookupGeometryForHit(hit, this.config);
+    debugTrace("hover-target-start-lookup", {
+      unitId: hit.unit.id,
+      text: hit.unit.text,
+      lookupText: lookupGeometry.request?.lookupText || null,
+      mode: lookupGeometry.request?.mode || null,
+      point: this.cursorPoint,
     });
+    this.#showLookupHighlight(hit, lookupGeometry.units);
     this.interaction.dispatch(EVENTS.POINTER_TARGET, {
       hit: { trackId: hit.track.id, eventId: hit.event.id, unitId: hit.unit.id },
     });
@@ -1001,6 +1524,7 @@ class ApplicationController extends EventEmitter {
     this.lookupAbort = new AbortController();
     this.interaction.dispatch(EVENTS.LOOKUP_REQUESTED, { requestId: id, hit });
     const pauseGeneration = currentSnapshot.geometryGeneration;
+    let lookupText = "";
     try {
       if (this.config.pauseWhilePopupVisible) {
         const actions = this.pauseOwnership.open({
@@ -1012,19 +1536,8 @@ class ApplicationController extends EventEmitter {
           await this.bridge.setPause(true);
         }
       }
-      const rawSourceText =
-        hit.unit.sourceText || hit.event.sourceText || hit.unit.text;
-      const sourceText = subtitleLookupText(
-        rawSourceText,
-        hit.unit.utf16Range[0],
-        this.config.flattenSubtitleLineBreaks === true,
-      );
-      const languageRequest = requestFor(
-        this.config.lookupLanguage || "ja",
-        sourceText.text,
-        sourceText.utf16Start,
-        this.config.scanLength || 24,
-      );
+      const lookupGeometry = lookupGeometryForHit(hit, this.config);
+      const languageRequest = lookupGeometry.request;
       if (!languageRequest) {
         await this.#releasePause("unsupported-language");
         this.interaction.dispatch(EVENTS.LOOKUP_FAILED, {
@@ -1034,6 +1547,7 @@ class ApplicationController extends EventEmitter {
         return;
       }
       const text = languageRequest.lookupText;
+      lookupText = text;
       const lookupController = this.lookupAbort;
       const lookupPromise = this.dictionary.lookup(
         {
@@ -1061,11 +1575,14 @@ class ApplicationController extends EventEmitter {
         this.config.hoverRequestTimeoutMs,
         "Hover lookup timed out",
       );
-      if (
-        serial !== this.lookupSerial ||
-        !this.snapshot ||
-        !isSnapshotCurrent(this.snapshot, currentSnapshot)
-      ) {
+      if (serial !== this.lookupSerial) return;
+      debugTrace("lookup-result", {
+        requestId: id,
+        text,
+        resultCount: Array.isArray(result?.results) ? result.results.length : 0,
+        matched: result?.matched || null,
+      });
+      if (!this.snapshot || !isSnapshotCurrent(this.snapshot, currentSnapshot)) {
         await this.#releasePause("stale-result");
         return;
       }
@@ -1074,16 +1591,22 @@ class ApplicationController extends EventEmitter {
         hit,
         this.#normalizeDictionaryResult(result),
         currentSnapshot,
+        lookupGeometry.units,
       );
     } catch (error) {
+      debugTrace("lookup-error", {
+        requestId: id,
+        text: lookupText,
+        name: error?.name || null,
+        message: error?.message || String(error),
+        serial,
+        currentSerial: this.lookupSerial,
+      });
       if (error && error.name === "AbortError") {
         if (serial === this.lookupSerial) await this.#releasePause("cancelled");
         return;
       }
-      if (serial !== this.lookupSerial) {
-        await this.#releasePause("stale-error");
-        return;
-      }
+      if (serial !== this.lookupSerial) return;
       this.interaction.dispatch(EVENTS.LOOKUP_FAILED, {
         requestId: id,
         error: error.message,
@@ -1112,7 +1635,7 @@ class ApplicationController extends EventEmitter {
     snapshot.tracks.forEach((track) =>
       track.events.forEach((event) =>
         event.units.forEach((unit) =>
-          unit.rects.forEach((unitRect) =>
+          visualRectsForUnit(unit).forEach((unitRect) =>
             obstacles.push(mapper.osdRectToDesktop(unitRect)),
           ),
         ),
@@ -1136,27 +1659,38 @@ class ApplicationController extends EventEmitter {
     });
   }
 
-  async #showPopup(hit, result, snapshot) {
-    const anchor = unionRects(highlightForHit(snapshot, hit));
+  async #showPopup(hit, result, snapshot, lookupUnits = [hit.unit]) {
+    this.#cancelNestedLookups();
+    const anchor = unionRects(highlightForUnits(snapshot, hit, lookupUnits));
     this.lastPopupCloseReason = null;
     this.lastAudioResult = null;
+    this.lastAudioCandidates = [];
     this.lastAnkiResult = null;
     this.popupMeasuredSize = null;
+    this.popupSessionId = popupSessionId();
     const placement = this.#placePopup(snapshot, anchor);
     this.popupPlacement = placement;
     this.popupRegions = Object.freeze({});
+    this.popupStyle = Object.freeze({});
     this.popupScroll = Object.freeze({ left: 0, top: 0 });
     this.popupContext = {
       result,
       hit,
       snapshot,
+      lookupUnits,
       anchor,
-      stack: [],
       ankiNoteIds: Object.create(null),
+      audioSelection: null,
     };
+    this.controllerEntryIndex = -1;
     this.popupSelectionText = "";
     this.popupFocusTarget = "";
     this.browserHost.showPopup(this.#popupPayload(result, snapshot));
+    // Controller-driven close/reopen sequences can overlap the browser host's
+    // passive-input handoff. Reassert the popup's whole-window hit testing
+    // after the new state is published so transparent regions still deliver
+    // the pointer-up used for outside dismissal.
+    this.browserHost.setInteractiveInput?.();
   }
 
   #popupLayoutPayload(snapshot) {
@@ -1221,11 +1755,155 @@ class ApplicationController extends EventEmitter {
       );
   }
 
+  #cancelNestedLookups() {
+    for (const state of this.nestedLookupRequests.values()) state.controller.abort();
+    this.nestedLookupRequests.clear();
+  }
+
+  #sendNestedLookupResult(payload) {
+    if (!this.browserHost?.popupVisible || !this.popupSessionId) return;
+    this.browserHost.send(
+      "popup",
+      "nested-lookup-result",
+      {
+        requestId: payload.requestId,
+        popupSessionId: payload.popupSessionId,
+        depth: payload.depth,
+        ok: payload.ok === true,
+        ...(payload.ok === true
+          ? { result: payload.result }
+          : { error: String(payload.error || "Nested lookup failed").slice(0, 500) }),
+      },
+      { requestId: payload.requestId },
+    );
+  }
+
+  async #handleNestedLookup(payload) {
+    const requestIdValue = String(payload.requestId || "");
+    const sessionId = String(payload.popupSessionId || "");
+    const depth = Number(payload.depth);
+    if (
+      !requestIdValue ||
+      !this.popupContext ||
+      !this.browserHost?.popupVisible ||
+      !this.popupSessionId ||
+      sessionId !== this.popupSessionId ||
+      !Number.isInteger(depth) ||
+      depth < 1 ||
+      depth > Math.min(8, Number(this.config.nestedPopupMaxDepth) || 3) ||
+      this.config.nestedPopupMode === "off"
+    )
+      return;
+    const text = String(payload.text || "").slice(0, 4096);
+    const utf16Start = Math.max(0, Math.min(4096, Number(payload.utf16Start) || 0));
+    const languageRequest = requestFor(
+      this.config.lookupLanguage || "ja",
+      text,
+      utf16Start,
+      this.config.scanLength || 24,
+    );
+    if (!languageRequest) {
+      this.#sendNestedLookupResult({
+        requestId: requestIdValue,
+        popupSessionId: sessionId,
+        depth,
+        ok: false,
+        error: "No lookupable text at the nested selection",
+      });
+      return;
+    }
+    this.nestedLookupRequests.get(requestIdValue)?.controller.abort();
+    const controller = new AbortController();
+    const state = { controller, sessionId, depth };
+    this.nestedLookupRequests.set(requestIdValue, state);
+    const snapshot = this.snapshot;
+    try {
+      const lookupPromise = this.dictionary.lookup(
+        {
+          requestId: requestIdValue,
+          text: languageRequest.lookupText,
+          utf16Start: languageRequest.utf16Start,
+          language: this.config.lookupLanguage || "ja",
+          mode: languageRequest.mode,
+          scanLength: this.config.scanLength || 24,
+          candidates: languageRequest.candidates,
+          sessionId: snapshot?.sessionId,
+          geometryGeneration: snapshot?.geometryGeneration,
+        },
+        controller.signal,
+      );
+      const result = await withLookupTimeout(
+        withLookupTimeout(
+          lookupPromise,
+          controller,
+          this.config.lookupTimeoutMs,
+          "Nested dictionary lookup timed out",
+        ),
+        controller,
+        this.config.hoverRequestTimeoutMs,
+        "Nested lookup timed out",
+      );
+      if (
+        this.nestedLookupRequests.get(requestIdValue) !== state ||
+        controller.signal.aborted ||
+        this.popupSessionId !== sessionId ||
+        !this.popupContext ||
+        !this.browserHost?.popupVisible
+      )
+        return;
+      this.#sendNestedLookupResult({
+        requestId: requestIdValue,
+        popupSessionId: sessionId,
+        depth,
+        ok: true,
+        result: this.#normalizeDictionaryResult(result),
+      });
+    } catch (error) {
+      if (error?.name === "AbortError") return;
+      if (
+        this.nestedLookupRequests.get(requestIdValue) !== state ||
+        this.popupSessionId !== sessionId ||
+        !this.popupContext
+      )
+        return;
+      this.#sendNestedLookupResult({
+        requestId: requestIdValue,
+        popupSessionId: sessionId,
+        depth,
+        ok: false,
+        error: error?.message || "Nested lookup failed",
+      });
+    } finally {
+      if (this.nestedLookupRequests.get(requestIdValue) === state)
+        this.nestedLookupRequests.delete(requestIdValue);
+    }
+  }
+
+  #handleNestedLookupCancel(payload) {
+    if (
+      !this.popupSessionId ||
+      String(payload.popupSessionId || "") !== this.popupSessionId
+    )
+      return;
+    const requestIdValue = String(payload.requestId || "");
+    const state = this.nestedLookupRequests.get(requestIdValue);
+    if (!state) return;
+    state.controller.abort();
+    this.nestedLookupRequests.delete(requestIdValue);
+  }
+
   #popupPayload(result, snapshot) {
     const mapper = new CoordinateMapper(snapshot);
     const layout = this.#popupLayoutPayload(snapshot);
     const anchor =
-      this.popupContext?.anchor || unionRects(highlightForHit(snapshot, this.lastHit));
+      this.popupContext?.anchor ||
+      unionRects(
+        highlightForUnits(
+          snapshot,
+          this.lastHit,
+          this.popupContext?.lookupUnits || (this.lastHit ? [this.lastHit.unit] : []),
+        ),
+      );
     return {
       ...layout,
       result,
@@ -1237,96 +1915,19 @@ class ApplicationController extends EventEmitter {
       popupMinWidth: (Number(this.config.popupMinWidth) || 250) * mapper.browserScale,
       popupMaxWidth: (Number(this.config.popupMaxWidth) || 440) * mapper.browserScale,
       fontScale: this.config.fontScale,
-      nestedDepth: this.popupContext?.stack?.length || 0,
-      nestedPopupMode: this.config.nestedPopupMode,
       anki: {
         enabled: this.ankiConfig.enabled,
         configured: this.ankiConfig.configured,
       },
+      nestedPopupMode: this.config.nestedPopupMode,
+      nestedPopupMaxDepth: Math.max(
+        1,
+        Math.min(8, Math.round(Number(this.config.nestedPopupMaxDepth) || 3)),
+      ),
+      popupSessionId: this.popupSessionId,
       anchor: this.#desktopRectToBrowser(anchor, mapper),
       geometryGeneration: snapshot.geometryGeneration,
     };
-  }
-
-  async #beginNestedLookup(term) {
-    if (
-      !this.popupContext ||
-      !this.snapshot ||
-      this.config.nestedPopupMode === "off" ||
-      (this.popupContext.stack?.length || 0) >= (this.config.nestedPopupMaxDepth || 3)
-    )
-      return;
-    const text = String(term || "").trim();
-    if (!text) return;
-    const languageRequest = requestFor(
-      this.config.lookupLanguage || "ja",
-      text,
-      0,
-      this.config.scanLength || 24,
-    );
-    if (!languageRequest) return;
-    const currentSnapshot = this.snapshot;
-    const serial = ++this.lookupSerial;
-    this.lookupAbort?.abort();
-    this.audioAbort?.abort();
-    this.lookupAbort = new AbortController();
-    try {
-      const lookupController = this.lookupAbort;
-      const lookupPromise = this.dictionary.lookup(
-        {
-          requestId: requestId(),
-          text: languageRequest.lookupText,
-          utf16Start: languageRequest.utf16Start,
-          language: this.config.lookupLanguage || "ja",
-          mode: languageRequest.mode,
-          scanLength: this.config.scanLength || 24,
-          candidates: languageRequest.candidates,
-          sessionId: currentSnapshot.sessionId,
-          geometryGeneration: currentSnapshot.geometryGeneration,
-        },
-        lookupController.signal,
-      );
-      const boundedLookup = withLookupTimeout(
-        lookupPromise,
-        lookupController,
-        this.config.lookupTimeoutMs,
-        "Dictionary lookup timed out",
-      );
-      const result = await withLookupTimeout(
-        boundedLookup,
-        lookupController,
-        this.config.hoverRequestTimeoutMs,
-        "Nested lookup timed out",
-      );
-      if (
-        serial !== this.lookupSerial ||
-        !this.popupContext ||
-        !this.snapshot ||
-        !isSnapshotCurrent(this.snapshot, currentSnapshot)
-      )
-        return;
-      this.interaction.dispatch(EVENTS.NESTED_OPENED, { text });
-      this.popupContext.stack.push({
-        result: this.popupContext.result,
-        selectionText: this.popupSelectionText,
-      });
-      this.popupContext.result = this.#normalizeDictionaryResult(result);
-      this.popupSelectionText = "";
-      this.lastAudioResult = null;
-      this.lastAnkiResult = null;
-      this.popupMeasuredSize = null;
-      this.popupRegions = Object.freeze({});
-      this.popupScroll = Object.freeze({ left: 0, top: 0 });
-      this.browserHost.send("popup", "popup-state", {
-        visible: true,
-        ...this.#popupPayload(this.popupContext.result, currentSnapshot),
-      });
-    } catch (error) {
-      if (error?.name !== "AbortError" && serial === this.lookupSerial)
-        this.browserHost.send("popup", "popup-error", {
-          message: error.message || "Nested lookup failed",
-        });
-    }
   }
 
   async #onHostRequest({ message, surface }) {
@@ -1337,6 +1938,12 @@ class ApplicationController extends EventEmitter {
         break;
       case "dismiss-popup":
         await this.closePopup(payload.reason || "dismissed");
+        break;
+      case "nested-lookup":
+        if (surface === "popup") await this.#handleNestedLookup(payload);
+        break;
+      case "nested-lookup-cancel":
+        if (surface === "popup") this.#handleNestedLookupCancel(payload);
         break;
       case "popup-action":
         if (payload.action === "selection-start") {
@@ -1376,6 +1983,14 @@ class ApplicationController extends EventEmitter {
         } else if (payload.action === "selection-changed") {
           this.popupSelectionText = String(payload.text || "").slice(0, 20000);
           this.emit("popup-selection", this.popupSelectionText);
+        } else if (payload.action === "controller-entry-selected") {
+          const index = Number(payload.entryIndex);
+          const entries = this.popupContext?.result?.entries;
+          if (Array.isArray(entries) && entries.length && Number.isInteger(index))
+            this.controllerEntryIndex = Math.max(
+              0,
+              Math.min(entries.length - 1, index),
+            );
         } else if (payload.action === "focus-changed" && surface === "popup") {
           this.popupFocusTarget = String(payload.target || "").slice(0, 160);
           this.emit("popup-focus", this.popupFocusTarget);
@@ -1391,11 +2006,19 @@ class ApplicationController extends EventEmitter {
         if (url && this.shell?.openExternal) await this.shell.openExternal(url);
         break;
       }
-      case "nested-lookup":
-        await this.#beginNestedLookup(payload.term);
-        break;
       case "audio-source": {
         await this.#requestAudio(payload, message.requestId || payload.requestId);
+        break;
+      }
+      case "audio-anki-selection": {
+        if (!this.popupContext || !this.ankiConfig.configured) break;
+        const requestedUrl = String(payload.url || "");
+        const candidate = this.lastAudioCandidates.find(
+          (value) => value.url === requestedUrl,
+        );
+        if (!candidate) break;
+        this.popupContext.audioSelection = { ...candidate };
+        this.emit("audio-anki-selection", this.popupContext.audioSelection);
         break;
       }
       case "anki-action": {
@@ -1558,6 +2181,22 @@ class ApplicationController extends EventEmitter {
           });
         }
         break;
+      case "popup-style":
+        if (
+          surface === "popup" &&
+          this.popupContext &&
+          this.snapshot &&
+          message.geometryGeneration === this.snapshot.geometryGeneration
+        ) {
+          this.popupStyle = Object.freeze({
+            customCssApplied: payload.customCssApplied === true,
+            backgroundColor: String(payload.backgroundColor).slice(0, 160),
+            borderTopColor: String(payload.borderTopColor).slice(0, 160),
+            borderTopWidth: String(payload.borderTopWidth).slice(0, 160),
+          });
+          this.emit("popup-style", this.popupStyle);
+        }
+        break;
       case "popup-scroll":
         if (surface === "popup" && this.popupContext) {
           this.popupScroll = Object.freeze({
@@ -1576,6 +2215,9 @@ class ApplicationController extends EventEmitter {
   }
 
   async closePopup(reason = "dismissed", options = {}) {
+    this.#cancelControllerHold();
+    this.#cancelNestedLookups();
+    this.popupSessionId = null;
     if (!this.bridge || !this.snapshot) return;
     this.lastPopupCloseReason = String(reason);
     if (process.env.IINATAN_E2E_DEBUG === "1")
@@ -1591,33 +2233,8 @@ class ApplicationController extends EventEmitter {
         command: "close-audio-menu",
       });
     }
-    if (
-      !options.closeAll &&
-      this.interaction.state === STATES.NESTED_POPUP_ACTIVE &&
-      this.popupContext?.stack?.length
-    ) {
-      this.interaction.dispatch(EVENTS.CLOSE_POPUP, { reason });
-      const previous = this.popupContext.stack.pop();
-      this.popupContext.result = previous.result;
-      this.popupSelectionText = previous.selectionText || "";
-      this.popupRegions = Object.freeze({});
-      this.popupScroll = Object.freeze({ left: 0, top: 0 });
-      this.browserHost.send("popup", "popup-state", {
-        visible: true,
-        ...this.#popupPayload(this.popupContext.result, this.popupContext.snapshot),
-      });
-      return;
-    }
-    if (options.closeAll) {
-      while (this.interaction.state === STATES.NESTED_POPUP_ACTIVE)
-        this.interaction.dispatch(EVENTS.CLOSE_POPUP, { reason });
-    }
     const state = this.interaction.state;
-    if (
-      [STATES.POPUP_ACTIVE, STATES.NESTED_POPUP_ACTIVE, STATES.AUDIO_MENU].includes(
-        state,
-      )
-    )
+    if ([STATES.POPUP_ACTIVE, STATES.AUDIO_MENU].includes(state))
       this.interaction.dispatch(EVENTS.CLOSE_POPUP, { reason });
     this.browserHost.hidePopup({ focusPlayer: options.focusPlayer !== false });
     await this.#releasePause(
@@ -1628,8 +2245,11 @@ class ApplicationController extends EventEmitter {
     this.popupPlacement = null;
     this.popupMeasuredSize = null;
     this.popupRegions = Object.freeze({});
+    this.popupStyle = Object.freeze({});
     this.popupScroll = Object.freeze({ left: 0, top: 0 });
     this.popupContext = null;
+    this.lastAudioCandidates = [];
+    this.controllerEntryIndex = -1;
     this.popupSelectionText = "";
     this.popupFocusTarget = "";
   }
@@ -1641,11 +2261,48 @@ class ApplicationController extends EventEmitter {
       if (action === "resume") await this.bridge.setPause(false);
   }
 
-  async #performControllerAction(action) {
+  async #performControllerAction(action, details = {}) {
+    debugTrace("controller-action", {
+      action,
+      phase: details.phase || null,
+      holdAction: details.holdAction || null,
+      state: this.interaction.state,
+      popupVisible: this.browserHost?.popupVisible === true,
+      controllerTarget: this.controllerTarget?.key || null,
+      controllerEntryIndex: this.controllerEntryIndex,
+    });
     switch (action) {
       case "lookup":
-        if (this.lastHit && !this.browserHost?.popupVisible)
-          await this.#beginLookup(this.lastHit);
+        if (this.browserHost?.popupVisible) {
+          this.browserHost.send("popup", "controller-command", {
+            command: "select-entry",
+          });
+          break;
+        }
+        {
+          const target =
+            this.controllerTarget ||
+            (this.lastHit
+              ? {
+                  key: `pointer/${this.lastHit.track.id}/${this.lastHit.event.id}/${this.lastHit.unit.id}`,
+                  hit: this.lastHit,
+                  units: lookupGeometryForHit(this.lastHit, this.config).units,
+                }
+              : this.#controllerTargetForDirection("right"));
+          if (target) await this.#activateControllerTarget(target);
+        }
+        break;
+      case "controller-target-left":
+        await this.#moveControllerTarget("left");
+        break;
+      case "controller-target-right":
+        await this.#moveControllerTarget("right");
+        break;
+      case "controller-target-up":
+        await this.#moveControllerTarget("up");
+        break;
+      case "controller-target-down":
+        await this.#moveControllerTarget("down");
         break;
       case "toggle-pause":
         await this.bridge?.command("toggle-pause");
@@ -1655,6 +2312,8 @@ class ApplicationController extends EventEmitter {
         break;
       case "seek-backward":
       case "seek-forward":
+      case "seek-backward-long":
+      case "seek-forward-long":
       case "subtitle-previous":
       case "subtitle-next":
       case "frame-step-backward":
@@ -1666,8 +2325,16 @@ class ApplicationController extends EventEmitter {
         await this.bridge?.command(action);
         break;
       case "audio-menu":
+        this.#startControllerHold(action);
+        break;
       case "play-audio":
-        await this.#requestAudioForEntry(this.popupContext?.result?.entries?.[0]);
+        await this.#requestAudioForEntry(this.#selectedPopupEntry(), {
+          autoPlay: true,
+          showMenu: false,
+        });
+        break;
+      case "controller-hold-release":
+        await this.#finishControllerHold(details.holdAction);
         break;
       case "close-audio-list":
         await this.#closeAudioMenu("controller");
@@ -1692,21 +2359,155 @@ class ApplicationController extends EventEmitter {
           command: "scroll-down",
         });
         break;
+      case "popup-scroll-axis":
+        this.browserHost?.send("popup", "controller-command", {
+          command: "scroll-axis",
+          axis: Number(details.axis) || 0,
+          deltaMs: Math.min(50, Math.max(0, Number(details.deltaMs) || 0)),
+        });
+        break;
       case "popup-left":
       case "popup-right":
-        this.browserHost?.send("popup", "controller-command", { command: action });
+        this.browserHost?.send("popup", "controller-command", {
+          command: "move-entry",
+          direction: action === "popup-left" ? "left" : "right",
+        });
         break;
       case "anki-primary":
       case "anki-force-add":
-        await this.#submitAnkiFromController(action === "anki-force-add");
+        this.#startControllerHold(action);
         break;
       default:
         break;
     }
   }
 
+  #sendControllerHoldProgress(progress, visible = true) {
+    this.browserHost?.send("popup", "controller-command", {
+      command: "hold-progress",
+      progress: Math.max(0, Math.min(1, Number(progress) || 0)),
+      visible,
+    });
+  }
+
+  #clearControllerHoldTimers(hold) {
+    if (!hold) return;
+    clearTimeout(hold.timer);
+    clearInterval(hold.progressTimer);
+    hold.timer = null;
+    hold.progressTimer = null;
+  }
+
+  #startControllerHold(action) {
+    if (this.controllerHold || !this.popupContext) {
+      debugTrace("controller-hold-skip", {
+        action,
+        reason: this.controllerHold ? "already-active" : "no-popup-context",
+        state: this.interaction.state,
+      });
+      return false;
+    }
+    const entry = this.#selectedPopupEntry();
+    if (!entry) {
+      debugTrace("controller-hold-skip", {
+        action,
+        reason: "no-selected-entry",
+        state: this.interaction.state,
+      });
+      return false;
+    }
+    if (
+      (action === "audio-menu" && !this.audio) ||
+      (["anki-primary", "anki-force-add"].includes(action) &&
+        (!this.anki || !this.ankiConfig.configured))
+    ) {
+      debugTrace("controller-hold-skip", {
+        action,
+        reason: action === "audio-menu" ? "audio-unavailable" : "anki-unavailable",
+        state: this.interaction.state,
+        hasAudio: !!this.audio,
+        ankiConfigured: !!this.anki?.configured,
+        entryId: entry.id || null,
+      });
+      return false;
+    }
+    const hold = {
+      action,
+      startedAt: Date.now(),
+      completed: false,
+      timer: null,
+      progressTimer: null,
+    };
+    this.controllerHold = hold;
+    debugTrace("controller-hold-start", {
+      action,
+      state: this.interaction.state,
+      entryId: entry.id || null,
+    });
+    this.#sendControllerHoldProgress(0);
+    hold.progressTimer = setInterval(() => {
+      if (this.controllerHold !== hold || hold.completed) return;
+      this.#sendControllerHoldProgress(
+        (Date.now() - hold.startedAt) / CONTROLLER_HOLD_MS,
+      );
+    }, CONTROLLER_HOLD_TICK_MS);
+    hold.timer = setTimeout(
+      () =>
+        this.#completeControllerHold(hold).catch((error) => this.emit("error", error)),
+      CONTROLLER_HOLD_MS,
+    );
+    return true;
+  }
+
+  async #completeControllerHold(hold) {
+    if (this.controllerHold !== hold || hold.completed) return;
+    hold.completed = true;
+    debugTrace("controller-hold-complete", {
+      action: hold.action,
+      state: this.interaction.state,
+    });
+    this.#clearControllerHoldTimers(hold);
+    this.#sendControllerHoldProgress(1, false);
+    if (hold.action === "audio-menu")
+      await this.#requestAudioForEntry(this.#selectedPopupEntry());
+    else if (hold.action === "anki-primary")
+      await this.#submitAnkiFromController(false);
+    else if (hold.action === "anki-force-add")
+      await this.#submitAnkiFromController(true);
+  }
+
+  async #finishControllerHold(action) {
+    const hold = this.controllerHold;
+    if (!hold || hold.action !== action) {
+      debugTrace("controller-hold-finish-skip", {
+        action,
+        reason: !hold ? "no-active-hold" : "action-mismatch",
+        activeAction: hold?.action || null,
+      });
+      return false;
+    }
+    const completed = hold.completed;
+    this.#clearControllerHoldTimers(hold);
+    this.controllerHold = null;
+    this.#sendControllerHoldProgress(0, false);
+    if (action === "audio-menu" && !completed)
+      await this.#requestAudioForEntry(this.#selectedPopupEntry(), {
+        autoPlay: true,
+        showMenu: false,
+      });
+    return true;
+  }
+
+  #cancelControllerHold() {
+    const hold = this.controllerHold;
+    if (!hold) return;
+    this.#clearControllerHoldTimers(hold);
+    this.controllerHold = null;
+    this.#sendControllerHoldProgress(0, false);
+  }
+
   async #submitAnkiFromController(forceAdd) {
-    const entry = this.popupContext?.result?.entries?.[0];
+    const entry = this.#selectedPopupEntry();
     if (!entry) return;
     await this.#onHostRequest({
       message: {
@@ -1719,12 +2520,14 @@ class ApplicationController extends EventEmitter {
     });
   }
 
-  async #requestAudioForEntry(entry) {
+  async #requestAudioForEntry(entry, options = {}) {
     if (!entry) return;
     await this.#requestAudio({
       term: entry.headword,
       reading: entry.reading,
       sources: this.config.audioSources,
+      autoPlay: options.autoPlay === true,
+      showMenu: options.showMenu !== false,
       requestId: `audio-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     });
   }
@@ -1733,16 +2536,17 @@ class ApplicationController extends EventEmitter {
     if (
       !this.audio ||
       !this.popupContext ||
-      ![STATES.POPUP_ACTIVE, STATES.NESTED_POPUP_ACTIVE, STATES.AUDIO_MENU].includes(
-        this.interaction.state,
-      )
+      ![STATES.POPUP_ACTIVE, STATES.AUDIO_MENU].includes(this.interaction.state)
     )
       return;
-    if (this.interaction.state !== STATES.AUDIO_MENU)
+    const showMenu = payload.showMenu !== false;
+    const autoPlay = payload.autoPlay === true;
+    if (showMenu && this.interaction.state !== STATES.AUDIO_MENU)
       this.interaction.dispatch(EVENTS.AUDIO_OPENED, { term: payload.term });
     this.audioAbort?.abort();
     const audioAbort = new AbortController();
     this.audioAbort = audioAbort;
+    this.lastAudioCandidates = [];
     this.lastAudioResult = {
       requestId,
       loading: true,
@@ -1753,12 +2557,18 @@ class ApplicationController extends EventEmitter {
     this.browserHost.send(
       "popup",
       "audio-result",
-      { candidates: [], loading: true },
+      { candidates: [], loading: true, autoPlay, showMenu },
       { requestId },
     );
     try {
       const candidates = await this.audio.resolve(payload, audioAbort.signal);
-      this.browserHost.send("popup", "audio-result", { candidates }, { requestId });
+      this.lastAudioCandidates = candidates.slice();
+      this.browserHost.send(
+        "popup",
+        "audio-result",
+        { candidates, autoPlay, showMenu },
+        { requestId },
+      );
       this.lastAudioResult = {
         requestId,
         loading: false,
@@ -1772,6 +2582,7 @@ class ApplicationController extends EventEmitter {
       this.emit("audio-result", this.lastAudioResult);
     } catch (error) {
       if (error?.name !== "AbortError") {
+        this.lastAudioCandidates = [];
         this.lastAudioResult = {
           requestId,
           loading: false,
@@ -1782,7 +2593,7 @@ class ApplicationController extends EventEmitter {
         this.browserHost.send(
           "popup",
           "audio-result",
-          { candidates: [], error: this.lastAudioResult.error },
+          { candidates: [], error: this.lastAudioResult.error, autoPlay, showMenu },
           { requestId },
         );
       }
@@ -1859,7 +2670,8 @@ class ApplicationController extends EventEmitter {
           },
           this.lookupAbort?.signal,
         );
-        const candidate = candidates[0];
+        const selectedCandidate = this.popupContext?.audioSelection;
+        const candidate = selectedCandidate?.url ? selectedCandidate : candidates[0];
         if (candidate?.url)
           media.wordAudio = await storeRemoteMedia(this.anki, candidate.url, {
             fetch: this.audio.fetch,
@@ -1926,6 +2738,7 @@ class ApplicationController extends EventEmitter {
     clearInterval(this.geometryTimer);
     this.cursorTimer = null;
     this.geometryTimer = null;
+    this.cursorPollPromise = null;
     if (this.lookupAbort) this.lookupAbort.abort();
     this.audioAbort?.abort();
     if (this.surfaceRecoveryPromise) await this.surfaceRecoveryPromise.catch(() => {});
@@ -1945,22 +2758,32 @@ class ApplicationController extends EventEmitter {
     this.descriptor = null;
     this.snapshot = null;
     this.lastHit = null;
+    this.controllerTarget = null;
+    this.controllerEntryIndex = -1;
     this.cursorPoint = null;
     this.popupContext = null;
     this.popupSelectionText = "";
     this.popupRegions = Object.freeze({});
+    this.popupStyle = Object.freeze({});
     this.popupScroll = Object.freeze({ left: 0, top: 0 });
     this.windowUnavailable = false;
     this.nativeGeometryErrorKey = null;
     this.nativeGeometryError = null;
     this.modifierPressed = false;
+    this.nativeControllerConnected = false;
   }
 }
 
 module.exports = {
   ApplicationController,
+  controllerTargetForDirection,
+  controllerTargetRows,
+  controllerTargetsForSnapshot,
+  coalesceHighlightRects,
   flattenSubtitleText,
   geometryInputReady,
+  lookupGeometryForHit,
+  lookupHighlightRects,
   subtitleLookupText,
   unionRects,
 };

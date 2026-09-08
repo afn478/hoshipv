@@ -6,11 +6,14 @@ const {
   app,
   BrowserWindow,
   dialog,
+  globalShortcut,
   ipcMain,
   Menu,
+  nativeImage,
   protocol,
   screen,
   shell,
+  Tray,
 } = require("electron");
 const { BrowserHost } = require("../src/platform/browser-host");
 const { NativeWindowAdapter } = require("../src/platform/native-window-adapter");
@@ -26,6 +29,11 @@ const {
   normalizeGlobalSettings,
   normalizePreferences,
 } = require("../src/settings/defaults");
+const {
+  ACTIONS: CONTROLLER_ACTIONS,
+  BUTTONS: CONTROLLER_BUTTONS,
+  DEFAULTS: CONTROLLER_DEFAULTS,
+} = require("../src/interaction/controller-bindings");
 const { AnkiConnectClient } = require("../src/services/anki-connect");
 const { normalizeTemplates } = require("../src/services/anki-card");
 const { NativeGeometryClient } = require("../src/services/native-geometry-client");
@@ -39,8 +47,10 @@ const {
 } = require("../src/services/diagnostics");
 const { launchMpv } = require("../src/player/mpv-launcher");
 const { requestedMediaPath } = require("../src/player/launch-arguments");
+const { defaultSessionDirectory } = require("../src/player/session-directory");
 const {
   NativeSubtitleGeometryService,
+  VALIDATED_PLAYER_CAPABILITY,
 } = require("../src/geometry/native-subtitle-geometry-service");
 const {
   SubtitleGeometryProvider,
@@ -109,6 +119,8 @@ function controllerConfigFor(preferences, overrides = {}) {
     },
     pauseWhilePopupVisible: preferences.pauseWhilePopupVisible,
     subtitleLookupMode: preferences.subtitleLookupMode,
+    nestedPopupMode: preferences.nestedPopupMode,
+    nestedPopupMaxDepth: preferences.nestedPopupMaxDepth,
     lookupLanguage: overrides.lookupLanguage || preferences.lookupLanguage,
     scanLength: preferences.scanLength,
     flattenSubtitleLineBreaks: preferences.flattenSubtitleLineBreaks,
@@ -125,8 +137,6 @@ function controllerConfigFor(preferences, overrides = {}) {
     popupGap: preferences.popupSubtitleGapPx,
     popupScale: preferences.popupScale,
     fontScale: preferences.fontScale,
-    nestedPopupMode: preferences.nestedPopupMode,
-    nestedPopupMaxDepth: preferences.nestedPopupMaxDepth,
     bitmapSubtitleOcrEnabled: preferences.bitmapSubtitleOcrEnabled,
     bitmapSubtitleOcrPrefetchEnabled: preferences.bitmapSubtitleOcrPrefetchEnabled,
     bitmapSubtitleOcrScreenshotFallbackEnabled:
@@ -245,6 +255,11 @@ function settingsState(runtime, controllers) {
       activeProfileId: document.activeProfileId,
       global: document.global,
       profiles: Object.values(document.profiles),
+      controllerBindings: {
+        buttons: CONTROLLER_BUTTONS,
+        actions: CONTROLLER_ACTIONS,
+        defaults: CONTROLLER_DEFAULTS,
+      },
       dictionaries: runtime.catalog.list({ includeDisabled: true }),
       recommendedDictionaries: runtime.catalog.recommended(preferences.lookupLanguage),
       diagnostics: settingsDiagnostics(runtime, controllers),
@@ -418,6 +433,22 @@ function resourceRoot() {
   return app.isPackaged ? process.resourcesPath : path.join(__dirname, "..");
 }
 
+function createTrayIcon() {
+  const svg = [
+    '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 18 18">',
+    '<path fill="black" d="M2 2.5h14v10H9l-4.5 3.5v-3.5H2z"/>',
+    '<circle fill="white" cx="6" cy="7.5" r="1"/>',
+    '<circle fill="white" cx="9" cy="7.5" r="1"/>',
+    '<circle fill="white" cx="12" cy="7.5" r="1"/>',
+    "</svg>",
+  ].join("");
+  const icon = nativeImage.createFromDataURL(
+    `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`,
+  );
+  icon.setTemplateImage(true);
+  return icon;
+}
+
 async function createSentenceAudioRuntime() {
   const explicit = argumentValue("--ffmpeg") || process.env.IINATAN_FFMPEG || "";
   const bundled = path.join(resourceRoot(), "bin", "ffmpeg.exe");
@@ -460,6 +491,7 @@ async function createDictionaryRuntime() {
         pollMs: preferences.directIpcPollMs,
         sleepMs: preferences.workerIdleSleepMs,
         nativeControllerSupported: process.platform === "darwin",
+        controllerStatePath: process.env.IINATAN_E2E_CONTROLLER_STATE_FILE || "",
       });
       const dictionaryPaths = catalog.activePaths();
       if (dictionaryPaths.length)
@@ -493,15 +525,29 @@ async function createDictionaryRuntime() {
       });
   const anki = createAnkiClient(preferences);
   catalog.setWorker(worker);
-  const runtime = { dictionary, catalog, settingsStore, worker, anki, preferences };
+  const runtime = {
+    dictionary,
+    catalog,
+    settingsStore,
+    worker,
+    anki,
+    preferences,
+    lastControllerState: null,
+  };
   runtime.dictionaryFingerprint = runtimeDictionaryFingerprint(runtime);
   return runtime;
 }
 
 async function createNativeGeometryRuntime(geometryProvider) {
   const explicitExecutable = argumentValue("--native-geometry-executable");
+  const packagedMacosDefault =
+    process.platform === "darwin" &&
+    app.isPackaged &&
+    process.env.IINATAN_DISABLE_NATIVE_GEOMETRY !== "1" &&
+    !hasArgument("--disable-patched-native-geometry");
   const bundledPatchedExecutable =
-    process.platform === "darwin" && hasArgument("--enable-patched-native-geometry")
+    process.platform === "darwin" &&
+    (hasArgument("--enable-patched-native-geometry") || packagedMacosDefault)
       ? path.join(resourceRoot(), "bin", "iina-hoshi-dicts")
       : "";
   const executable = explicitExecutable || bundledPatchedExecutable;
@@ -515,6 +561,7 @@ async function createNativeGeometryRuntime(geometryProvider) {
     return new NativeSubtitleGeometryService({
       client: new NativeGeometryClient(worker),
       geometryProvider,
+      playerCompatibility: VALIDATED_PLAYER_CAPABILITY,
     });
   } catch (error) {
     console.warn("[iinatan] native subtitle geometry unavailable", error.message);
@@ -543,6 +590,11 @@ async function createBitmapOcrRuntime(preferences) {
 }
 
 async function main() {
+  app.setName("iinatan for mpv");
+  if (!app.requestSingleInstanceLock()) {
+    app.quit();
+    return;
+  }
   if (process.platform === "darwin" && app.dock) app.dock.hide();
   await app.whenReady();
   await registerAppProtocol();
@@ -561,17 +613,18 @@ async function main() {
   const runtimeDir =
     argumentValue("--runtime-dir") ||
     process.env.IINATAN_SESSION_DIR ||
-    path.join(app.getPath("userData"), "sessions");
+    defaultSessionDirectory();
   const controllers = new Map();
   const syncControllerSource = () => {
     const source = runtime.worker?.nativeControllerAvailable
-      ? "native-hid"
+      ? "native-hid+browser-gamepad"
       : "browser-gamepad";
     for (const controller of controllers.values())
       controller.browserHost?.setControllerSource?.(source);
   };
   runtime.worker?.on("controller-capability", syncControllerSource);
   runtime.worker?.on("controller-state", (state) => {
+    runtime.lastControllerState = state;
     for (const controller of controllers.values())
       controller
         .handleControllerState(state)
@@ -580,6 +633,8 @@ async function main() {
   const e2eStatusPath = argumentValue("--e2e-status-file");
   let e2eStatusSerial = Promise.resolve();
   let e2eStatusTimer = null;
+  let settingsControlRegions = null;
+  let settingsDialog = null;
 
   function windowStatus(window) {
     if (!window || window.isDestroyed()) return null;
@@ -588,6 +643,10 @@ async function main() {
       focused: typeof window.isFocused === "function" && window.isFocused(),
       alwaysOnTop: typeof window.isAlwaysOnTop === "function" && window.isAlwaysOnTop(),
       bounds: typeof window.getBounds === "function" ? window.getBounds() : null,
+      contentBounds:
+        typeof window.getContentBounds === "function"
+          ? window.getContentBounds()
+          : null,
     };
   }
 
@@ -597,6 +656,9 @@ async function main() {
     const applicationMenuItem = applicationMenu?.items?.find(
       (item) => item.label === "iinatan",
     );
+    const openMediaMenuItem = applicationMenuItem?.submenu?.items?.find(
+      (item) => item.label === "Open media in mpv…",
+    );
     const settingsMenuItem = applicationMenuItem?.submenu?.items?.find(
       (item) => item.label === "Settings…",
     );
@@ -605,13 +667,12 @@ async function main() {
       pid: process.pid,
       timestamp: new Date().toISOString(),
       applicationMenu: {
-        openMedia: applicationMenuItem?.submenu?.items?.find(
-          (item) => item.label === "Open media in mpv…",
-        )
+        openMedia: openMediaMenuItem
           ? {
-              label: "Open media in mpv…",
-              enabled: true,
-              visible: true,
+              label: openMediaMenuItem.label,
+              accelerator: openMediaMenuItem.accelerator || null,
+              enabled: openMediaMenuItem.enabled !== false,
+              visible: openMediaMenuItem.visible !== false,
             }
           : null,
         settings: settingsMenuItem
@@ -624,6 +685,8 @@ async function main() {
           : null,
       },
       settingsWindow: windowStatus(settingsWindow),
+      settingsControlRegions,
+      settingsDialog,
       settings: {
         activeProfileId: runtime.settingsStore.current().activeProfileId,
         profiles: Object.values(runtime.settingsStore.current().profiles).map(
@@ -639,6 +702,26 @@ async function main() {
         fingerprint: runtime.dictionaryFingerprint || null,
         installed: catalogEntries.length,
         enabled: catalogEntries.filter((entry) => entry.enabled !== false).length,
+        ids: catalogEntries.map((entry) => entry.id),
+      },
+      controller: {
+        requested: runtime.worker?.controllerRequested === true,
+        source: runtime.worker?.nativeControllerAvailable
+          ? "native-hid"
+          : "browser-gamepad",
+        capability: runtime.worker?.controllerCapability || null,
+        state: runtime.lastControllerState
+          ? {
+              protocol: runtime.lastControllerState.protocol,
+              sequence: runtime.lastControllerState.sequence,
+              updatedAt: runtime.lastControllerState.updatedAt,
+              source: runtime.lastControllerState.source,
+              connected: runtime.lastControllerState.connected === true,
+              id: runtime.lastControllerState.id || "",
+              buttons: runtime.lastControllerState.buttons || {},
+              axes: runtime.lastControllerState.axes || {},
+            }
+          : null,
       },
       sessions: [...controllers.values()].map((controller) => ({
         sessionId: controller.descriptor?.sessionId || null,
@@ -657,10 +740,48 @@ async function main() {
         popupVisible: !!controller.browserHost?.popupVisible,
         popupMeasuredSize: controller.popupMeasuredSize || null,
         popupRegions: controller.popupRegions || null,
+        popupStyle: controller.popupStyle || null,
         popupScroll: controller.popupScroll || null,
         popupSelectionText: controller.popupSelectionText || "",
         popupFocusTarget: controller.popupFocusTarget || "",
+        controllerEntryIndex: Number.isInteger(controller.controllerEntryIndex)
+          ? controller.controllerEntryIndex
+          : -1,
+        controllerTarget: controller.controllerTarget
+          ? {
+              key: controller.controllerTarget.key,
+              hit: controller.controllerTarget.hit
+                ? {
+                    trackId: controller.controllerTarget.hit.track?.id || null,
+                    eventId: controller.controllerTarget.hit.event?.id || null,
+                    unitId: controller.controllerTarget.hit.unit?.id || null,
+                    text: controller.controllerTarget.hit.unit?.text || "",
+                  }
+                : null,
+            }
+          : null,
+        controllerHold: controller.controllerHold
+          ? {
+              action: controller.controllerHold.action,
+              completed: controller.controllerHold.completed === true,
+            }
+          : null,
+        popupHit: controller.popupContext?.hit
+          ? {
+              trackId: controller.popupContext.hit.track.id,
+              eventId: controller.popupContext.hit.event.id,
+              unitId: controller.popupContext.hit.unit.id,
+              text: controller.popupContext.hit.unit.text,
+            }
+          : null,
+        popupHeadword: controller.popupContext?.result?.entries?.[0]?.headword || null,
         audioResult: controller.lastAudioResult || null,
+        audioSelection: controller.popupContext?.audioSelection
+          ? {
+              url: controller.popupContext.audioSelection.url || "",
+              name: controller.popupContext.audioSelection.name || "",
+            }
+          : null,
         ankiResult: controller.lastAnkiResult || null,
         lastPopupCloseReason: controller.lastPopupCloseReason || null,
         surfaceReadiness: controller.browserHost?.surfaceReadiness?.() || null,
@@ -693,6 +814,7 @@ async function main() {
   function createController() {
     const browserHost = new BrowserHost({
       BrowserWindow,
+      globalShortcut,
       ipcMain,
       preloadPath: path.join(__dirname, "preload.js"),
       overlayUrl: "iinatan://app/overlay.html",
@@ -731,6 +853,7 @@ async function main() {
     controller.on("surface-ready", () => publishE2EStatus("surface-ready"));
     controller.on("popup-size", () => publishE2EStatus("popup-size"));
     controller.on("popup-region", () => publishE2EStatus("popup-region"));
+    controller.on("popup-style", () => publishE2EStatus("popup-style"));
     controller.on("popup-scroll", () => publishE2EStatus("popup-scroll"));
     controller.on("popup-selection", () => publishE2EStatus("popup-selection"));
     controller.on("popup-focus", () => publishE2EStatus("popup-focus"));
@@ -764,7 +887,69 @@ async function main() {
   }
 
   let settingsWindow = null;
+  let tray = null;
   const launchedMpv = new Set();
+
+  async function refreshSettingsControlRegions() {
+    if (!settingsWindow || settingsWindow.isDestroyed()) {
+      settingsControlRegions = null;
+      return;
+    }
+    try {
+      const regions = await settingsWindow.webContents.executeJavaScript(
+        `(() => {
+          const names = {
+            activeProfile: "#active-profile",
+            profileName: "#profile-name",
+            newProfileId: "#new-profile-id",
+            newProfileName: "#new-profile-name",
+            createProfile: "#create-profile",
+            deleteProfile: "#delete-profile",
+            save: "#save",
+            exportBackup: "#export-backup",
+            restoreBackup: "#restore-backup",
+          };
+          const result = {};
+          for (const [name, selector] of Object.entries(names)) {
+            const element = document.querySelector(selector);
+            if (!element) continue;
+            const rect = element.getBoundingClientRect();
+            if (!(rect.width > 0 && rect.height > 0)) continue;
+            result[name] = {
+              x: rect.x,
+              y: rect.y,
+              width: rect.width,
+              height: rect.height,
+            };
+          }
+          result.recommended = [...document.querySelectorAll(
+            "#recommended-list .recommended-row",
+          )]
+            .map((row) => {
+              const button = row.querySelector("button");
+              if (!button) return null;
+              const rect = button.getBoundingClientRect();
+              if (!(rect.width > 0 && rect.height > 0)) return null;
+              return {
+                id: row.dataset.dictionaryId || button.dataset.dictionaryId || "",
+                title: row.querySelector("strong")?.textContent || "",
+                text: button.textContent || "",
+                x: rect.x,
+                y: rect.y,
+                width: rect.width,
+                height: rect.height,
+              };
+            })
+            .filter(Boolean);
+          return Object.keys(result).length ? result : null;
+        })()`,
+        true,
+      );
+      if (regions && typeof regions === "object") settingsControlRegions = regions;
+    } catch (_) {
+      // The settings document may be between navigation and teardown.
+    }
+  }
 
   async function bundledNativeShimPath() {
     if (process.platform !== "darwin") return null;
@@ -815,6 +1000,7 @@ async function main() {
     if (settingsWindow && !settingsWindow.isDestroyed()) {
       settingsWindow.show();
       settingsWindow.focus();
+      if (process.platform === "darwin") app.focus?.({ steal: true });
       return;
     }
     settingsWindow = new BrowserWindow({
@@ -839,16 +1025,25 @@ async function main() {
     settingsWindow.webContents.on("will-redirect", (event) => event.preventDefault());
     settingsWindow.on("closed", () => {
       settingsWindow = null;
+      settingsControlRegions = null;
+      if (process.env.IINATAN_E2E_AUTOSTART_HIDE_AFTER_SETTINGS === "1") app.hide?.();
     });
     try {
       await settingsWindow.loadURL("iinatan://app/settings.html");
       settingsWindow.show();
       settingsWindow.focus();
+      if (process.platform === "darwin") app.focus?.({ steal: true });
+      await refreshSettingsControlRegions();
     } catch (error) {
       settingsWindow.close();
       throw error;
     }
   }
+
+  app.on("second-instance", (_event, commandLine) => {
+    if (!commandLine.includes("--settings")) return;
+    openSettings().catch((error) => console.error("[iinatan] settings", error));
+  });
 
   ipcMain.handle("settings-request", async (event, raw) => {
     if (!settingsWindow || settingsWindow.isDestroyed())
@@ -968,28 +1163,57 @@ async function main() {
         await applyRuntimePreferences(runtime, controllers);
         return { state: settingsState(runtime, controllers) };
       case "export-backup": {
-        const selection = await dialog.showSaveDialog(settingsWindow, {
-          defaultPath: "iinatan-settings.json",
-          filters: [{ name: "JSON settings backup", extensions: ["json"] }],
-        });
-        if (selection.canceled || !selection.filePath)
-          return { state: settingsState(runtime, controllers), cancelled: true };
-        await runtime.settingsStore.exportBackup(selection.filePath);
-        return {
-          state: settingsState(runtime, controllers),
-          path: selection.filePath,
-        };
+        settingsWindow.show();
+        settingsWindow.focus();
+        if (process.platform === "darwin") app.focus?.({ steal: true });
+        settingsDialog = "export-backup";
+        await publishE2EStatus("settings-dialog-export-open");
+        try {
+          const configuredPath = String(
+            process.env.IINATAN_NATIVE_SETTINGS_BACKUP_PATH || "",
+          ).trim();
+          const selection = await dialog.showSaveDialog(settingsWindow, {
+            defaultPath: path.isAbsolute(configuredPath)
+              ? configuredPath
+              : "iinatan-settings.json",
+            filters: [{ name: "JSON settings backup", extensions: ["json"] }],
+          });
+          if (selection.canceled || !selection.filePath)
+            return { state: settingsState(runtime, controllers), cancelled: true };
+          await runtime.settingsStore.exportBackup(selection.filePath);
+          return {
+            state: settingsState(runtime, controllers),
+            path: selection.filePath,
+          };
+        } finally {
+          settingsDialog = null;
+          await publishE2EStatus("settings-dialog-export-closed");
+        }
       }
       case "restore-backup": {
-        const selection = await dialog.showOpenDialog(settingsWindow, {
-          properties: ["openFile"],
-          filters: [{ name: "JSON settings backup", extensions: ["json"] }],
-        });
-        if (selection.canceled || !selection.filePaths[0])
-          return { state: settingsState(runtime, controllers), cancelled: true };
-        await runtime.settingsStore.restoreBackup(selection.filePaths[0]);
-        await applyRuntimePreferences(runtime, controllers);
-        return { state: settingsState(runtime, controllers) };
+        settingsWindow.show();
+        settingsWindow.focus();
+        if (process.platform === "darwin") app.focus?.({ steal: true });
+        settingsDialog = "restore-backup";
+        await publishE2EStatus("settings-dialog-restore-open");
+        try {
+          const configuredPath = String(
+            process.env.IINATAN_NATIVE_SETTINGS_BACKUP_PATH || "",
+          ).trim();
+          const selection = await dialog.showOpenDialog(settingsWindow, {
+            defaultPath: path.isAbsolute(configuredPath) ? configuredPath : undefined,
+            properties: ["openFile"],
+            filters: [{ name: "JSON settings backup", extensions: ["json"] }],
+          });
+          if (selection.canceled || !selection.filePaths[0])
+            return { state: settingsState(runtime, controllers), cancelled: true };
+          await runtime.settingsStore.restoreBackup(selection.filePaths[0]);
+          await applyRuntimePreferences(runtime, controllers);
+          return { state: settingsState(runtime, controllers) };
+        } finally {
+          settingsDialog = null;
+          await publishE2EStatus("settings-dialog-restore-closed");
+        }
       }
       default:
         throw new Error(`unknown settings request: ${raw.type}`);
@@ -998,6 +1222,7 @@ async function main() {
 
   const openMediaItem = {
     label: "Open media in mpv…",
+    accelerator: "CmdOrCtrl+O",
     click: () =>
       openMediaInMpv().catch((error) =>
         dialog.showErrorBox("Could not start mpv", error.message),
@@ -1017,6 +1242,28 @@ async function main() {
       },
     ]),
   );
+  if (process.platform === "darwin") {
+    tray = new Tray(createTrayIcon());
+    tray.setToolTip("iinatan for mpv");
+    tray.setContextMenu(
+      Menu.buildFromTemplate([
+        {
+          label: "Settings…",
+          click: () =>
+            openSettings().catch((error) => console.error("[iinatan] settings", error)),
+        },
+        {
+          label: "Open media in mpv…",
+          click: () =>
+            openMediaInMpv().catch((error) =>
+              dialog.showErrorBox("Could not start mpv", error.message),
+            ),
+        },
+        { type: "separator" },
+        { label: "Quit iinatan", click: () => app.quit() },
+      ]),
+    );
+  }
   const startupMediaPath = requestedMediaPath();
   if (startupMediaPath)
     openMediaInMpv(startupMediaPath).catch((error) =>
@@ -1128,7 +1375,12 @@ async function main() {
       discover().catch((error) => console.error("[iinatan] discovery failed", error)),
     1000,
   );
-  if (e2eStatusPath) e2eStatusTimer = setInterval(() => publishE2EStatus("poll"), 100);
+  if (e2eStatusPath)
+    e2eStatusTimer = setInterval(() => {
+      refreshSettingsControlRegions()
+        .catch(() => {})
+        .finally(() => publishE2EStatus("poll"));
+    }, 100);
 
   app.on("before-quit", () => {
     clearInterval(discoveryTimer);
@@ -1136,6 +1388,8 @@ async function main() {
     for (const controller of controllers.values())
       controller.detach("shutdown").catch(() => {});
     runtime.worker?.stop().catch(() => {});
+    tray?.destroy();
+    tray = null;
   });
   app.on("window-all-closed", (event) => event.preventDefault());
   app.on("activate", () =>

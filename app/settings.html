@@ -99,6 +99,25 @@
               </select>
             </label>
             <label>
+              Nested lookup mode
+              <select data-pref="nestedPopupMode">
+                <option value="off">Off</option>
+                <option value="click">Click text or references</option>
+                <option value="hover">Hover text or references</option>
+                <option value="shift-hover">Shift + hover</option>
+              </select>
+            </label>
+            <label>
+              Maximum nested popup depth
+              <input
+                data-pref="nestedPopupMaxDepth"
+                type="number"
+                min="1"
+                max="8"
+                step="1"
+              />
+            </label>
+            <label>
               Scan length
               <input data-pref="scanLength" type="number" min="1" max="128" step="1" />
             </label>
@@ -155,8 +174,9 @@
               Pause mpv while the popup is visible
             </label>
             <p class="hint full-width">
-              The dictionary backend and exact subtitle geometry remain separate from
-              these UI preferences.
+              Nested lookup reuses the same dictionary backend. Escape closes the
+              deepest nested popup first; it is intentionally not a separate gamepad
+              binding.
             </p>
           </div>
         </section>
@@ -230,25 +250,6 @@
                 min="0.5"
                 max="3"
                 step="0.05"
-              />
-            </label>
-            <label>
-              Nested lookup
-              <select data-pref="nestedPopupMode">
-                <option value="off">Off</option>
-                <option value="click">Click references</option>
-                <option value="hover">Hover references</option>
-                <option value="shift-hover">Shift + hover references</option>
-              </select>
-            </label>
-            <label>
-              Nested lookup depth
-              <input
-                data-pref="nestedPopupMaxDepth"
-                type="number"
-                min="0"
-                max="8"
-                step="1"
               />
             </label>
             <label class="check-row">
@@ -426,30 +427,38 @@
               <input data-pref="controllerEnabled" type="checkbox" />
               Enable browser Gamepad controls
             </label>
-            <label class="full-width">
-              No-popup controller bindings (JSON)
-              <textarea
-                data-pref="controllerNoPopupBindingsJson"
-                rows="5"
-                spellcheck="false"
-              ></textarea>
-            </label>
-            <label class="full-width">
-              Popup controller bindings (JSON)
-              <textarea
-                data-pref="controllerPopupBindingsJson"
-                rows="5"
-                spellcheck="false"
-              ></textarea>
-            </label>
-            <label class="full-width">
-              Audio-menu controller bindings (JSON)
-              <textarea
-                data-pref="controllerAudioBindingsJson"
-                rows="5"
-                spellcheck="false"
-              ></textarea>
-            </label>
+            <div id="controller-bindings-editor" class="full-width"></div>
+            <details class="controller-raw full-width">
+              <summary>Advanced raw controller binding JSON</summary>
+              <p class="hint">
+                The editor above is the supported path. These fields are retained for
+                migrations and advanced values; invalid actions are normalized on save.
+              </p>
+              <label>
+                No-popup controller bindings (JSON)
+                <textarea
+                  data-pref="controllerNoPopupBindingsJson"
+                  rows="5"
+                  spellcheck="false"
+                ></textarea>
+              </label>
+              <label>
+                Popup controller bindings (JSON)
+                <textarea
+                  data-pref="controllerPopupBindingsJson"
+                  rows="5"
+                  spellcheck="false"
+                ></textarea>
+              </label>
+              <label>
+                Audio-menu controller bindings (JSON)
+                <textarea
+                  data-pref="controllerAudioBindingsJson"
+                  rows="5"
+                  spellcheck="false"
+                ></textarea>
+              </label>
+            </details>
             <label>
               Backend IPC timeout (ms)
               <input

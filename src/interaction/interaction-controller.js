@@ -6,7 +6,6 @@ const STATES = Object.freeze({
   HOVER_CANDIDATE: "subtitle-hover-candidate",
   LOOKUP_PENDING: "lookup-pending",
   POPUP_ACTIVE: "popup-active",
-  NESTED_POPUP_ACTIVE: "nested-popup-active",
   TEXT_SELECTION: "text-selection-drag-capture",
   AUDIO_MENU: "audio-menu-active",
   SETTINGS: "settings-dialog",
@@ -24,7 +23,6 @@ const EVENTS = Object.freeze({
   LOOKUP_SUCCEEDED: "lookup-succeeded",
   LOOKUP_FAILED: "lookup-failed",
   POPUP_OPENED: "popup-opened",
-  NESTED_OPENED: "nested-opened",
   POPUP_ACTION: "popup-action",
   AUDIO_OPENED: "audio-opened",
   CLOSE_TRANSIENT: "close-transient",
@@ -52,7 +50,6 @@ class InteractionController {
     this.state = this.enabled ? STATES.PLAYER_INTERACTION : STATES.INACTIVE;
     this.sessionId = null;
     this.geometryGeneration = null;
-    this.popupDepth = 0;
     this.requestId = null;
     this.capture = null;
     this.transitionLog = [];
@@ -64,7 +61,6 @@ class InteractionController {
       state: this.state,
       sessionId: this.sessionId,
       geometryGeneration: this.geometryGeneration,
-      popupDepth: this.popupDepth,
       requestId: this.requestId,
       capture: this.capture ? { ...this.capture } : null,
     });
@@ -94,7 +90,6 @@ class InteractionController {
         );
       case EVENTS.DISABLE:
         this.enabled = false;
-        this.popupDepth = 0;
         this.requestId = null;
         this.capture = null;
         effects.push("hide-highlight", "dismiss-popup", "set-passive-input");
@@ -115,7 +110,6 @@ class InteractionController {
       case EVENTS.SHUTDOWN:
         this.sessionId = null;
         this.geometryGeneration = null;
-        this.popupDepth = 0;
         this.requestId = null;
         this.capture = null;
         effects.push("hide-highlight", "dismiss-popup", "set-passive-input");
@@ -130,20 +124,23 @@ class InteractionController {
           !this.sessionId ||
           this.state === STATES.INACTIVE ||
           this.state === STATES.SUSPENDED ||
-          [
-            STATES.POPUP_ACTIVE,
-            STATES.NESTED_POPUP_ACTIVE,
-            STATES.TEXT_SELECTION,
-            STATES.AUDIO_MENU,
-          ].includes(this.state)
+          [STATES.POPUP_ACTIVE, STATES.TEXT_SELECTION, STATES.AUDIO_MENU].includes(
+            this.state,
+          )
         )
           return [];
+        if (this.state === STATES.LOOKUP_PENDING) {
+          // A fast hover move supersedes the request that was started for the
+          // previous unit. The application controller aborts that request;
+          // move back to the candidate state so the new unit can be looked up.
+          this.requestId = null;
+          effects.push("cancel-lookup");
+        }
         effects.push("highlight", payload.hit);
         return this.transition(STATES.HOVER_CANDIDATE, event, effects);
       case EVENTS.POINTER_NONE:
         if (
           this.state === STATES.POPUP_ACTIVE ||
-          this.state === STATES.NESTED_POPUP_ACTIVE ||
           this.state === STATES.TEXT_SELECTION ||
           this.state === STATES.AUDIO_MENU
         )
@@ -185,55 +182,23 @@ class InteractionController {
       case EVENTS.POPUP_OPENED:
         if (this.state !== STATES.POPUP_ACTIVE) return [];
         return ["popup-opened"];
-      case EVENTS.NESTED_OPENED:
-        if (
-          this.state !== STATES.POPUP_ACTIVE &&
-          this.state !== STATES.NESTED_POPUP_ACTIVE
-        )
-          return [];
-        this.popupDepth += 1;
-        effects.push("render-nested-popup", payload, "focus-popup");
-        return this.transition(STATES.NESTED_POPUP_ACTIVE, event, effects);
       case EVENTS.POPUP_ACTION:
-        if (
-          this.state !== STATES.POPUP_ACTIVE &&
-          this.state !== STATES.NESTED_POPUP_ACTIVE &&
-          this.state !== STATES.AUDIO_MENU
-        )
+        if (this.state !== STATES.POPUP_ACTIVE && this.state !== STATES.AUDIO_MENU)
           return ["consume-input"];
         effects.push("handle-popup-action", payload);
         return effects;
       case EVENTS.AUDIO_OPENED:
-        if (
-          this.state !== STATES.POPUP_ACTIVE &&
-          this.state !== STATES.NESTED_POPUP_ACTIVE
-        )
-          return [];
+        if (this.state !== STATES.POPUP_ACTIVE) return [];
         effects.push("render-audio-menu", payload, "focus-popup");
         return this.transition(STATES.AUDIO_MENU, event, effects);
       case EVENTS.CLOSE_TRANSIENT:
         if (this.state === STATES.AUDIO_MENU) {
           effects.push("close-audio-menu", "focus-popup");
-          return this.transition(
-            this.popupDepth ? STATES.NESTED_POPUP_ACTIVE : STATES.POPUP_ACTIVE,
-            event,
-            effects,
-          );
+          return this.transition(STATES.POPUP_ACTIVE, event, effects);
         }
         return [];
       case EVENTS.CLOSE_POPUP:
-        if (this.state === STATES.NESTED_POPUP_ACTIVE && this.popupDepth > 0) {
-          this.popupDepth -= 1;
-          this.capture = null;
-          effects.push("close-deepest-popup", "focus-popup");
-          return this.transition(
-            this.popupDepth ? STATES.NESTED_POPUP_ACTIVE : STATES.POPUP_ACTIVE,
-            event,
-            effects,
-          );
-        }
         if (this.state === STATES.POPUP_ACTIVE) {
-          this.popupDepth = 0;
           this.requestId = null;
           this.capture = null;
           effects.push("dismiss-popup", "focus-player", "set-passive-input");
@@ -241,11 +206,7 @@ class InteractionController {
         }
         return [];
       case EVENTS.OUTSIDE_POINTER_DOWN:
-        if (
-          this.state === STATES.POPUP_ACTIVE ||
-          this.state === STATES.NESTED_POPUP_ACTIVE ||
-          this.state === STATES.AUDIO_MENU
-        ) {
+        if (this.state === STATES.POPUP_ACTIVE || this.state === STATES.AUDIO_MENU) {
           effects.push("dismiss-deepest-or-popup", "consume-input");
           return this.transition(STATES.PLAYER_INTERACTION, event, effects);
         }
@@ -253,7 +214,6 @@ class InteractionController {
       case EVENTS.POINTER_DOWN:
         if (
           this.state === STATES.POPUP_ACTIVE ||
-          this.state === STATES.NESTED_POPUP_ACTIVE ||
           this.state === STATES.TEXT_SELECTION ||
           this.state === STATES.AUDIO_MENU
         ) {
@@ -265,11 +225,7 @@ class InteractionController {
         }
         return ["pass-to-player"];
       case EVENTS.SELECTION_START:
-        if (
-          this.state !== STATES.POPUP_ACTIVE &&
-          this.state !== STATES.NESTED_POPUP_ACTIVE
-        )
-          return ["consume-input"];
+        if (this.state !== STATES.POPUP_ACTIVE) return ["consume-input"];
         this.capture = {
           kind: "text-selection",
           pointerId: Number.isInteger(payload.pointerId) ? payload.pointerId : null,
@@ -283,11 +239,7 @@ class InteractionController {
         if (this.state !== STATES.TEXT_SELECTION) return [];
         this.capture = null;
         effects.push("consume-input", "release-pointer");
-        return this.transition(
-          this.popupDepth ? STATES.NESTED_POPUP_ACTIVE : STATES.POPUP_ACTIVE,
-          event,
-          effects,
-        );
+        return this.transition(STATES.POPUP_ACTIVE, event, effects);
       case EVENTS.POINTER_UP:
         if (this.capture) {
           if (this.capture.kind === "text-selection")
@@ -299,7 +251,6 @@ class InteractionController {
       case EVENTS.FOCUS_PLAYER:
         if (
           this.state === STATES.POPUP_ACTIVE ||
-          this.state === STATES.NESTED_POPUP_ACTIVE ||
           this.state === STATES.TEXT_SELECTION ||
           this.state === STATES.AUDIO_MENU
         )
@@ -308,7 +259,6 @@ class InteractionController {
       case EVENTS.FOCUS_OVERLAY:
         if (
           this.state === STATES.POPUP_ACTIVE ||
-          this.state === STATES.NESTED_POPUP_ACTIVE ||
           this.state === STATES.TEXT_SELECTION ||
           this.state === STATES.AUDIO_MENU
         )
@@ -327,8 +277,6 @@ class InteractionController {
       case EVENTS.ESCAPE:
         if (this.state === STATES.AUDIO_MENU)
           return this.dispatch(EVENTS.CLOSE_TRANSIENT, payload);
-        if (this.state === STATES.NESTED_POPUP_ACTIVE)
-          return this.dispatch(EVENTS.CLOSE_POPUP, payload);
         if (this.state === STATES.POPUP_ACTIVE)
           return this.dispatch(EVENTS.CLOSE_POPUP, payload);
         if (this.state === STATES.SETTINGS) return ["close-settings", "consume-input"];

@@ -7,14 +7,17 @@ const HOST_REQUEST_TYPES = new Set([
   "pointer-move",
   "lookup",
   "nested-lookup",
+  "nested-lookup-cancel",
   "popup-action",
   "popup-region",
   "popup-scroll",
   "popup-size",
+  "popup-style",
   "dismiss-popup",
   "player-command",
   "external-link",
   "audio-source",
+  "audio-anki-selection",
   "anki-action",
   "controller-state",
   "settings-open",
@@ -27,6 +30,7 @@ const HOST_EVENT_TYPES = new Set([
   "geometry",
   "lookup-result",
   "lookup-error",
+  "nested-lookup-result",
   "popup-state",
   "popup-layout",
   "popup-error",
@@ -147,9 +151,11 @@ function validateHostRequest(message) {
       "pointer-move",
       "lookup",
       "nested-lookup",
+      "nested-lookup-cancel",
       "popup-action",
       "popup-region",
       "popup-scroll",
+      "popup-style",
     ].includes(message.type) &&
     !message.sessionId
   )
@@ -162,8 +168,31 @@ function validateHostRequest(message) {
     if (!Number.isInteger(message.payload.utf16Start) || message.payload.utf16Start < 0)
       throw validationError("payload.utf16Start", "must be a non-negative integer");
   }
-  if (message.type === "nested-lookup" && !isNonEmptyString(message.payload.term, 4096))
-    throw validationError("payload.term", "must be a non-empty string");
+  if (message.type === "nested-lookup" || message.type === "nested-lookup-cancel") {
+    if (!isRequestId(message.payload.requestId))
+      throw validationError("payload.requestId", "is required for nested lookup");
+    if (!isNonEmptyString(message.payload.popupSessionId, 160))
+      throw validationError("payload.popupSessionId", "must be a non-empty string");
+    if (
+      !Number.isInteger(message.payload.depth) ||
+      message.payload.depth < 1 ||
+      message.payload.depth > 8
+    )
+      throw validationError("payload.depth", "must be an integer between 1 and 8");
+    if (message.type === "nested-lookup") {
+      if (!isNonEmptyString(message.payload.text, 4096))
+        throw validationError("payload.text", "must be a non-empty string");
+      if (
+        !Number.isInteger(message.payload.utf16Start) ||
+        message.payload.utf16Start < 0 ||
+        message.payload.utf16Start > 4096
+      )
+        throw validationError(
+          "payload.utf16Start",
+          "must be a non-negative UTF-16 offset no greater than 4096",
+        );
+    }
+  }
   if (message.type === "player-command") validatePlayerCommand(message.payload.command);
   if (message.type === "external-link") {
     if (!isNonEmptyString(message.payload.url, 4096))
@@ -181,6 +210,27 @@ function validateHostRequest(message) {
       throw validationError("payload.requestId", "has an invalid format");
     if (!isNonEmptyString(message.payload.term, 4096))
       throw validationError("payload.term", "must be a non-empty string");
+  }
+  if (message.type === "audio-anki-selection") {
+    if (!isNonEmptyString(message.payload.url, 4096))
+      throw validationError("payload.url", "must be a non-empty string");
+    if (
+      !/^https:\/\/[^\s<>"']+$/i.test(message.payload.url) &&
+      !/^http:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?(?:\/|$)/i.test(
+        message.payload.url,
+      )
+    )
+      throw validationError("payload.url", "must be an allowed audio URL");
+    if (
+      message.payload.candidateIndex !== undefined &&
+      (!Number.isInteger(message.payload.candidateIndex) ||
+        message.payload.candidateIndex < 0 ||
+        message.payload.candidateIndex > 31)
+    )
+      throw validationError(
+        "payload.candidateIndex",
+        "must be an integer between 0 and 31",
+      );
   }
   if (message.type === "anki-action" && !isNonEmptyString(message.payload.action, 80))
     throw validationError("payload.action", "must be a non-empty string");
@@ -221,6 +271,13 @@ function validateHostRequest(message) {
     for (const key of ["left", "top"])
       if (!isFiniteNumber(message.payload[key]) || message.payload[key] < 0)
         throw validationError(`payload.${key}`, "must be a non-negative finite number");
+  }
+  if (message.type === "popup-style") {
+    if (typeof message.payload.customCssApplied !== "boolean")
+      throw validationError("payload.customCssApplied", "must be a boolean");
+    for (const key of ["backgroundColor", "borderTopColor", "borderTopWidth"])
+      if (!isNonEmptyString(message.payload[key], 160))
+        throw validationError(`payload.${key}`, "must be a non-empty string");
   }
   if (message.type === "controller-state") {
     if (typeof message.payload.connected !== "boolean")

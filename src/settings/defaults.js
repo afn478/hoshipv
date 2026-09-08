@@ -49,6 +49,8 @@ const PROFILE_PREFERENCE_DEFAULTS = Object.freeze({
   popupMaxHeightVh: 34,
   popupSubtitleGapPx: 34,
   subtitleLookupMode: "hover",
+  // Nested lookup remains opt-in so existing profiles keep their prior
+  // interaction behavior when the feature is upgraded.
   nestedPopupMode: "off",
   nestedPopupMaxDepth: 3,
   flattenSubtitleLineBreaks: false,
@@ -215,7 +217,7 @@ function normalizePreferences(input) {
   result.popupMaxHeightVh = clamp(result.popupMaxHeightVh, 15, 90, 34);
   result.popupSubtitleGapPx = Math.round(clamp(result.popupSubtitleGapPx, 0, 300, 34));
   result.subtitlePollMs = Math.round(clamp(result.subtitlePollMs, 30, 1000, 120));
-  result.nestedPopupMaxDepth = Math.round(clamp(result.nestedPopupMaxDepth, 0, 8, 3));
+  result.nestedPopupMaxDepth = Math.round(clamp(result.nestedPopupMaxDepth, 1, 8, 3));
   result.hoverRequestTimeoutMs = Math.round(
     clamp(result.hoverRequestTimeoutMs, 250, 120000, 15000),
   );

@@ -210,6 +210,69 @@ h2 {
 .button-row {
   align-items: center;
 }
+.controller-bindings-editor {
+  display: grid;
+  gap: 12px;
+}
+.controller-context {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface-raised);
+}
+.controller-context-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.controller-context-header h3 {
+  margin: 0;
+  font-size: 0.98rem;
+}
+.controller-context-header .hint {
+  flex: 1;
+}
+.controller-binding-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.controller-binding-table th,
+.controller-binding-table td {
+  padding: 6px 8px;
+  border-top: 1px solid var(--border);
+  text-align: left;
+  vertical-align: middle;
+}
+.controller-binding-table th {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+.controller-binding-table td:first-child {
+  width: 35%;
+  color: var(--foreground);
+  font-weight: 600;
+}
+.controller-binding-table select {
+  min-width: 220px;
+}
+.controller-raw {
+  grid-column: 1 / -1;
+  margin-top: 2px;
+  color: var(--muted);
+}
+.controller-raw summary {
+  cursor: pointer;
+  color: var(--accent);
+}
+.controller-raw > p {
+  margin: 10px 0;
+}
+.controller-raw > label {
+  margin-top: 12px;
+}
 .anki-field-editor {
   display: grid;
   gap: 8px;
@@ -329,5 +392,12 @@ code {
   }
   .full-width {
     grid-column: auto;
+  }
+  .controller-context-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .controller-binding-table select {
+    min-width: 0;
   }
 }

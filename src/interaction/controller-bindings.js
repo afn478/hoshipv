@@ -25,6 +25,8 @@ const ACTIONS = Object.freeze({
     "subtitle-next",
     "seek-backward",
     "seek-forward",
+    "seek-backward-long",
+    "seek-forward-long",
     "frame-step-backward",
     "frame-step-forward",
     "volume-down",
@@ -74,6 +76,8 @@ const DEFAULTS = Object.freeze({
     rightShoulder: "subtitle-next",
     leftTrigger: "anki-force-add",
     rightTrigger: "anki-primary",
+    // Match iinatan's checked-in profile defaults for the no-popup context.
+    // Long seeking remains available as an explicit binding choice.
     dpadUp: "volume-up",
     dpadDown: "volume-down",
     dpadLeft: "seek-backward",

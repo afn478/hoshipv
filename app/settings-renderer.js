@@ -14,8 +14,71 @@
   const diagnosticsList = document.getElementById("diagnostics-list");
   const diagnosticsSessions = document.getElementById("diagnostics-sessions");
   const diagnosticsNote = document.getElementById("diagnostics-note");
+  const controllerBindingsEditor = document.getElementById(
+    "controller-bindings-editor",
+  );
   let ankiFields = [];
   let state = null;
+
+  const controllerContextLabels = Object.freeze({
+    noPopup: "No popup",
+    popup: "With popup",
+    audio: "Audio menu",
+  });
+  const controllerButtonLabels = Object.freeze({
+    primary: "Cross",
+    back: "Circle",
+    square: "Square",
+    audio: "Triangle",
+    leftShoulder: "L1",
+    rightShoulder: "R1",
+    leftTrigger: "L2",
+    rightTrigger: "R2",
+    dpadUp: "D-pad up",
+    dpadDown: "D-pad down",
+    dpadLeft: "D-pad left",
+    dpadRight: "D-pad right",
+  });
+  const controllerActionLabels = Object.freeze({
+    none: "None",
+    lookup: "Open lookup",
+    "toggle-pause": "Toggle pause",
+    "resume-playback": "Resume playback",
+    "close-popup": "Close popup",
+    "close-audio-list": "Close audio menu",
+    "subtitle-previous": "Previous subtitle",
+    "subtitle-next": "Next subtitle",
+    "seek-backward": "Seek backward 5 seconds",
+    "seek-forward": "Seek forward 5 seconds",
+    "seek-backward-long": "Seek backward 60 seconds",
+    "seek-forward-long": "Seek forward 60 seconds",
+    "frame-step-backward": "Step backward one frame",
+    "frame-step-forward": "Step forward one frame",
+    "volume-down": "Volume down",
+    "volume-up": "Volume up",
+    "speed-down": "Speed down",
+    "speed-up": "Speed up",
+    "audio-menu": "Open audio menu",
+    "audio-activate": "Play/select audio",
+    "play-audio": "Play selected audio",
+    "popup-up": "Popup up",
+    "popup-down": "Popup down",
+    "popup-left": "Previous dictionary entry",
+    "popup-right": "Next dictionary entry",
+    "popup-scroll-up": "Scroll popup up",
+    "popup-scroll-down": "Scroll popup down",
+    "audio-up": "Previous audio source",
+    "audio-down": "Next audio source",
+    "audio-left": "Previous audio control",
+    "audio-right": "Next audio control",
+    "anki-primary": "Add to Anki",
+    "anki-force-add": "Add to Anki anyway",
+  });
+  const controllerPreferenceKeys = Object.freeze({
+    noPopup: "controllerNoPopupBindingsJson",
+    popup: "controllerPopupBindingsJson",
+    audio: "controllerAudioBindingsJson",
+  });
 
   const ankiMarkers = [
     "{expression}",
@@ -65,6 +128,124 @@
     return [...document.querySelectorAll("[data-pref]")];
   }
 
+  function controllerMetadata() {
+    const metadata = state?.controllerBindings;
+    if (!metadata?.buttons || !metadata?.actions || !metadata?.defaults) return null;
+    return metadata;
+  }
+
+  function controllerBindingsFor(context) {
+    const key = controllerPreferenceKeys[context];
+    const raw = document.querySelector(`[data-pref="${key}"]`)?.value || "{}";
+    try {
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? parsed
+        : {};
+    } catch (_) {
+      return {};
+    }
+  }
+
+  function writeControllerBindings(context, bindings) {
+    const key = controllerPreferenceKeys[context];
+    const input = document.querySelector(`[data-pref="${key}"]`);
+    if (input) input.value = JSON.stringify(bindings, null, 2);
+  }
+
+  function renderControllerBindings() {
+    if (!controllerBindingsEditor) return;
+    controllerBindingsEditor.replaceChildren();
+    const metadata = controllerMetadata();
+    if (!metadata) {
+      const unavailable = document.createElement("p");
+      unavailable.className = "hint";
+      unavailable.textContent = "Controller binding metadata is unavailable.";
+      controllerBindingsEditor.append(unavailable);
+      return;
+    }
+    const wrapper = document.createElement("div");
+    wrapper.className = "controller-bindings-editor";
+    const hint = document.createElement("p");
+    hint.className = "hint";
+    hint.textContent =
+      "Choose actions independently for each context. Changes are saved with the active profile.";
+    wrapper.append(hint);
+
+    for (const context of Object.keys(controllerContextLabels)) {
+      const card = document.createElement("section");
+      card.className = "controller-context";
+      const header = document.createElement("div");
+      header.className = "controller-context-header";
+      const title = document.createElement("h3");
+      title.textContent = controllerContextLabels[context];
+      const description = document.createElement("span");
+      description.className = "hint";
+      description.textContent =
+        context === "noPopup"
+          ? "Actions while no lookup popup is open."
+          : context === "popup"
+            ? "Actions while the dictionary popup is open."
+            : "Actions while choosing an audio source.";
+      const reset = document.createElement("button");
+      reset.type = "button";
+      reset.className = "secondary";
+      reset.dataset.controllerReset = context;
+      reset.textContent = "Reset context";
+      reset.addEventListener("click", () => {
+        writeControllerBindings(context, metadata.defaults[context]);
+        renderControllerBindings();
+        showStatus(`${controllerContextLabels[context]} bindings reset.`);
+      });
+      header.append(title, description, reset);
+      card.append(header);
+
+      const table = document.createElement("table");
+      table.className = "controller-binding-table";
+      const head = document.createElement("thead");
+      head.innerHTML =
+        '<tr><th scope="col">Control</th><th scope="col">Action</th></tr>';
+      table.append(head);
+      const body = document.createElement("tbody");
+      const bindings = controllerBindingsFor(context);
+      const actions = Array.isArray(metadata.actions[context])
+        ? metadata.actions[context]
+        : [];
+      for (const button of metadata.buttons) {
+        const row = document.createElement("tr");
+        const name = document.createElement("td");
+        name.textContent = controllerButtonLabels[button] || button;
+        const value = document.createElement("td");
+        const select = document.createElement("select");
+        select.dataset.controllerContext = context;
+        select.dataset.controllerButton = button;
+        select.setAttribute(
+          "aria-label",
+          `${controllerContextLabels[context]} ${name.textContent} action`,
+        );
+        for (const action of actions) {
+          const option = document.createElement("option");
+          option.value = action;
+          option.textContent = controllerActionLabels[action] || action;
+          select.append(option);
+        }
+        select.value = actions.includes(bindings[button]) ? bindings[button] : "none";
+        select.addEventListener("change", () => {
+          const next = controllerBindingsFor(context);
+          next[button] = select.value;
+          writeControllerBindings(context, next);
+        });
+        value.append(select);
+        row.append(name, value);
+        body.append(row);
+      }
+      table.append(body);
+      card.append(table);
+      wrapper.append(card);
+    }
+    controllerBindingsEditor.append(wrapper);
+  }
+
   function renderProfileSelector() {
     activeProfile.replaceChildren();
     for (const profile of state?.profiles || []) {
@@ -90,6 +271,7 @@
     advanced.value = JSON.stringify(preferences, null, 2);
     globalSettings.value = JSON.stringify(state?.global || {}, null, 2);
     renderAnkiFieldEditor();
+    renderControllerBindings();
   }
 
   function readAnkiTemplates() {
@@ -262,6 +444,7 @@
     for (const entry of entries) {
       const row = document.createElement("div");
       row.className = "dictionary-row recommended-row";
+      row.dataset.dictionaryId = entry.id || "";
       const description = document.createElement("div");
       const title = document.createElement("strong");
       title.textContent = entry.title || entry.id;
@@ -270,6 +453,7 @@
       description.append(title, detail);
       const action = document.createElement("button");
       action.type = "button";
+      action.dataset.dictionaryId = entry.id || "";
       action.className = entry.installed ? "secondary" : "primary";
       action.textContent = entry.installed ? "Update" : "Download";
       action.addEventListener("click", async () => {
@@ -577,6 +761,12 @@
       render();
       showStatus("Backup restored.");
     } catch (_) {}
+  });
+
+  Object.values(controllerPreferenceKeys).forEach((key) => {
+    document
+      .querySelector(`[data-pref="${key}"]`)
+      ?.addEventListener("change", renderControllerBindings);
   });
 
   load().catch((error) => showStatus(error.message || "Could not load settings", true));

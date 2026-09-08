@@ -21,6 +21,10 @@ body,
   overflow: hidden;
 }
 
+#root {
+  position: relative;
+}
+
 *,
 *::before,
 *::after {
@@ -39,6 +43,11 @@ body {
 }
 
 #root[data-surface="popup"] {
+  /* A fully transparent macOS BrowserWindow can be skipped by native hit
+     testing outside its opaque child panel. Keep the surface visually
+     transparent but give the compositor a non-zero alpha footprint so the
+     root receives the outside pointer sequence and can dismiss safely. */
+  background: rgba(0, 0, 0, 0.001);
   pointer-events: auto;
 }
 
@@ -46,6 +55,48 @@ body {
   position: fixed;
   inset: 0;
   pointer-events: none;
+}
+
+#controller-hold-progress {
+  position: fixed;
+  left: 50%;
+  bottom: 42px;
+  z-index: 100;
+  width: 40px;
+  height: 40px;
+  margin-left: -20px;
+  border-radius: 50%;
+  background: var(--popup-background);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.34);
+  pointer-events: none;
+}
+
+#controller-hold-progress.hidden {
+  display: none;
+}
+
+#controller-hold-progress svg {
+  display: block;
+  width: 40px;
+  height: 40px;
+  transform: rotate(-90deg);
+}
+
+.controller-hold-track,
+.controller-hold-fill {
+  fill: none;
+  stroke-width: 4;
+}
+
+.controller-hold-track {
+  stroke: var(--popup-border);
+}
+
+.controller-hold-fill {
+  stroke: var(--popup-accent);
+  stroke-linecap: round;
+  stroke-dasharray: 100.531;
+  stroke-dashoffset: 100.531;
 }
 
 .highlight {
@@ -84,34 +135,112 @@ body {
   outline-offset: 2px;
 }
 
-#popup-header {
+#nested-popup-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  pointer-events: none;
+}
+
+.nested-popup-highlight {
+  position: fixed;
+  z-index: 29;
+  border: 1px solid rgba(142, 197, 255, 0.95);
+  border-radius: 3px;
+  background: rgba(118, 177, 255, 0.2);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.14) inset;
+  pointer-events: none;
+}
+
+.nested-popup {
+  position: absolute;
+  z-index: 30;
+  width: min(360px, calc(100vw - 16px));
+  min-width: min(220px, calc(100vw - 16px));
+  max-width: 440px;
+  overflow: auto;
+  border: 1px solid var(--popup-border);
+  border-radius: var(--popup-radius);
+  background: var(--popup-background);
+  box-shadow:
+    0 18px 48px rgba(0, 0, 0, 0.42),
+    0 2px 12px rgba(0, 0, 0, 0.26);
+  backdrop-filter: blur(22px) saturate(135%);
+  color: var(--popup-foreground);
+  pointer-events: auto;
+  user-select: text;
+  outline: none;
+  font-size: calc(1rem * var(--font-scale, 1));
+  transform: scale(var(--popup-scale, 1));
+  transform-origin: top left;
+}
+
+.nested-popup.lookup-pending {
+  opacity: 0.94;
+}
+
+.nested-popup:focus-visible {
+  outline: 2px solid var(--popup-accent);
+  outline-offset: 2px;
+}
+
+.nested-popup-header {
   position: sticky;
   top: 0;
   z-index: 2;
   display: grid;
-  grid-template-columns: auto 1fr auto auto;
-  gap: 10px;
+  grid-template-columns: 1fr auto auto;
+  gap: 8px;
   align-items: baseline;
-  padding: 14px 14px 10px;
+  padding: 11px 12px 8px;
   border-bottom: 1px solid var(--popup-border);
   background: color-mix(in srgb, var(--popup-background) 92%, transparent);
 }
 
-#popup-back {
+.nested-popup-headword {
+  color: var(--popup-accent);
+  font-size: 1.15rem;
+  font-weight: 750;
+  line-height: 1.2;
+}
+
+.nested-popup-reading {
+  color: var(--popup-muted);
+  font-size: 0.84rem;
+}
+
+.nested-popup-close {
   border: 0;
   border-radius: 6px;
   background: transparent;
   color: var(--popup-muted);
   cursor: pointer;
-  font-size: 1.35rem;
+  font-size: 1.2rem;
   line-height: 1;
   padding: 2px 5px;
 }
 
-#popup-back:hover,
-#popup-back:focus-visible {
+.nested-popup-close:hover,
+.nested-popup-close:focus-visible {
   background: rgba(255, 255, 255, 0.1);
   color: var(--popup-foreground);
+}
+
+.nested-popup-content {
+  padding: 10px 12px 13px;
+}
+
+#popup-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 10px;
+  align-items: baseline;
+  padding: 14px 14px 10px;
+  border-bottom: 1px solid var(--popup-border);
+  background: color-mix(in srgb, var(--popup-background) 92%, transparent);
 }
 
 #popup-headword {
@@ -153,6 +282,12 @@ body {
   border-top: 1px solid var(--popup-border);
 }
 
+.entry.controller-selected-entry {
+  outline: 2px solid color-mix(in srgb, var(--popup-accent) 72%, transparent);
+  outline-offset: 4px;
+  border-radius: 5px;
+}
+
 .audio-button {
   float: right;
   border: 1px solid var(--popup-border);
@@ -186,12 +321,19 @@ body {
 
 .audio-menu {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
+  flex-direction: column;
+  align-items: stretch;
   gap: 6px;
   margin: 6px 0 8px;
   color: var(--popup-muted);
   font-size: 0.76rem;
+}
+
+.audio-source-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: center;
 }
 
 .audio-candidate {
@@ -212,6 +354,24 @@ body {
 .audio-candidate.selected {
   border-color: var(--popup-accent);
   background: rgba(138, 180, 248, 0.18);
+}
+
+.audio-anki {
+  border: 1px solid var(--popup-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--popup-muted);
+  cursor: pointer;
+  font-size: 0.7rem;
+  padding: 3px 7px;
+}
+
+.audio-anki:hover,
+.audio-anki:focus-visible,
+.audio-anki.selected {
+  border-color: var(--popup-accent);
+  background: rgba(138, 180, 248, 0.14);
+  color: var(--popup-foreground);
 }
 
 .audio-status {
@@ -359,8 +519,7 @@ body {
   color: #ffe9a6;
 }
 
-.source-link,
-.nested-link {
+.source-link {
   border: 0;
   background: transparent;
   color: var(--popup-accent);
@@ -368,6 +527,20 @@ body {
   font: inherit;
   padding: 0;
   text-decoration: underline;
+}
+
+.cross-reference {
+  color: var(--popup-accent);
+  cursor: pointer;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+
+.cross-reference:hover,
+.cross-reference:focus-visible {
+  border-radius: 3px;
+  outline: 2px solid color-mix(in srgb, var(--popup-accent) 55%, transparent);
+  outline-offset: 2px;
 }
 
 .details {
