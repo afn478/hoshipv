@@ -2,6 +2,239 @@
 
 ## Unreleased
 
+- Restored bounded nested dictionary lookup inside the Electron popup. Cross-reference
+  and configured text interactions now support click/hover/Shift-hover child popups,
+  request cancellation, depth limits, child highlighting, and deepest-first Escape;
+  nested lookup remains outside the assignable gamepad action list.
+- Hardened popup dismissal for canceled, lost-capture, focus-interrupted, and
+  host-interrupted outside pointer gestures, preventing an interrupted native
+  click from leaving the transparent popup surface open or retaining pointer
+  ownership across a close/reopen cycle.
+- Re-registered the current macOS arm64 directory package after quarantining
+  stale duplicate development bundles that could win the `iinatan for mpv`
+  LaunchServices name. The supplied MARRIAGETOXIN direct-mpv workflow then
+  selected the current package and passed live Jitendex lookup, exact content
+  geometry, renderer fail-closed/recovery, and native dismissal.
+- Added a reproducible public mpv layout-interface probe. On the validated
+  stock mpv `0.41.0` build, supported in-process `osd-overlay`/
+  `compute_bounds` returns aggregate bounds for synthetic overlays but does not
+  expose the built-in subtitle event's per-glyph layout or live style/collision
+  state; the exact stock-mpv geometry gate remains explicit.
+- Reaped stale native geometry sidecars for exited mpv processes, including
+  interrupted `.next` writes, during session discovery while retaining dead
+  session descriptors for crash-recovery replacement. The rebuilt signed
+  package passed the direct-autostart cleanup replay with no leftover geometry
+  sidecar after teardown.
+- Forwarded live mpv `sub-ass-force-margins`, `sub-hinting`, and `sub-shaper`
+  settings into the native geometry renderer instead of silently using helper
+  defaults; the bridge regression now covers non-default values.
+- Added explicit fail-closed detection for unrepresented mpv subtitle style,
+  font-path, aspect, filter, and renderer-effect options so those settings do
+  not receive a false exact-geometry result.
+- Added early fail-closed detection for `sub-ass-justify`, non-auto
+  `sub-justify`, and non-auto `sub-font-provider`, matching the native
+  helper's supported renderer boundary instead of waiting for a native request
+  failure.
+- Added early fail-closed detection for `sub-ass-scale-with-window=yes`; the
+  selected mpv build applies this ASS-only scaling control, which the native
+  geometry helper does not model.
+- Extended the signed macOS autostart replay to exercise and recover sixteen
+  live unsupported-renderer boundaries, including ASS interpretation, scaling,
+  justification, font provider, timing, fps/stretch, cue-cache/end-of-video,
+  and subtitle-filter controls.
+- Added a live supported-renderer replay for `embeddedfonts=no`; the signed
+  native helper remained exact while the setting changed and after the default
+  was restored.
+- Added a dedicated multi-syllable karaoke ASS fixture to the independent
+  stock-mpv pixel oracle; all four requested syllable/word regions retained
+  nonzero coverage and the visible envelope matched at IoU `0.9953271028`.
+- Added a packaged macOS autostart replay that mutates an unsupported live mpv
+  renderer option, verifies exact geometry is withdrawn with a diagnostic, and
+  verifies exact geometry recovers after the option is restored.
+- Extended package validation to require the architecture, geometry, platform,
+  input-state, feature-matrix, migration, security, and validation handoff
+  documents inside the shipped ASAR.
+- Added fail-closed player-surface suspension for minimized or display-unavailable
+  macOS mpv windows, with native AppKit sidecar propagation of display visibility
+  and sleep state and integration coverage for recovery.
+- Added the standard macOS `Cmd+O` accelerator to the ordinary “Open media in
+  mpv…” workflow and included it in the native Settings/menu contract smoke.
+- Rebuilt the signed macOS arm64 directory package after the menu contract
+  change. Package/release validation, the native Settings/profile/backup smoke,
+  and final supplied-media windowed and native-fullscreen popup replays passed;
+  evidence is under `/tmp/iinatan-e2e-macos-final-20260908/run-55885-1788872949696/`
+  and `/tmp/iinatan-e2e-macos-fullscreen-final-20260908/run-56520-1788873129178/`.
+  The isolated idle/no-media window probe still reports its known
+  `fullscreen=true` versus AppKit style-mask mismatch and remains explicitly
+  separate from supplied-media fullscreen acceptance.
+- Extended the synthetic native-HID acceptance path to cover iinatan-style
+  no-popup shoulder subtitle stepping and D-pad seeking, in addition to
+  cursor-free popup targeting, entry navigation, proportional scrolling, and
+  audio-menu controls.
+- Hardened the stock-mpv native window smoke against the asynchronous runtime
+  loading of the AppKit content shim, and retained diagnostic details when the
+  native geometry helper exits unexpectedly.
+- Added an opt-in signed macOS live-resize replay. Stock mpv now changes
+  `window-scale` from exact `640x360` content to `480x270` and back while the
+  native sidecar and Electron geometry generations follow and recover; evidence
+  is under
+  `/tmp/iinatan-e2e-macos-resize-current-20260908d/run-36848-1788869186590/`.
+- Hardened the bounded native lifecycle replay to reacquire the current exact
+  subtitle geometry and lookup unit on every cycle instead of reusing a stale
+  target after outside-click dismissal. The signed 24-cycle macOS replay passed
+  with non-empty dictionary headwords, popup dismissal, pause preservation,
+  trusted input, and mpv liveness. Evidence is under
+  `/tmp/iinatan-e2e-macos-lifecycle-current-20260908-headword24/run-39844-1788869843224/`.
+- Repeated the signed native lifecycle replay on the single-display macOS
+  desktop with Screen Recording enabled. The four-cycle run opened the real
+  `careful` dictionary headword, preserved trusted native input and mpv
+  liveness, and produced a usable `18,557,748`-byte desktop recording under
+  `/tmp/iinatan-e2e-macos-single-display-recording-20260908/run-42106-1788870901542/`.
+- The current signed macOS arm64 package passed separate retained pointer/
+  feature-parity and synthetic-controller replays against the supplied
+  MARRIAGETOXIN media. Evidence is under
+  `/tmp/iinatan-e2e-macos-feature-parity-current-20260908-pointer-only/` and
+  `/tmp/iinatan-e2e-macos-controller-current-20260908-final-package/`.
+  A final combined replay, including the 8-second Screen Recording gate, is
+  retained under
+  `/tmp/iinatan-e2e-macos-feature-parity-current-20260908-final-combined/run-30723-1788867582870/`.
+- Made the packaged macOS companion select its bundled, validated native
+  subtitle-geometry backend by default. Direct stock-mpv launches now reach
+  lookupable exact geometry when the AppKit content shim and validated
+  mpv/libass/FFmpeg tuple are present; an explicit disable switch remains
+  available, and unsupported modes plus universal stock-glyph equivalence still
+  fail closed.
+- Corrected stock-mpv JSON IPC input framing. Controller seek, subtitle-step,
+  frame-step, volume, speed, and pause commands now reach mpv as flat command
+  arrays instead of being rejected as nested `command` parameters.
+- Coalesced lookup highlights across the complete selected word and widened
+  approximate wide-script glyph coverage without changing hit-test geometry;
+  exact controller target identity now survives overlapping subtitle spans, and
+  steady native HID samples are forwarded at the worker cadence for smoother
+  popup scrolling.
+- Preserved the native helper's additive visible-envelope rectangles through the
+  geometry snapshot. Exact native highlights and popup anchors now cover the
+  outline/shadow-visible glyph envelope while fill rectangles remain the
+  per-unit hit-test boundary.
+- Added a packaged macOS acceptance mode to the native desktop harness. The
+  signed `dist/mac-arm64/iinatan for mpv.app` passed the supplied-media popup,
+  selection, scroll, focus, dismissal, pause, liveness, and desktop-recording
+  replay, and the same bundle passed the fullscreen variant with popup focus
+  preservation; native input trust remains reported against the separately
+  signed desktop-test helper used to inject events.
+- Hardened native multi-session smoke cleanup so an already-exited mpv child is
+  never mistaken for a live process group during teardown.
+- Hardened browser-gamepad lifecycle handling. Blur, hidden-document, and
+  page-teardown transitions now publish a forced neutral state and stop the
+  browser poller, so a held controller input cannot survive a renderer focus
+  change or be delivered to a later surface.
+- Matched iinatan's controller repeat cadence: the first held-button or
+  right-stick repeat arrives after 340 ms, followed by 120 ms intervals.
+- Added a guarded macOS direct-mpv LaunchServices smoke. It verifies that an
+  unconfigured ordinary stock-mpv process publishes its default descriptor and
+  private IPC endpoint, starts a fresh installed companion through the session
+  script, and requires that companion to attach to the exact new session before
+  cleaning only its own player artifacts.
+- Extended the guarded direct-mpv smoke through the real packaged Settings
+  window and a live lookup. The signed macOS arm64 bundle now has replay
+  evidence for downloading Jitendex through the visible Settings control,
+  returning focus to the exact stock-mpv window, opening and capturing the
+  highlighted `人` popup, dismissing it with Escape, and preserving mpv pause
+  ownership.
+- Added macOS session-script discovery for the bundled content shim. Direct
+  stock-mpv launches now find a nearby or standard-user-location shim without
+  an explicit path, while the content boundary remains fail-closed when no
+  signed-compatible shim is available; the required stock-mpv auto-discovery
+  smoke passed on the validated arm64 host.
+- Added an integration regression for controller/mouse modality. A
+  controller-selected subtitle target keeps its highlight and lookup ownership
+  while the mouse travels through empty space or returns over the same word;
+  only a real hit on another subtitle unit hands control back to the pointer.
+- Aligned the no-popup controller defaults with iinatan's current profile:
+  D-pad up/down adjust volume, while explicit long-seek actions remain
+  available through the binding editor.
+- Fixed macOS fullscreen companion focus behavior. Overlay surfaces now use
+  non-activating AppKit panels, so opening, clicking, selecting, scrolling, and
+  keyboard-navigating a popup does not activate the helper application or force
+  mpv out of native fullscreen; dismissing the popup still returns focus to mpv.
+  The native fullscreen replay now records foreground-preservation samples and
+  fails closed if mpv stops being frontmost during popup interaction.
+- Added a single-instance guard for the menu-bar companion so a background
+  launch and a manual settings launch cannot create competing overlay hosts.
+- Fixed native subtitle hover continuity while a dictionary popup is open.
+  Moving to another lookupable subtitle unit now replaces the popup target and
+  moves the selection-style highlight instead of leaving stale content in
+  place. The highlight companion surface remains visible beneath the popup,
+  and measured popup reflow no longer preserves a placement that covers the
+  active subtitle anchor. A signed macOS replay verified the bound hit changing
+  between adjacent units, retained native text selection and dismissal, and
+  recorded both highlight positions in a 20-second desktop capture.
+- Added a macOS native multi-instance smoke for ordinary stock mpv. Two real
+  windows now attach to one Electron host through distinct session identities,
+  switch foreground ownership independently, remove one player cleanly, and
+  accept a replacement without IPC or controller cross-talk; Linux/Windows
+  validation remains deferred.
+- Extended the signed macOS Settings smoke through the real Save/Open panels.
+  It now scrolls to the backup controls with native wheel input, exports a
+  disposable wrapped settings document, selects it through the native file
+  panel, and verifies restore; the migration variant passes the same backup /
+  restore path while preserving its legacy dictionary reference.
+- Replayed macOS feature parity with the current Apple Development-signed helper
+  after rebuilding native text injection. The live Jitendex run passed five
+  audio candidates, one loopback Anki `addNote`, custom CSS, native selection,
+  scroll, focus, dismissal, pause, combined capture, and a 12-second desktop
+  recording; Accessibility and post-event trust were both true. Evidence is in
+  `/tmp/iinatan-e2e-macos-feature-parity-current-live/`.
+- Made the signed native feature-parity harness self-contained by supplying a
+  disposable loopback audio provider alongside its Anki mock. The current
+  supplied-media English replay passed five audio candidates and controller
+  audio selection without depending on a user-run service at `127.0.0.1:5050`;
+  the focused controller replay uses the same provider.
+- Added a live macOS six-language HoshiDicts matrix. The plugin downloaded and
+  imported one recommended dictionary for Japanese, English, German, French,
+  Korean, and Chinese, and each native popup replay passed selection, scroll,
+  focus, dismissal, pause, and liveness checks on 2026-09-08. Evidence is under
+  `/tmp/iinatan-e2e-macos-languages-live-current-20260908/`; other dictionaries
+  and full corpus correctness remain outside this bounded matrix. macOS desktop capture now
+  targets the display containing the player window and records its pixel
+  origin/scale, avoiding false geometry failures on non-main displays.
+- Added a bounded signed macOS native popup-lifecycle replay. The deterministic
+  24-cycle run repeatedly verified foreground activation, trusted pointer and
+  Escape input, popup dismissal, pause ownership, and mpv liveness, explicitly
+  leaving the subtitle region between cycles so hover transitions are genuine.
+  This is bounded lifecycle evidence and does not claim scanout timing or
+  long-run compositor stress.
+- Added a signed macOS six-language native routing matrix for Japanese, English,
+  German, French, Korean, and Chinese. Each deterministic demo replay passed
+  stock-mpv geometry, Electron popup, selection/focus, dismissal, and trusted
+  native-input checks; live six-corpus dictionary correctness remains separate.
+- Hardened transparent macOS popup input ownership: the host activates the
+  application before interactive input and registers a popup-visibility-scoped
+  global Escape fallback, then unregisters it on dismissal. The latest signed
+  feature-parity replay passed audio, Anki, selection, scroll, focus,
+  dismissal, pause, and combined-capture gates.
+- Kept dictionary cross-references display-only in the shipped overlay.
+  Nested lookup is intentionally excluded from iinatan-mp, matching the
+  product scope; imported reference-profile keys remain only for migration
+  compatibility and have no runtime effect.
+- Extended the signed macOS Settings smoke to switch a disposable `default` /
+  `study` profile through the real renderer control using native click and
+  keyboard input, edit a profile name with native text input, and create/delete
+  a disposable profile. The smoke now records the Electron content-boundary
+  offset, verifies both macOS input trust checks for each event, and confirms
+  the host profile state after each operation. An opt-in migration variant also
+  loads a legacy-shaped document through the real app and verifies normalized
+  schema, clamping, language values, and dictionary references.
+- Added native macOS feature-parity evidence for profile custom CSS. The signed
+  live replay applied a selector-based `#popup` rule through the disposable
+  profile, confirmed its bounded computed `#popup-panel` background and border
+  values in the real popup, and retained the audio, Anki, selection, scroll,
+  focus, dismissal, pause, and combined-capture gates.
+- Added the signed macOS native-controller contract smoke and corrected the
+  DualSense button/trigger mapping. Connected native HID input takes priority
+  over a duplicate browser Gamepad observation, while browser input remains a
+  fallback for other macOS controllers; physical-device acceptance remains
+  explicitly unverified.
 - Added a signed macOS feature-parity replay for popup actions. The native
   harness now targets renderer-measured audio and Anki controls, verifies five
   live audio candidates, and adds one note through an ephemeral loopback

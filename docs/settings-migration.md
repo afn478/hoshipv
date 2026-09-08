@@ -6,6 +6,12 @@ Values are normalized at the host boundary before they reach a controller or
 worker. The settings window presents the active runtime controls directly and
 keeps the complete JSON editor for less common migrated values.
 
+The current source inventory is 59 profile preference keys and 2 global setting
+keys (`GLOBAL_SETTINGS_KEYS`). This count is derived from
+`PROFILE_PREFERENCE_KEYS` and `GLOBAL_SETTINGS_KEYS` in
+`src/settings/defaults.js`; it is not a frozen assumption from an older
+reference audit.
+
 The settings window's Diagnostics card is a read-only host snapshot. It reports
 the detected platform/session, Electron runtime, player and dictionary backend,
 window capability, active-session geometry state, and the evidence boundary for
@@ -19,9 +25,9 @@ native input.
 - Lookup language, scan length, entry/glossary limits, lookup timeout, hover
   request timeout, subtitle refresh interval, and flattening of subtitle line
   breaks affect the live controller.
-- Popup minimum/maximum width, height, gap, scale, font scale, theme, nested
-  lookup, section-collapse settings, audio sources, and custom CSS affect the
-  browser surface.
+- Popup minimum/maximum width, height, gap, scale, font scale, theme,
+  section-collapse settings, audio sources, and custom CSS affect the browser
+  surface.
 - Backend timeout, direct worker polling, and worker idle sleep affect mpv IPC
   and the HoshiDicts queue. Changing worker idle sleep restarts the configured
   worker transactionally; a changed lookup timeout applies to subsequent
@@ -51,6 +57,10 @@ as equivalent behavior:
 - `debugLogEnabled` and `debugLogVerbose` remain available in the advanced JSON
   inventory; structured E2E status and native/backend diagnostics are emitted by
   the validation harness rather than enabling unrestricted renderer logging.
+- `nestedPopupMode` and `nestedPopupMaxDepth` are active in the Electron popup.
+  `off` preserves the display-only behavior; `click`, `hover`, and
+  `shift-hover` enable bounded child lookups up to the configured depth. These
+  child lookups do not add a separate assignable gamepad action.
 
 This distinction is intentional: preserving a key in a profile is not a claim
 that an IINA-only capability exists on every supported desktop platform.

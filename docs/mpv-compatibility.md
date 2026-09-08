@@ -41,7 +41,17 @@ Inspect a local build with:
 mpv --version
 ```
 
-The exact-content setup is opt-in:
+The exact-content boundary remains fail-closed, but a macOS session can load the
+bundled shim automatically when it is installed beside the session script or in
+one of the standard per-user mpv script locations. The search covers the
+session-script directory, its adjacent `bin/` and `build/native/` directories,
+`~/.config/mpv/scripts`, and
+`~/Library/Application Support/mpv/scripts`. An explicit
+`iinatan-native-shim` script option or `IINATAN_NATIVE_SHIM` environment value
+still takes precedence. If no candidate exists, the session continues without
+the shim and the host keeps window-frame geometry content-inexact.
+
+An explicit exact-content setup remains available:
 
 ```sh
 IINATAN_NATIVE_SHIM=/absolute/path/to/iinatan-mpv-window-shim.so \
@@ -53,6 +63,46 @@ mpv \
 The session script can also load the shim through its
 `iinatan-native-shim` script option or `IINATAN_NATIVE_SHIM` environment
 variable. Do not pass both mechanisms for the same process.
+
+The stock-mpv regression for automatic discovery is:
+
+```sh
+IINATAN_NATIVE_WINDOW=1 \
+IINATAN_NATIVE_SHIM_AUTO_REQUIRED=1 \
+npm run test:mpv:window
+```
+
+On the validated macOS arm64 host this passed on 2026-09-08 against stock mpv
+`0.41.0`, reporting AppKit content bounds `480x270`,
+`contentSource:"appkit-content-view"`, and `contentExact:true` without an
+explicit shim path. This proves the content sidecar was loaded through the
+ordinary session script; it does not close the separate stock-mpv subtitle
+glyph-equivalence question.
+
+## Direct mpv bootstrap
+
+The bundled session script can be loaded directly by an otherwise ordinary
+macOS mpv launch:
+
+```sh
+mpv --script=/absolute/path/to/iinatan-session.lua /absolute/path/to/video.mkv
+```
+
+When neither a session directory nor an IPC endpoint is supplied, the script
+creates a per-user descriptor directory under
+`~/Library/Application Support/iinatan for mpv/sessions`, assigns a private
+Unix socket for that process, and starts the installed `iinatan for mpv`
+menu-bar companion with `open -g -a`. This does not edit `mpv.conf`,
+`input.conf`, or the user's mpv script directory. Set
+`IINATAN_AUTO_START_COMPANION=0` (or the equivalent script option) to keep a
+direct launch from starting the companion. This macOS auto-start path is
+implemented and its acceptance smoke requires the fresh companion to report
+the exact mpv session identity after LaunchServices starts it; Linux and
+Windows retain the same descriptor/IPC defaults but
+do not yet claim an equivalent application-launch integration.
+The packaged macOS companion also selects the bounded native geometry helper
+by default when its validated player tuple and the AppKit content shim are
+available; unsupported tuples or modes remain fail-closed.
 
 ## Application bootstrap
 

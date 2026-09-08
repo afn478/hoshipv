@@ -22,6 +22,11 @@ The companion is split into a passive highlight surface and a focused popup
 surface. The passive surface ignores mouse input with platform forwarding;
 the popup surface owns the whole player content area while active so outside
 clicks can be consumed and cannot accidentally pause or seek mpv.
+On macOS both surfaces are Electron `panel` windows, which map to AppKit's
+non-activating panel style: the popup can receive native selection, keyboard,
+wheel, and button input while mpv remains the active application and a native
+fullscreen player is not forced into windowed mode. Dismissing the popup is the
+explicit boundary that restores player focus.
 
 The browser document does not import Electron. `app/preload.js` exposes a
 versioned, allowlisted bridge. `src/platform/browser-host.js` owns Electron
@@ -39,9 +44,11 @@ host-neutral and are the future CEF reuse boundary.
 - `SubtitleGeometryProvider` — separate subtitle track/event/unit geometry.
   The current fallback is intentionally marked approximate and is disabled for
   ordinary lookup. `NativeSubtitleGeometryService` uses the bundled macOS
-  helper only when `--enable-patched-native-geometry` is explicit; elsewhere it
-  remains an optional upgrade path for a separately validated native ASS
-  backend.
+  helper by default in the packaged companion when the validated mpv/libass/
+  FFmpeg tuple and AppKit content sidecar are present; source-development
+  launches require `--enable-patched-native-geometry`. Unsupported tuples and
+  renderer modes still fail closed, and the independent stock-mpv
+  glyph-equivalence gate remains separate.
 - `CoordinateMapper` — the only transform implementation between OSD, desktop,
   physical, and browser CSS spaces.
 - `InteractionController` — focus, ownership, cancellation, capture, and
@@ -66,16 +73,17 @@ split by display backend; native Wayland is not silently described as X11.
 
 ## Current phase
 
-The repository currently contains the Phase A host/geometry/input vertical
-slice and tests. The native geometry client boundary now has a validated
-protocol integration and a macOS arm64 helper artifact; the optional stock-mpv
-content sidecar has passed its real-window identity smoke, and the portable
-Windows/Linux dictionary worker builds and passes its import/lookup smoke.
-Exact ASS/libass correspondence, native desktop end-to-end evidence, platform
-geometry helpers, and full settings/service migration remain gated work. The
-bundled patched geometry helper is disabled for ordinary stock
-attachment until that equivalence oracle closes; an explicit
-`--enable-patched-native-geometry` opts into it. See `docs/native-geometry.md`,
-`docs/platform-capability-matrix.md` and
-`docs/feature-matrix.json`; “implemented” there never means native desktop
-verified unless the evidence column says so.
+The repository contains the Phase A host/geometry/input vertical slice and
+tests, plus the completed signed macOS arm64 native-desktop slice. The native
+geometry client boundary has a validated protocol integration and a bundled
+macOS helper artifact; the stock-mpv content sidecar has passed its real-window
+identity smoke; and the portable Windows/Linux dictionary worker builds and
+passes its import/lookup smoke. The remaining geometry gate is universal
+stock-mpv glyph equivalence, not the absence of a macOS runtime path: the
+packaged macOS companion enables the bounded helper by default when its tuple
+and content-sidecar checks pass, while source-development launches opt in with
+`--enable-patched-native-geometry`. Platform-native Windows/Linux geometry and
+desktop evidence remain unverified. See `docs/native-geometry.md`,
+`docs/platform-capability-matrix.md`, and `docs/feature-matrix.json`;
+“implemented” there never means native desktop verified unless the evidence
+column says so.

@@ -28,9 +28,20 @@ npm audit --audit-level=moderate
 npm outdated --json
 ```
 
-On the 2026-09-07 dependency/security review, `npm outdated --json` returned
+The real-media command-routing smoke is:
+
+```sh
+npm run test:mpv:commands
+```
+
+It sends the complete mapped player-command set through the live JSON-IPC
+bridge, including seek, subtitle-step, frame-step, volume, speed, and pause,
+and requires every command to be accepted by the installed stock mpv. The
+2026-09-08 run passed against mpv `0.41.0` and the supplied MARRIAGETOXIN file.
+
+On the 2026-09-08 dependency/security review, `npm outdated --json` returned
 `{}`, both regular and production-only `npm audit` runs reported zero
-vulnerabilities, and `validate:release` reported 34 feature-matrix rows and 50
+vulnerabilities, and `validate:release` reported 34 feature-matrix rows and 51
 runtime files. The native refresh kept libass `0.17.5` and the current
 HoshiDicts `main` revision while updating FFmpeg `9.0.1`, HarfBuzz `14.4.0`,
 FreeType `2.14.3`, FriBidi `1.0.16`, libunibreak `7.0`, zlib `1.3.2`, and
@@ -41,8 +52,9 @@ protocol-host validation, and the reviewed native checksums.
 
 The rebuilt macOS helper applies two hash-locked libass `0.17.5` patches: the
 unit-ID patch used for fill rectangles and an additive visible-envelope patch.
-The latter is exposed as `envelopeRects` for independent stock-pixel comparison;
-it does not widen the fill rectangles used by runtime hit testing.
+The latter is exposed as `envelopeRects`; it does not widen the fill rectangles
+used by runtime hit testing, and is used by the runtime only to cover the
+visible highlight and popup anchor.
 
 For stable macOS TCC attribution, sign the finished test helper after every
 native rebuild:
@@ -59,6 +71,44 @@ latest GUI-launched replay. Apple DTS recommends a stable signing identity becau
 uses the app's designated requirement when attributing grants:
 [Apple Developer Forums](https://developer.apple.com/forums/thread/730043).
 
+The macOS native-controller contract smoke is:
+
+```sh
+IINATAN_NATIVE_CONTROLLER_REQUIRED=1 \
+IINATAN_NATIVE_CONTROLLER_REQUIRE_STABLE_SIGNING=1 \
+npm run test:native:controller
+```
+
+It runs the finished helper's version and `controller-state` commands, checks
+the complete button/trigger schema and generic `gamepad` capability, and
+records the signer/CDHash. The current host reported a valid Apple Development
+signature and an attached DualSense through that generic HID path; physical
+controller focus, hotplug, and device-compatibility acceptance remain separate
+evidence gates.
+
+The macOS multi-instance native smoke is:
+
+```sh
+IINATAN_E2E=1 npm run test:native:multi
+```
+
+It launches two ordinary stock-mpv windows using the supplied MARRIAGETOXIN
+media and the optional AppKit content sidecar, then starts one normal Electron
+host against the shared session directory. The host must attach two distinct
+PID/session/window identities with exact AppKit content bounds. The smoke
+changes `volume` independently through both live JSON-IPC endpoints, requests
+foreground ownership for each player in turn through trusted native move/click
+input, closes one player and waits for its controller to disappear and its
+descriptor to become non-live, then starts a replacement and checks that the
+surviving and replacement sessions remain isolated. This extends the headless
+identity test into the real macOS window/host lifecycle; it remains separate
+from the stock-mpv per-glyph equivalence oracle.
+The latest 2026-09-08 rerun passed the initial two-session attachment,
+independent volumes `17`/`63`, trusted foreground clicks on both windows,
+removal of the closed session, replacement attachment, replacement volumes
+`29`/`77`, and surviving/replacement isolation. Evidence is in
+`/tmp/iinatan-native-multi-current/result.json`.
+
 The real browser-document integration smoke is:
 
 ```sh
@@ -73,19 +123,22 @@ Wayland behavior, compositor stacking, or native pointer injection.
 
 It runs the shipped overlay document in the pinned Electron/Chromium engine,
 with the sandboxed preload and actual renderer event handlers. It exercises a
-large structured dictionary entry, nested lookup, selection reporting, audio
-source menus, controller commands, keyboard/wheel/outside-pointer messages,
-highlight rendering, accessibility semantics, stale-generation rejection,
-right-click/context-menu pass-through, focus retention, content security policy,
-and unsafe custom-CSS rejection. Nested coverage includes click, hover, and
-Shift+hover gating, depth metadata, and the parent-navigation control; audio
-coverage includes request-ID stale-result rejection. It is intentionally
-separate from native desktop evidence: synthetic DOM events and hidden browser
-windows cannot prove OS focus, compositor stacking, click-through, or native
-input. It also delivers
+  large structured dictionary entry, cross-reference rendering, nested child
+  lookups, selection reporting, audio source menus, controller commands, keyboard/wheel/outside-
+pointer messages, highlight rendering, accessibility semantics, stale-
+generation rejection, right-click/context-menu pass-through, focus retention,
+content security policy, and unsafe custom-CSS rejection. Nested coverage
+includes request correlation, bounded depth, child replacement, cancellation,
+and deepest-first Escape dismissal. Audio coverage includes request-ID
+stale-result rejection. It is intentionally separate from native desktop evidence:
+synthetic DOM events and hidden browser windows cannot prove OS focus,
+compositor stacking, click-through, or native input. It also delivers
 the typed `capabilities` event to both surfaces and asserts the
 passive-forwarded versus interactive-native input modes and the layout-only
-popup reflow path in the real Chromium document.
+popup reflow path in the real Chromium document. The current run also
+dispatches a renderer blur and verifies that the browser fallback publishes a
+forced neutral controller state, closing the lifecycle edge where a held input
+could otherwise survive a surface focus change.
 
 The real settings-document integration smoke is:
 
@@ -121,14 +174,40 @@ fullscreen graphical E2E gates are exercised on this host; stock-mpv
 glyph-equivalence for advanced rendering and other platform claims remain
 separate gates.
 
-The latest rerun on macOS 25.6.0 arm64, Apple M4, Node v24.16.0, with
-Electron 44.2.0 pinned and a 480-unit/two-track fixture, measured coordinate
-round trip p95 `0.000381 ms/op`, hit testing p95 `0.027995 ms/op`, popup
-placement p95 `0.000933 ms/op`, plain subtitle geometry p95 `0.010527 ms/op`,
-and structured dictionary normalization p95 `0.661510 ms/op`. These values are
-reproducible microbenchmark observations, not display-latency guarantees;
-rerunning the benchmark may produce small changes from normal host scheduling
-variance.
+The latest rerun on 2026-09-08 at 15:03 UTC on macOS 25.6.0 arm64, Apple M4,
+Node v24.16.0, with Electron 44.2.0 pinned and a 480-unit/two-track fixture,
+measured coordinate round trip p95 `0.000192 ms/op`, hit testing p95
+`0.026623 ms/op`, popup placement p95 `0.000930 ms/op`, plain subtitle geometry
+p95 `0.010314 ms/op`, and structured dictionary normalization p95
+`0.635148 ms/op`. These values are reproducible microbenchmark observations,
+not display-latency guarantees; rerunning the benchmark may produce small
+changes from normal host scheduling variance.
+
+After the live renderer-option fail-closed change, the same benchmark measured
+coordinate round trip p95 `0.000271 ms/op`, hit testing p95 `0.026559 ms/op`,
+popup placement p95 `0.001048 ms/op`, plain subtitle geometry p95
+`0.010141 ms/op`, and structured dictionary normalization p95
+`0.634319 ms/op`. This follow-up remains a host-side regression check, not a
+screen-presentation measurement.
+
+The native desktop vertical slice can target the finished packaged application
+instead of the source Electron entrypoint by setting
+`IINATAN_E2E_PACKAGED_APP` to either the `.app` bundle or its executable. The
+current signed bundle passed the supplied MARRIAGETOXIN replay with exact
+AppKit content geometry, trusted native pointer/keyboard/scroll input, hover
+replacement, native text selection, popup foreground preservation, Escape and
+outside-panel dismissal, pause/liveness checks, and an 8-second Screen
+Recording capture. Structured evidence is in
+`/tmp/iinatan-e2e-packaged-current-20260908/run-24070-1788854673524/`.
+The packaged fullscreen variant also passed exact `1470x923` AppKit content
+bounds, popup replacement, selection, keyboard focus, Escape, outside-panel
+dismissal, pause ownership, and mpv liveness; its evidence is under
+`/tmp/iinatan-e2e-packaged-fullscreen-20260908/run-27441-1788855636525/`.
+The packaged companion grant and the native synthetic-input grant are separate
+boundaries: the former belongs to
+`dist/mac-arm64/iinatan for mpv.app`, while the latter is attributed to the
+stable-signed `build/native/iinatan-desktop-test.app` helper that emits test
+events.
 
 The native desktop harness separately emits `latency` distributions for
 pointer-to-popup, combined-capture popup visibility, native selection, popup
@@ -138,6 +217,18 @@ ends at the first successful changed-pixel result in a desktop capture that
 contains both mpv and Electron. It is a compositor-visible upper-bound rather
 than a scanout timestamp; the other values also include helper startup, status
 polling, and Electron/IPC scheduling.
+
+The native interaction matrix also guards popup/highlight hover continuity. It
+requires the highlight window to remain visible and above the owned player
+while the popup is open, moves directly to a second subtitle unit outside the
+measured popup panel, and waits for the popup's bound track/event/unit identity
+to change. The signed 2026-09-07 replay changed adjacent `careful` units from
+`c` to `a` in `129.377 ms`; frame inspection showed the blue highlight move to
+the new glyph without the popup covering the active subtitle anchor. The run
+then passed native text selection, Escape dismissal, explicit leave/re-entry,
+outside-panel dismissal, pause preservation, and mpv liveness. Its screenshot,
+20-second recording, status, and report are under
+`/tmp/iinatan-hover-fix-evidence4/run-18321-1788810223636/`.
 
 After `npm run package:dir` (or `npm run package` when distributable targets are
 also wanted), validate the generated platform directory package:
@@ -185,11 +276,21 @@ IINATAN_NATIVE_SETTINGS=1 npm run test:settings:native
 
 It launches the normal Electron application with the Settings window visible in
 a disposable user-data directory, checks the real application-menu Settings
-item, exercises the signed native `Cmd+,` input path and records both macOS
-trust checks, compares the CoreGraphics window-probe frame with Electron's
-window bounds, and verifies native activation plus foreground ownership for the
-focused Settings window. Profile create/switch/delete remains covered by the
-real settings-document smoke; other menu accelerators remain outside this test.
+item and the Open Media `Cmd+O` item, exercises the signed native `Cmd+,` input
+path and records both macOS trust checks, compares the CoreGraphics window-probe frame with Electron's
+window bounds, verifies native activation plus foreground ownership for the
+focused Settings window, and switches a disposable `default`/`study` profile
+through the renderer-measured `<select>` with trusted native click/down/return
+and click/up/return sequences. It then uses trusted native text input to edit a
+profile name and the real create/delete controls for a disposable profile.
+Set `IINATAN_NATIVE_SETTINGS_MIGRATION=1` to feed the same real application a
+legacy-shaped settings document first; the smoke then verifies normalized
+schema, language, clamp, and preserved dictionary-reference values after the
+first profile action. It also uses trusted native scrolling and key events to
+drive the real macOS Save/Open panels through a disposable backup path, verifies
+the wrapped export document, mutates only the disposable settings file, and
+confirms restore through the real app. Other menu accelerators remain outside
+this test.
 
 The profile runtime timing controls are bounded during settings normalization and
 are applied to the live session: dictionary lookup and hover-request deadlines,
@@ -238,6 +339,179 @@ MARRIAGETOXIN file, including the bundled macOS content shim path. The Unix
 socket endpoint is deliberately kept short because macOS limits Unix socket
 address lengths; the test therefore also protects the ordinary launcher from a
 platform-specific path-length regression.
+
+A direct-session probe was also run against the same stock mpv without an
+explicit session directory or IPC endpoint. With companion auto-start disabled
+for isolation, `iinatan-session.lua` created the default macOS descriptor and
+Unix socket, published matching PID/IPC identity, and removed both artifacts
+after a graceful JSON-IPC quit. A controlled `open -g -a` probe verified the
+macOS companion auto-start command and default application name; the live
+unconfigured direct-mpv LaunchServices check is recorded below.
+
+The refreshed signed macOS arm64 directory package was then launched with an
+isolated user-data directory and attached to the same direct stock-mpv default
+session contract. The package discovered the real PID/IPC descriptor, stayed
+attached while mpv was alive, and removed the session after graceful mpv quit;
+the bounded process was then stopped. This proves packaged direct attach/detach
+independently of any existing menu-bar companion; the fresh-LaunchServices
+auto-start path is validated separately below.
+
+The guarded direct-launch smoke closes that final bootstrap check:
+
+```sh
+IINATAN_E2E_AUTOSTART_REQUIRED=1 \
+IINATAN_E2E_AUTOSTART_RESTART=1 \
+IINATAN_E2E_AUTOSTART_NATIVE_GEOMETRY_DEFAULT_REQUIRED=1 \
+IINATAN_E2E_EVIDENCE_DIR=/tmp/iinatan-autostart-evidence-20260908b \
+npm run test:native:autostart
+```
+
+It temporarily stops the existing project companion, launches ordinary
+Homebrew mpv with only the bundled session script and supplied MARRIAGETOXIN
+media, verifies the default descriptor and live JSON-IPC PID, and observes a
+fresh `iinatan for mpv` process selected by LaunchServices. The smoke then
+requires the fresh companion's own status document to report the exact new
+session ID and PID, so process existence alone cannot satisfy the bootstrap
+gate. With
+`IINATAN_E2E_AUTOSTART_NATIVE_GEOMETRY_DEFAULT_REQUIRED=1`, it additionally
+requires `native-libass-instrumented`, `contentExact:true`, and `exact:true`
+without passing an explicit geometry-enable flag. The refreshed signed package
+passed that stronger replay on 2026-09-08 with descriptor PID `65276`,
+companion PID `65278`, and native geometry diagnostics showing validation
+enabled; evidence is in
+`/tmp/iinatan-e2e-macos-autostart-default-geometry-20260908/result.json` and
+`/tmp/iinatan-e2e-macos-autostart-default-geometry-20260908/last-status.json`.
+The smoke removes only its test mpv descriptor/socket and restores a normal
+menu-bar companion when one was running before the test.
+
+The same acceptance was rerun against the isolated final arm64 directory
+package, rather than the previously registered development application, by
+setting `IINATAN_E2E_AUTOSTART_COMPANION_APP` and
+`IINATAN_E2E_AUTOSTART_EXPECTED_APP` to
+`build/final-macos-arm64/mac-arm64/iinatan for mpv.app`. It passed on
+2026-09-08 with direct-session PID `38957`, fresh packaged companion PID
+`38959`, `contentExact:true`, `instrumentationValidated:true`, and
+`exact:true`; evidence is in
+`/tmp/iinatan-autostart-final-package-20260908/result.json` and
+`/tmp/iinatan-autostart-final-package-20260908/last-status.json`.
+
+The stronger isolated direct-launch replay also exercises the real Settings
+window and a live lookup before teardown:
+
+```sh
+IINATAN_E2E_AUTOSTART_REQUIRED=1 \
+IINATAN_E2E_AUTOSTART_RESTART=1 \
+IINATAN_E2E_AUTOSTART_LIVE_POPUP=1 \
+IINATAN_E2E_AUTOSTART_DICTIONARY_ID=jitendex-ja-en \
+IINATAN_E2E_EVIDENCE_DIR=/tmp/iinatan-e2e-macos-autostart-live-popup-20260908-successful \
+npm run test:native:autostart
+```
+
+On 2026-09-08 this passed with a fresh packaged companion and an isolated
+temporary user-data directory. The smoke opened Settings, scrolled to the
+actual recommended dictionary control, downloaded Jitendex through its real
+Download button, closed Settings, re-activated the exact stock-mpv window by
+PID identity, opened the live `人` popup with its native highlight, captured
+the desktop, dismissed with Escape, and verified that mpv remained paused.
+The native helper reported both `accessibilityTrusted:true` and
+`postEventTrusted:true`; the evidence is in
+`/tmp/iinatan-e2e-macos-autostart-live-popup-20260908-successful/result.json`,
+`last-status.json`, and `direct-live-popup.png`. This is packaged macOS
+direct-workflow evidence; it does not claim universal stock-glyph equivalence
+or acceptance of every dictionary corpus.
+
+The current post-rebuild replay used the supplied MARRIAGETOXIN file and the
+current `dist/mac-arm64/iinatan for mpv.app` bundle through the ordinary
+LaunchServices name, after stale duplicate development bundles were
+unregistered and moved to a recoverable quarantine. It passed with direct mpv
+PID `77215` and companion PID `77217`, exact AppKit content geometry,
+`native-libass-instrumented`, `contentExact:true`, and `exact:true`. The live
+Settings flow downloaded `jitendex-ja-en`, then native pointer input targeted
+`人` and opened the live `人間` result; trusted Settings/input/dismissal,
+renderer-option fail-closed/recovery, pause preservation, and teardown all
+passed. Evidence is in
+`/tmp/iinatan-functional-current-direct-supplied-media-20260908/`.
+
+The same direct workflow was repeated against the final rebuilt arm64 package
+with the native-geometry-default requirement enabled. It again passed fresh
+LaunchServices companion selection, exact AppKit content attachment, real
+Settings dictionary download, live `人` lookup/highlight, native dismissal,
+pause preservation, and trusted native input. Evidence is in
+`/tmp/iinatan-e2e-macos-autostart-current-20260908-final-package/`.
+
+The current final-package rerun recorded the complete structured result in
+`/tmp/iinatan-autostart-live-final-package-current-20260908/result.json` and
+the desktop capture in `direct-live-popup.png`. It used direct mpv PID `40047`
+and packaged companion PID `40053`; the Jitendex download completed in
+`3943 ms`, the live unit was `人`, and the combined ScreenCaptureKit result was
+`2940x1912` at scale `2`. Native input reported both accessibility and
+post-event trust for Settings scroll/click, lookup movement, and Escape.
+
+The post-rebuild session-discovery cleanup replay then used the final package
+against direct mpv PID `49746` and companion PID `49748`. It passed exact native
+geometry attachment and teardown with no `.geometry.json` sidecar remaining;
+the cleanup is limited to sidecars whose PID is no longer alive, including
+interrupted `.next` writes, and intentionally leaves dead session descriptors
+available for the existing crash-recovery replacement path. Evidence is in
+`/tmp/iinatan-autostart-sidecar-reap-20260908/`.
+
+After the renderer-setting forwarding change, the rebuilt final package passed
+the direct LaunchServices attach/default-geometry replay again with direct mpv
+PID `60019` and companion PID `60021`; the native source reported
+`native-libass-instrumented`, `instrumentationValidated:true`,
+`contentExact:true`, and `exact:true`. The bridge unit regression separately
+exercises non-default force-margin, hinting, and shaper values. Evidence for
+the packaged replay is in `/tmp/iinatan-autostart-renderer-options-20260908/`.
+
+The subsequent package containing the fail-closed renderer-option gate passed
+the same direct replay with mpv PID `70239` and companion PID `70257`, again
+reporting exact AppKit content geometry and instrumented validation. Its
+package evidence is in `/tmp/iinatan-autostart-renderer-gate-20260908/`.
+
+The live fail-closed replay mutates the running stock mpv through JSON IPC with
+sixteen unsupported renderer cases: `sub-ass-style-overrides`, `sub-ass=no`,
+`sub-ass-scale-with-window=yes`, `sub-ass-justify=yes`, `sub-justify=left`,
+`sub-font-provider=none`, `sub-fix-timing=yes`, non-default
+`sub-fix-timing-threshold` and `sub-fix-timing-keep`, non-default `sub-fps`,
+`sub-stretch-durations=yes`, `sub-clear-on-seek=yes`,
+`sub-past-video-end=yes`, non-empty `sub-filter-regex` and `sub-filter-jsre`,
+and non-default `sub-filter-sdh-enclosures`. For each case the packaged helper
+withdraws exact geometry, reports
+`NATIVE_GEOMETRY_INPUT_UNSUPPORTED`, and exposes only the conservative
+plain-text approximation; restoring the original value recovers instrumented
+exact geometry. The replay records one invalidation/recovery pair per option in
+`result.json`. The latest signed-package run covered geometry generations
+`83`–`138` for direct mpv PID `33805` and companion PID `33807`; the same run
+then toggled the supported `embeddedfonts=no` control while retaining exact
+instrumented geometry and recovered the default at generations `139`–`140`.
+Evidence is in
+`/tmp/iinatan-autostart-renderer-boundaries-embeddedfonts-20260908/`. The
+replay command is:
+
+```sh
+IINATAN_E2E_AUTOSTART_REQUIRED=1 \
+IINATAN_E2E_AUTOSTART_RESTART=1 \
+IINATAN_E2E_AUTOSTART_NATIVE_GEOMETRY_DEFAULT_REQUIRED=1 \
+IINATAN_E2E_AUTOSTART_FAIL_CLOSED_REQUIRED=1 \
+IINATAN_E2E_AUTOSTART_COMPANION_APP="/absolute/path/to/iinatan for mpv.app" \
+IINATAN_E2E_AUTOSTART_EXPECTED_APP="/absolute/path/to/iinatan for mpv.app" \
+npm run test:native:autostart
+```
+
+A fresh post-rebuild default-geometry replay on the single-display desktop
+also passed without the live-popup extension: LaunchServices selected the
+newly started companion PID `57031` for stock-mpv PID `57027`, and the status
+contract reported `native-libass-instrumented`, `exact:true`,
+`contentExact:true`, and instrumentation validation enabled. The smoke restored
+the normal menu-bar companion and left no test mpv process running.
+
+After the public layout-interface probe was added, the newly rebuilt and
+Apple-Development-signed package passed the same direct stock-mpv attach again:
+mpv PID `63613` attached to companion PID `63627`, with
+`native-libass-instrumented`, `instrumentationValidated:true`,
+`contentExact:true`, and `exact:true`. Evidence is in
+`/tmp/iinatan-autostart-final-package-layout-interface-20260908/`; the teardown
+left the normal companion running and no test mpv or geometry sidecar.
 
 The packaged launcher also accepts an explicit media path without requiring an
 application window or terminal:
@@ -300,6 +574,23 @@ IINATAN_NATIVE_WINDOW=1 \
 IINATAN_NATIVE_SHIM=/absolute/path/to/build/native/iinatan-mpv-window-shim.so \
 npm run test:mpv:window
 ```
+
+The normal macOS session script also auto-discovers the bundled content shim
+from its own directory, adjacent `bin/` or `build/native/` directories, and
+the standard per-user mpv script locations. The discovery path is required by
+this focused smoke with:
+
+```sh
+IINATAN_NATIVE_WINDOW=1 \
+IINATAN_NATIVE_SHIM_AUTO_REQUIRED=1 \
+npm run test:mpv:window
+```
+
+The 2026-09-08 macOS arm64 run passed against stock mpv `0.41.0` without an
+explicit `IINATAN_NATIVE_SHIM`, reporting AppKit content bounds `480x270`,
+`contentSource:"appkit-content-view"`, and `contentExact:true`. This is
+content-sidecar loading evidence only; subtitle glyph equivalence remains a
+separate geometry-oracle boundary.
 
 It launches a visible, unmodified stock mpv, reads the repository session
 descriptor, and uses the platform window probe to verify the real process
@@ -588,9 +879,12 @@ IINATAN_DICTIONARY_DOWNLOAD_REQUIRED=1 npm run test:dictionary:download
 This uses a disposable settings/install root, downloads the configured
 Jitendex release, validates and imports it through HoshiDicts, starts the
 worker from the managed path, and performs a real `猫を見る` lookup. The
-latest macOS arm64 run on 2026-09-07 downloaded 36.9 MiB, installed one
-enabled dictionary, and returned two lookup results in 2.034 seconds for
-download/import, 15 ms for worker readiness, and 24 ms for lookup. It is
+latest macOS arm64 run on 2026-09-08 downloaded 36.9 MiB, installed one
+enabled dictionary, and returned two lookup results in 2.197 seconds for
+download/import, 15 ms for worker readiness, and 23 ms for lookup. The same
+run reported the signed HoshiDicts `1.11.0` wrapper with revision
+`a28d82eb0f169b8ceff79e8c99ffe0b96709ab27`, libass `0.17.5`, FFmpeg `9.0.1`,
+and arm64 ASS geometry support. It is
 opt-in because it requires network access and an upstream archive; it does
 not modify the user's settings or dictionary directory.
 
@@ -653,7 +947,7 @@ It renders deterministic bottom, Unicode, mixed-language, missing-font
 fallback, simple external SubRip, color-separated, single-event inline-color,
 unique-color unit-identity, top,
 style-level positioned, explicit-position, explicit-movement, static-tag,
-bounded-transform, and
+vector-clip, advanced-non-drawing-tag, bounded-transform, and
 multiple-event/multiline ASS fixtures separately, then renders both fixtures
 simultaneously with unmodified stock mpv's `vo=image`,
 once with explicit `secondary-sub-ass-override=no` and once with stock's
@@ -684,14 +978,25 @@ The explicit-movement fixture produced IoU `0.8862068965517241` with nonzero
 coverage for its requested phrase region. The static-tag fixture produced IoU
 `0.9422287390029326` with nonzero coverage for its requested phrase region.
 The bounded-transform fixture produced IoU `0.8994301994301994` with nonzero
-coverage for its requested phrase region. Across the seventeen cases, all
-fifty-two requested per-case unit observations had nonzero bounds coverage.
+coverage for its requested phrase region. The vector-clip fixture produced IoU
+`0.8388552093613422`; its visible-envelope IoU was `0.9971181556195965`.
+The advanced non-drawing-tag fixture produced IoU `0.9065478657273104`; its
+visible-envelope IoU was `1.0`. The dedicated multi-syllable karaoke fixture
+produced IoU `0.8325508607198748`, visible-envelope IoU
+`0.9953271028037384`, and nonzero coverage for all four requested
+syllable/word regions. Across the twenty cases, all fifty-eight requested
+per-case unit observations had nonzero bounds coverage.
 This is a bounds-and-unit coverage oracle with independently annotated unit
 identity evidence, not proof that arbitrary stock-mpv glyph layout has been
-exposed. The same run also records additive visible-envelope IoUs; those are
-validation evidence only and do not change the fill-based runtime contract.
-Across the seventeen cases, visible-envelope IoU ranged from
+exposed. The same run also records additive visible-envelope IoUs; those
+validate the visual envelope used by highlights and popup anchors but do not
+change the fill-based hit-test contract.
+Across the twenty cases, visible-envelope IoU ranged from
 `0.8845315904139434` to `1.0`.
+The final post-package-rebuild rerun on 2026-09-08 exited successfully across
+the complete selected fixture set, including the simultaneous primary and
+secondary-track cases; the optional alpha-isolated per-glyph diagnostic is
+recorded separately below.
 
 The simple external SubRip native request mirrors stock mpv's text-to-ASS
 conversion for ordinary `.srt`/`.subrip` cues. It is bounded to the observed
@@ -703,11 +1008,14 @@ alignment and the observed default renderer options; arbitrary custom positions,
 alignments, fonts, colors, scale options, advanced ASS features, native per-unit
 identity probes, platform scaling, and combined compositor capture remain open
 for the native adapter and desktop path. The explicit-position,
-explicit-movement, static-tag, and bounded-transform fixtures are the bounded
-exceptions: valid
+explicit-movement, static-tag, vector-clip, advanced-non-drawing-tag, and
+bounded-transform fixtures are the bounded exceptions: valid
 `\\pos(x,y)`, `\\move(x1,y1,x2,y2[,t1,t2])`, and the validated static renderer
 tags (including `\\an`, `\\fn`, `\\fs`, `\\fsp`, `\\bord`, `\\shad`, `\\frz`,
-rectangular `\\clip`, and bounded `\\k` karaoke), plus bounded `\\t(...)` forms
+rectangular `\\clip` including bounded vector paths, and bounded `\\k` karaoke),
+the non-drawing `\\fad`, `\\fade`, `\\org`, legacy alignment,
+underline/strikeout, axis-border, font-encoding, and explicit text-mode forms,
+plus bounded `\\t(...)` forms
 with numeric timing and supported nested modifiers, are passed through to
 libass and covered by the stock-pixel oracle. The
 style-level fixture is independent stock-mpv pixel
@@ -730,6 +1038,17 @@ the sampled event midpoint; the stock-mpv comparison produced IoU
 `0.8994301994301994`. Nested transforms and malformed timing remain
 fail-closed.
 
+The `native-ass-geometry-vector-clip-smoke.ass` fixture covers a bounded
+vector path around lookupable text. Its native fill bounds had IoU
+`0.8388552093613422` against unmodified stock mpv, while the additive visible
+envelope had IoU `0.9971181556195965`; malformed vector paths still fail closed.
+
+The `native-ass-geometry-advanced-tags-smoke.ass` fixture covers non-drawing
+`\\fad`, `\\fade`, `\\org`, legacy alignment, axis-border, underline/strikeout,
+font-encoding, and explicit text-mode tags. Its native fill bounds had IoU
+`0.9065478657273104`, while the additive visible envelope had IoU `1.0`.
+Drawing mode, unknown tags, and malformed forms remain fail-closed.
+
 The supplied-media ASS attachment smoke uses the real MARRIAGETOXIN MKV, the
 selected embedded ASS stream, and its attached fonts:
 
@@ -744,13 +1063,30 @@ npm run test:stock-pixels:media:ass
 The current run found 24 attachments, requested 30 visible graphemes, and
 reported nonzero coverage for all seven word probes. Visible-envelope IoU was
 `1.0`; the primary-colour fill IoU was `0.9990138067061144`. This confirms
-character-plane registration and whole-subtitle envelope alignment while
-keeping the full per-glyph stock-mpv equivalence gate open for decorative
-outline/shadow assignment.
+character-plane registration and whole-subtitle envelope alignment; the
+selected alpha-isolated per-glyph fixture also passed all seven visible-fill
+comparisons. Decorative outline/shadow assignment for arbitrary ASS remains
+outside the full stock-mpv equivalence gate.
 
-`native-ass-geometry-unsupported-modes-smoke.ass` exercises vector clipping,
-drawing mode, and unknown tags.
-The native request builder rejects each case, and the controller exposes the
+After the envelope field was propagated into the runtime snapshot, the refreshed
+signed directory package passed a deterministic packaged macOS replay with
+native selection, popup scrolling, hover replacement, focus preservation,
+outside dismissal, pause/liveness, combined desktop capture, and an 8-second
+Screen Recording. The snapshot evidence contained both fill and envelope
+rectangles. Evidence is retained under
+`/tmp/iinatan-e2e-packaged-envelope-20260908/run-47341-1788859913808/`.
+
+The same refreshed package was then replayed against the supplied
+MARRIAGETOXIN MKV using subtitle track `15`, live `jitendex-ja-en` import, and
+the Japanese lookup path. It passed native selection (`Jitendex.`), popup
+scrolling (`1501.5`), hover replacement, popup focus preservation, outside
+dismissal, pause/liveness, combined capture, and an 8-second Screen Recording.
+Evidence is retained under
+`/tmp/iinatan-e2e-packaged-marragiatoxin-envelope-20260908/run-47815-1788860079676/`.
+
+`native-ass-geometry-unsupported-modes-smoke.ass` exercises drawing mode and
+unknown tags. Vector clipping is covered by the separate bounded fixture above.
+The native request builder rejects each unsupported case, and the controller exposes the
 bounded failure code/message through Settings Diagnostics instead of publishing
 approximate lookup rectangles in ordinary runtime mode.
 
@@ -994,6 +1330,77 @@ and Hoshi backend passed with selection text `unter`, scroll offset `480`,
 process. It also reopened the popup and consumed an outside-panel click without
 toggling mpv. Evidence is in
 `/tmp/iinatan-e2e-evidence-native-interaction-live5/run-40186-1788722388725/`.
+The deterministic macOS dictionary fixture includes cross-reference text so
+the browser surface verifies nested child lookup and the native surface still
+verifies safe structured rendering. The native interaction matrix does not
+inject a nested child result; the real Electron document smoke is the current
+automated nested-navigation evidence.
+Set `IINATAN_E2E_RESIZE_TRANSITION=1` alongside the native interaction matrix
+to exercise a live stock-mpv `window-scale` transition. The signed macOS run
+changed the player content from exact `640x360` to `480x270`, followed the
+native sidecar geometry and Electron geometry generation, restored `640x360`,
+and kept the popup surface dismissed throughout. Evidence is under
+`/tmp/iinatan-e2e-macos-resize-current-20260908d/run-36848-1788869186590/`.
+This covers runtime resize/recovery; mpv's initial `--geometry` remains a
+launch-time placement option rather than a runtime movement API.
+Set `IINATAN_E2E_NATIVE_LIFECYCLE_CYCLES=N` alongside
+`IINATAN_E2E_NATIVE_INTERACTION=1` to repeat the signed macOS hover/popup/
+Escape path for a bounded number of cycles (maximum 24). Each cycle verifies
+foreground ownership, `accessibilityTrusted:true`, `postEventTrusted:true`,
+popup dismissal, pause preservation, and mpv liveness. The harness moves to a
+measured subtitle-free point and waits for the hit to clear before the next
+cycle, so repeated passes exercise a real leave-and-re-enter transition rather
+than repeatedly targeting an unchanged cursor location. The 2026-09-08
+deterministic 24-cycle replay passed after reacquiring the current exact
+geometry/unit target on every cycle and requiring a non-empty dictionary
+headword; evidence is in
+`/tmp/iinatan-e2e-macos-lifecycle-current-20260908-headword24/run-39844-1788869843224/`. This remains a
+bounded native lifecycle check, not scanout-latency measurement or long-run
+compositor stress.
+The macOS six-language routing matrix is:
+
+```sh
+npm run test:native:languages
+```
+
+It runs the real stock-mpv/Electron/native-input replay separately for `ja`,
+`en`, `de`, `fr`, `ko`, and `zh`, with a deterministic subtitle fixture and
+the demo dictionary. The 2026-09-08 run passed every route with
+`accessibilityTrusted:true` and `postEventTrusted:true`; aggregate evidence is
+under `/tmp/iinatan-e2e-macos-languages/`. This is native routing and popup
+evidence, not a claim that six live dictionary corpora were downloaded or
+validated.
+
+A later rerun on the same date reached the Korean route with the native mpv
+window and the Korean fixture visible, but the still-open macOS TCC dialog for
+ChatGPT was in front of the desktop. The native move call returned trusted
+input, yet the popup did not open; the run therefore terminated at the pointer
+probe rather than identifying a Korean lookup regression. Its retained desktop
+evidence is `/tmp/iinatan-e2e-macos-languages/ko/run-91734-1788843825729/`.
+The earlier complete matrix remains the authoritative six-route result until
+the external dialog is dismissed and the rerun can be repeated cleanly.
+The live variant is:
+
+```sh
+npm run test:native:languages:live
+```
+
+It uses the plugin's own recommended-dictionary download/import path for
+Jitendex, wty-en-en, wty-de-en, wty-fr-en, wty-ko-en, and CC-CEDICT, then repeats
+the native popup, selection, scroll, focus, dismissal, pause, and liveness
+checks. The 2026-09-08 run passed all six languages with trusted native input;
+aggregate evidence is under
+`/tmp/iinatan-e2e-macos-languages-live-current-20260908/`. The run reported
+`accessibilityTrusted:true` and `postEventTrusted:true` for every route and
+retained each language's dictionary metadata, popup selection, and latency
+report. This proves one recommended dictionary per language, not every
+available dictionary or every corpus entry.
+On macOS, the desktop capture helper selects the display containing the
+player-window center and returns that display's pixel origin and scale, keeping
+the geometry oracle correct for a player opened away from the main display.
+The current single-display replay reported Retina `desktopScale:2`, a
+`640x360` logical AppKit content area, and a `2940x1912` physical capture for
+each language route.
 Set `IINATAN_E2E_RECORD_SCREEN=1` to record the same native interaction phase
 as a macOS `.mov` with the cursor and click indicators. The artifact is copied
 to the evidence directory as `desktop-interaction.mov`, alongside the still
@@ -1005,9 +1412,44 @@ the process that launches the harness.
 
 A screen-recording attempt on 2026-09-07 did not reach native interaction:
 macOS `screencapture` changed foreground verification during recorder startup,
-so it adds no recording or popup-input evidence. Screen Recording remains an
-optional diagnostic and is separate from the successful signed acceptance run
-below.
+so it adds no recording or popup-input evidence. That was an environment-level
+failed attempt, not a product-failure claim. A fresh single-display signed
+windowed replay on 2026-09-08 completed the same recording phase successfully:
+the `.mov` was `18,557,748` bytes, the four lifecycle cycles opened the real
+`careful` headword, both trust checks stayed true, and the combined before/after
+captures contained the popup. Evidence is under
+`/tmp/iinatan-e2e-macos-single-display-recording-20260908/run-42106-1788870901542/`.
+Screen Recording remains an optional diagnostic and is separate from the
+functional acceptance gates.
+
+After the signed arm64 directory package was rebuilt with the current menu
+contract, `validate:package` and `validate:release` passed, and the native
+Settings smoke verified the packaged Open Media `Cmd+O` and Settings `Cmd+,`
+metadata, trusted native input, profile editing, and disposable backup/restore
+panels. The final supplied-media windowed replay passed the same native popup,
+selection, dismissal, pause, liveness, and Screen Recording gates; its evidence
+is under
+`/tmp/iinatan-e2e-macos-final-20260908/run-55885-1788872949696/`.
+
+The final single-display supplied-media native-fullscreen replay also passed
+with AppKit content `1470x923`, popup replacement, native selection, keyboard
+focus, non-activating popup foreground preservation, dismissal, pause
+preservation, liveness, and combined capture. Evidence is under
+`/tmp/iinatan-e2e-macos-fullscreen-final-20260908/run-56520-1788873129178/`.
+The separate idle/no-media window-probe smoke still exposes the known boundary
+where mpv reports `fullscreen=true` while the AppKit style mask remains
+non-fullscreen and the idle content remains `480x270`; it is not used to
+contradict the supplied-media fullscreen result.
+
+A fullscreen replay on 2026-09-08 reached the real stock-mpv fullscreen process,
+the signed Electron companion, the live Hoshi worker, and the recording phase,
+but macOS `screencapture -V20` remained in its ScreenCaptureKit/AppKit wait loop
+without creating a movie. The run was stopped after that capture-only hang; it
+adds no product-failure claim. The recorder now uses a detached process group
+and a duration-plus-10-second teardown bound, so the same permission/API state
+will produce a bounded diagnostic instead of hanging the E2E run. The bounded
+process sample is in `/tmp/iinatan-screencapture-sample.txt` and the harness log
+is `/tmp/iinatan-e2e-fullscreen-current2.log`.
 
 A subsequent signed windowed replay on 2026-09-07 used the same supplied media
 and track with the current helper, live Jitendex/Hoshi lookup, and four native
@@ -1046,6 +1488,15 @@ requested popup region; pointer-to-popup was `31.523 ms`, and the combined
 capture upper-bound was `604.658 ms`. Screen recording was disabled for this
 acceptance run. Evidence is in
 `/tmp/iinatan-e2e-evidence-macos-feature-parity-r8/run-72519-1788777032571/`.
+
+The current-helper feature-parity replay then used the same live Jitendex
+dictionary and external Japanese subtitle track with selector-based custom CSS,
+native audio and Anki actions, smooth native popup approach, native selection,
+scroll, focus, Escape, outside-panel dismissal, and a 12-second desktop
+recording. It returned five audio candidates and one successful mock `addNote`;
+the recording was `11,400,923` bytes and both native trust checks were true.
+Evidence is in
+`/tmp/iinatan-e2e-macos-feature-parity-current-live/run-40085-1788798176485/`.
 
 The latest signed windowed replay on 2026-09-07 used the required
 MARRIAGETOXIN file's native English ASS track `1` and the application's own
@@ -1100,6 +1551,213 @@ were both true; pointer-to-popup was `195.519 ms`, combined-capture upper-bound
 popup capture changed `98.250603%` of the requested region. Evidence is in
 `/tmp/iinatan-e2e-macos-feature-parity-anki/run-25195-1788789373468/`.
 
+The current macOS replay also records the popup-activation edge case that the
+earlier run exposed: a transparent companion window can report Electron focus
+while macOS still routes the keyboard to the frontmost mpv application. The
+macOS host therefore registers `Escape` only while an interactive popup is
+visible, routes it through the same validated popup-action contract, and
+unregisters it on dismissal. The signed recorded rerun passed the complete
+feature-parity path, including native selection, scroll, Tab/Shift-Tab focus,
+audio candidates, loopback Anki `findNotes`/`addNote`, Escape dismissal,
+outside-click dismissal, pause preservation, and mpv liveness. Both native
+trust checks were true. Evidence, including the desktop recording, is in
+`/tmp/iinatan-e2e-macos-feature-parity-controller-escape/run-30597-1788793002895/`.
+
+The follow-up signed macOS feature-parity replay also configured a disposable
+profile with selector-based custom CSS before launching Electron. The native
+popup reported `customCssApplied:true`, the remapped `#popup-panel` computed
+background `rgb(236, 253, 245)`, border color `rgb(13, 148, 136)`, and border
+width `6px`; the same run retained the audio, Anki, selection, scroll, focus,
+dismissal, pause, and mpv-liveness results. Its 12-second desktop recording
+and structured result are in
+`/tmp/iinatan-e2e-macos-feature-parity-custom-css/run-33108-1788794999843/`.
+This is native macOS CSS/application-surface evidence, not a claim that every
+arbitrary stylesheet or every advanced stock-mpv glyph-rendering mode is exact.
+
+The signed native-HID semantic controller replay on 2026-09-07 used the live
+worker state contract, stock mpv `0.41.0`, exact AppKit content geometry, and a
+fresh managed Jitendex Japanese download. With the cursor moved away before
+controller input, Cross opened the lookup without a mouse hit; right-stick
+navigation moved to the next subtitle unit; Cross selected the most visible
+dictionary entry; D-pad right selected the next entry; a proportional left-
+stick sample scrolled the popup from `0` to `1086`; Triangle held long enough
+to open the audio menu; Circle/back closed the audio menu and root popup. The
+replay also verified pause preservation, no mpv input leak, and outside-panel
+dismissal without toggling pause. Accessibility and post-event access were
+both true. Evidence is in
+`/tmp/iinatan-controller-evidence-current3/run-11229-1788817381943/`.
+The input is synthetic at the native-HID state-file boundary, so physical
+button actuation, controller-session focus, hotplug, and device compatibility
+remain separate acceptance gates.
+
+A physical-mode replay was attempted on 2026-09-08 with the USB DualSense
+connected. The live worker reported `source:native-hid`,
+`connected:true`, and `id:"DualSense Wireless Controller"`, but no Cross
+press arrived before the bounded first-action timeout. It therefore proves
+controller discovery and the signed native transport on this host, but adds no
+physical-actuation claim. The captured failure evidence is in
+`/tmp/iinatan-controller-physical-20260908b/run-17696-1788822137692/`.
+
+A corrected physical-mode replay was then run with the Japanese demo subtitle,
+the live Jitendex dictionary, and a 120-second desktop recording. It reached
+the intended prompt with the popup-ready Japanese lookup visible, confirmed
+the mpv foreground identity, and reported both native input trust values as
+true. It still timed out without observing a primary/Cross transition. The
+USB device was independently visible to macOS as a Sony DualSense Wireless
+Controller (`VendorID 0x054c`, `ProductID 0x0ce6`), so this run narrows the
+remaining gate to physical button actuation/session observation rather than
+dictionary setup, popup focus, or controller discovery. Evidence, including
+the recording, is in
+`/tmp/iinatan-controller-physical-current2/run-97032-1788828381645/`.
+
+A third bounded physical replay was run after the controller-threshold parity
+change with the same supplied media, live Jitendex download, and a fresh
+recording. It again reached exact instrumented geometry with the stock mpv
+foreground verified, `accessibilityTrusted:true`, `postEventTrusted:true`, and
+the native worker reporting a connected released DualSense; it timed out before
+observing a Cross transition. This confirms the remaining failure is still
+physical button-actuation observation, not popup setup, focus, permissions, or
+native-device discovery. Evidence is in
+`/tmp/iinatan-controller-physical-current3/run-36565-1788834000445/`.
+
+A fourth bounded physical replay was run after refreshing the signed macOS
+arm64 package. It again reached the live supplied-media/Jitendex session with
+foreground ownership, exact instrumented content bounds, and both native input
+trust checks valid, but the worker remained at a connected neutral DualSense
+until the first-action timeout. This is additional discovery/transport
+evidence only; it does not promote physical button actuation or controller
+session focus to supported status. Evidence is in
+`/tmp/iinatan-controller-physical-current4/run-46728-1788835997364/`.
+
+A later signed combined replay exercised the feature-parity profile and the
+native-HID controller path together. It completed cursor-free lookup, right-
+stick targeting, entry navigation, proportional scrolling, Triangle/audio
+hold, and Circle/back dismissal, then selected row 1 / column 1 of a 13-source
+audio menu and reported the expected Anki-capable source URL. The controller
+close/reopen sequence also passed the follow-up native outside-panel dismissal
+after reasserting the popup's interactive hit-testing state. The run was later
+blocked by the separate Finder-to-mpv foreground-recovery gate, so it is not
+claimed as a complete combined feature-parity pass. Evidence is in
+`/tmp/iinatan-controller-feature-parity-current13/run-40260-1788824429040/`.
+
+A subsequent signed replay closed that remaining harness gate on 2026-09-08.
+After Finder took the foreground, the test used a trusted native click at the
+measured mpv content origin to model the user's foreground-restoration action;
+the AppKit readback then reported `isForeground:true`, preserved the user's
+paused state, reopened the lookup, and passed Escape dismissal. The same run
+passed the complete controller feature-parity path, including custom CSS,
+cursor-free Cross lookup, right-stick targeting, proportional popup scrolling,
+audio-source selection, Anki add, controller close/reopen, outside-panel
+dismissal, and mpv survival. Its native input probes reported both
+`accessibilityTrusted:true` and `postEventTrusted:true`. This is the current
+combined macOS replay evidence; it still injects the native-HID state contract,
+so physical button actuation, physical-session focus, hotplug/device coverage,
+and exact stock-mpv decorative glyph equivalence remain open. Evidence,
+including the desktop recording and structured result, is in
+`/tmp/iinatan-controller-feature-parity-current21/run-74606-1788826822125/`.
+
+The settings document now has a first-class controller editor backed by the
+runtime's `BUTTONS`, `ACTIONS`, and `DEFAULTS` metadata. The Electron settings
+integration rendered all 36 control rows across the no-popup, popup, and audio
+contexts, changed and persisted a popup binding, and reset the audio context to
+its defaults. The signed native settings-window replay remained green after
+the layout change, including profile editing and native Save/Open backup
+panels. This closes the settings-UI gap but does not add physical-controller
+actuation evidence.
+
+After that settings/package change, a fresh signed combined replay repeated the
+same stock-mpv/live-Jitendex path and passed native pointer selection, hover
+replacement, keyboard focus, synthetic native-HID lookup/targeting/scroll/audio
+controls, Anki action, outside dismissal, Finder recovery, pause preservation,
+and combined desktop capture. Evidence is in
+`/tmp/iinatan-controller-feature-parity-current22/run-93312-1788828077272/`.
+
+A fresh replay against the current signed helper and current source then passed
+the complete semantic controller matrix independently of the combined feature
+parity sequence: cursor-free Cross lookup, right-stick target movement, popup
+entry selection/navigation, proportional left-stick scrolling, Triangle/audio
+hold, audio-menu dismissal, and Circle/back. The live worker reported the
+connected DualSense through the native-HID contract, and the run recorded
+`accessibilityTrusted:true` and `postEventTrusted:true`. This is stronger
+current-source evidence for the iinatan-equivalent controller behavior, but it
+still injects state at the native-HID boundary rather than proving a physical
+button transition. Evidence is in
+`/tmp/iinatan-e2e-current-helper-controller-focused-20260908/run-85921-1788841808161/`.
+
+A separate physical-mode replay reached its manual Cross-press prompt with
+the same signed helper, exact supplied-media geometry, live Jitendex lookup,
+and a 45-second desktop recording, but no Cross transition was observed before
+the bounded timeout. The native controller contract smoke independently still
+reports the USB DualSense as connected. This leaves physical actuation/session
+focus and hotplug/device coverage open rather than misclassifying a missing
+manual transition as an implementation failure; evidence is in
+`/tmp/iinatan-e2e-controller-physical-current-20260908/run-86264-1788841885571/`.
+
+The latest combined replay reached the live popup and hover-replacement stages
+but stopped at the native audio-menu click because macOS's TCC dialog asking
+the ChatGPT desktop application for cross-application data/access was visibly
+in front of the composition and intercepted the click. Its screenshot is
+retained at
+`/tmp/iinatan-e2e-current-helper-feature-parity-clean2-20260908/run-87932-1788842375432/desktop-after.png`;
+this is an external automation/access-control gate, not product evidence for
+an audio or controller regression. A direct `screencapture` probe now succeeds
+on this session, so Screen Recording itself is available; a clean combined
+replay was still pending at that point.
+
+A fresh signed packaged replay then closed that external gate on 2026-09-08.
+It used the supplied MARRIAGETOXIN English ASS track with a live managed
+`wty-en-en` import and a disposable local audio-source provider. The run
+passed hover replacement, native text selection, proportional scrolling,
+custom CSS, five audio candidates, loopback Anki `findNotes`/`addNote`,
+cursor-free native-HID lookup and right-stick targeting, Triangle/audio hold,
+audio-source selection, Circle/back dismissal, Finder background recovery,
+pause preservation, exact AppKit content bounds, combined capture, and an
+8-second desktop recording. Accessibility and post-event trust were both
+true. Evidence, including the recording, is in
+`/tmp/iinatan-e2e-macos-feature-parity-current-20260908-en-audio-mock/run-6373-1788865331440/`.
+
+The focused controller-only replay was repeated against the same signed
+package and local audio provider; it independently passed cursor-free Cross
+lookup, right-stick movement, popup selection, proportional left-stick
+scrolling, Triangle/audio hold with five candidates, audio-menu dismissal,
+Circle/back popup close, pause preservation, and mpv liveness. Evidence is in
+`/tmp/iinatan-e2e-macos-controller-current-20260908-audio-mock/run-7084-1788865457543/`.
+
+The current signed package was rebuilt after the macOS window-sidecar and
+surface-recovery changes. Its retained pointer/feature-parity replay passed
+live `wty-en-en` import, native hover replacement, whole-word highlight and
+selection, scroll, custom CSS, five loopback audio candidates, Anki mock
+interaction, focus recovery, exact `640x360` AppKit content geometry, combined
+capture, pause ownership, and mpv liveness. Evidence is in
+`/tmp/iinatan-e2e-macos-feature-parity-current-20260908-pointer-only/run-20010-1788867058362/`.
+The same package's isolated synthetic-controller replay passed native-HID
+Cross lookup, right-stick targeting, popup entry selection/navigation,
+proportional left-stick scrolling, Triangle/audio hold, audio-menu dismissal,
+Circle/back close, no-popup shoulder subtitle stepping, no-popup D-pad seeking,
+pause ownership, and mpv liveness. Evidence is in
+`/tmp/iinatan-e2e-macos-controller-current-20260908-final-package/run-20216-1788867114028/`.
+
+The controller replays inject the native-HID state contract rather than
+physically actuating the connected DualSense. Physical button actuation,
+physical-session focus, hotplug, and device-compatibility coverage remain
+deferred by scope.
+
+Finally, the full combined replay was repeated against the final rebuilt
+package with Screen Recording enabled. It passed the same live dictionary,
+audio/Anki, native pointer, popup-focus, selection, dismissal, controller, and
+no-popup navigation gates; the 8-second recording completed with exit code 0.
+Evidence, including `result.json` and `desktop-interaction.mov`, is in
+`/tmp/iinatan-e2e-macos-feature-parity-current-20260908-final-combined/run-30723-1788867582870/`.
+
+An independent 30-second native-HID monitor was then run against the same
+signed Hoshi worker and the managed Jitendex dictionary, without mpv or the
+Electron surfaces. macOS kept the USB DualSense connected and identified as
+`"DualSense Wireless Controller"`; the worker published healthy neutral
+states throughout, but no button or stick transition was delivered during the
+window. This corroborates that the remaining physical-controller gate is
+actuation/observation in the current session, while the signed transport,
+device discovery, and semantic controller router remain healthy.
+
 The signed macOS native-focus extension was also exercised in a deterministic
 demo replay on 2026-09-07. After the native text drag selected `samp`, the
 helper sent Tab and Shift-Tab while the popup remained open: focus changed from
@@ -1124,6 +1782,42 @@ an IoU below the fixture threshold. A passing instrumented helper still needs
 to pass this comparison against unmodified stock mpv before exact support can
 be claimed.
 
+The public stock-mpv layout-interface probe is:
+
+```sh
+IINATAN_PUBLIC_LAYOUT_REQUIRED=1 npm run test:mpv:layout-interface
+```
+
+The 2026-09-08 macOS arm64 run used Homebrew mpv `0.41.0` and its supported
+in-process `mp.create_osd_overlay("ass-events")` plus `compute_bounds` path. It
+returned one aggregate rectangle for the synthetic `Careful` overlay and one
+aggregate rectangle for each separately submitted character. Because those
+submissions are independent OSD overlays, this API does not expose the
+built-in subtitle event's per-glyph layout, style selection, collision history,
+or unit identity. The probe therefore records the supported public boundary;
+it is not a runtime screenshot/bitmap transport and does not promote synthetic
+overlay bounds to exact stock-subtitle geometry.
+
+The explicit per-glyph boundary diagnostic is:
+
+```sh
+npm run test:stock-glyph-diagnostic
+```
+
+It renders a seven-character ASS fixture in unmodified stock mpv and, for
+each character, creates a temporary alpha-isolated variant that preserves the
+original ASS layout while hiding the other characters. It compares the
+isolated stock-pixel bound with the helper's annotated unit rectangle using
+the same eight-level RGB difference threshold as the selected pixel oracle.
+The 2026-09-08 macOS arm64 run passed all seven isolated characters with IoU
+`1` and edge error `0`. The earlier color-composite probe reported a three-
+pixel `r` edge and two-pixel `l` edge because antialiased pixels from adjacent
+colored glyphs cannot be uniquely assigned by chroma; that probe is retained
+only as historical diagnostic context, not as a geometry failure.
+This validates the selected per-glyph visible-fill fixture, while universal
+stock-mpv equivalence for arbitrary fonts, advanced ASS effects, and
+decorative outline/shadow ownership remains open.
+
 The selected-fixture pixel oracle is:
 
 ```sh
@@ -1139,7 +1833,7 @@ IINATAN_STOCK_PIXEL_SUBTITLE_ID=15 \
 npm run test:stock-pixels:media
 ```
 
-The 2026-09-07 run used stock mpv `0.41.0`, the supplied file, and the
+The 2026-09-08 rerun used stock mpv `0.41.0`, the supplied file, and the
 adjacent Japanese `ja.hi.srt` track. At `1920x1080`, stock pixels and predicted
 geometry reached IoU `0.9359332340531149`, with nonzero changed-pixel coverage
 for every predicted Japanese grapheme; the additive visible-envelope IoU was
@@ -1158,7 +1852,7 @@ IINATAN_STOCK_PIXEL_ASS_ID=1 \
 npm run test:stock-pixels:media:ass
 ```
 
-The 2026-09-07 run used stock Homebrew mpv `0.41.0_9`, FFmpeg `9.0.1_1`,
+The 2026-09-08 rerun used stock Homebrew mpv `0.41.0`, FFmpeg `9.0.1`,
 HarfBuzz `14.4.0`, libass `0.17.5`, the supplied 1920x1080 MKV, and its
 English ASS stream. The native helper demuxed 24
 embedded font attachments and returned nonzero changed-pixel coverage for all
@@ -1166,10 +1860,14 @@ embedded font attachments and returned nonzero changed-pixel coverage for all
 `18.170–20.580` second cue. The predicted versus observed visible-envelope
 IoU was `1.0`, and the primary-colour fill IoU was `0.9990138067061144`; this
 records real attachment handling, whole-subtitle envelope alignment, and
-character-plane registration while keeping exact per-glyph stock-mpv ASS
-equivalence open.
+character-plane registration. The selected alpha-isolated per-glyph fixture
+also passed all seven visible-fill comparisons, while arbitrary ASS renderer
+equivalence and decorative outline/shadow ownership remain open.
 
-The patched native client is opt-in while stock-mpv equivalence remains open:
+The packaged macOS companion selects the patched native client by default;
+source-development launches can opt in explicitly while stock-mpv equivalence
+remains open. Disable the packaged default with
+`--disable-patched-native-geometry` or `IINATAN_DISABLE_NATIVE_GEOMETRY=1`:
 
 The current host now uses libass `0.17.5` in both stock mpv `0.41.0_9` and the
 bundled geometry helper. The helper is statically built with private unit-ID

@@ -14,7 +14,7 @@ documentation](https://www.electronjs.org/docs/latest/tutorial/installation).
 
 | Environment            | Player/window identity                                   | Geometry path                                                                                                                                                                                                                                              | Surface/input path                                                                                                                          | Current evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | Status                                                                                                                                                                                                                                                              |
 | ---------------------- | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| macOS arm64, this host | mpv PID + CoreGraphics/AppKit window id + IPC descriptor | External CoreGraphics frame fallback is inexact; optional in-process C-plugin sidecar reports the AppKit content-view bounds and is accepted only for matching PID/window identity; fullscreen probes target the sidecar identity before the fallback scan | Electron transparent surfaces; popup focus path is implemented                                                                              | Homebrew mpv 0.41.0_9 (reported application version 0.41.0), real MARRIAGETOXIN media, exact AppKit content bounds (`640x360` windowed and `1470x923` fullscreen), instrumented libass subtitle geometry, native pointer movement, popup click, native text selection, popup-owned wheel scroll, Escape dismissal, and combined desktop capture all passed in the signed GUI-launched acceptance replays; the signed helper reported `accessibilityTrusted:true` and `postEventTrusted:true`, and the full desktop capture was `2940x1912`; live Jitendex catalog download/import and Hoshi-backed Japanese popup replay passed in both windowed and fullscreen modes; stock-mpv glyph-equivalence remains a separate evidence gate | windowed and supplied-media fullscreen Phase A native-desktop-tested with signed helper and instrumented geometry, demo and live Hoshi dictionaries; native selection/scroll passed on supplied media; stock glyph oracle and non-macOS GUI paths remain unverified |
+| macOS arm64, this host | mpv PID + CoreGraphics/AppKit window id + IPC descriptor | External CoreGraphics frame fallback is inexact; optional in-process C-plugin sidecar reports the AppKit content-view bounds and is accepted only for matching PID/window identity; fullscreen probes target the sidecar identity before the fallback scan | Electron transparent surfaces; popup focus path is implemented                                                                              | Homebrew mpv 0.41.0_9 (reported application version 0.41.0), real MARRIAGETOXIN media, exact AppKit content bounds (`640x360` windowed and `1470x923` fullscreen), instrumented libass subtitle geometry, native pointer movement, popup click, native text selection, popup-owned wheel scroll, Escape dismissal, and combined desktop capture all passed in the signed GUI-launched acceptance replays; the signed helper reported `accessibilityTrusted:true` and `postEventTrusted:true`, and the full desktop capture was `2940x1912`; live Jitendex catalog download/import and Hoshi-backed Japanese popup replay passed in both windowed and fullscreen modes; the signed native-HID semantic controller replay also passed cursor-free Cross lookup, right-stick subtitle navigation, proportional left-stick popup scrolling, D-pad entry navigation, Triangle/audio hold, Circle/back dismissal, pause preservation, and no-mpv-leak checks; the combined feature-parity replay additionally selected the Anki audio column through the native controller state contract, passed outside-panel dismissal after controller close/reopen, and recovered from Finder foregrounding through a trusted native user click while preserving pause; stock-mpv glyph-equivalence remains a separate evidence gate | windowed and supplied-media fullscreen Phase A native-desktop-tested with signed helper and instrumented geometry, demo and live Hoshi dictionaries; native selection/scroll passed on supplied media; native-HID semantic controller path passed through the live worker state contract, including proportional popup scrolling, audio-menu row/column selection, post-controller outside dismissal, and native-click foreground recovery; physical controller actuation, hotplug, device compatibility, and exact stock glyph oracle remain unverified |
 | Windows x86-64         | PID + HWND + IPC descriptor                              | Win32 client rect in physical pixels plus `GetDpiForWindow`; Electron adapter converts both corners to DIP before surface placement                                                                                                                        | Electron transparent surfaces; PerMonitorV2 conversion is explicit; activation request and foreground observation are separate              | source and DPI manifest/conversion implemented; required CI smokes create real Electron windows, exercise HWND discovery/client geometry/DPI/activation/movement/resize, and perform a native drag selection in a transparent popup through `SendInput`; stock-mpv companion-overlay behavior remains separate                                                                                                                                                                                                                                                                                                                                                                                                                      | source-implemented; required-Win32-window-and-popup-selection-smokes-defined; stock-mpv-native-overlay-unverified                                                                                                                                                   |
 | Linux x86-64 X11       | PID + `_NET_WM_PID` + X11 window + IPC descriptor        | X11 pixel geometry is explicitly converted to Electron DIP coordinates; frame/content exactness still depends on WM                                                                                                                                        | Electron transparent surfaces; X11 input/stacking test required; activation is an EWMH request until the active-window property is observed | format-32 Xlib property parsing, client-list validation, and physical-to-DIP adapter path are implemented; required CI smokes create real Electron X11 windows under Xvfb/Openbox, exercise discovery/activation/movement/resize, and perform a native drag selection in a transparent popup through XTest; stock-mpv companion-overlay behavior remains separate                                                                                                                                                                                                                                                                                                                                                                   | source-implemented; required-X11-window-and-popup-selection-smokes-defined; stock-mpv-native-overlay-unverified                                                                                                                                                     |
 | Linux x86-64 XWayland  | explicit X11/XWayland descriptor only                    | must prove both apps use X11                                                                                                                                                                                                                               | same as X11 if identity/stacking are actually X11                                                                                           | not run                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | unverified                                                                                                                                                                                                                                                          |
@@ -72,9 +72,11 @@ cannot universally position and attach to another client's surface.
   requested phrase region. The static-tag fixture produced IoU
   `0.9422287390029326` with nonzero coverage for its requested phrase region.
   The bounded-transform fixture produced IoU `0.8994301994301994` with
-  nonzero coverage for its requested phrase region. Across the seventeen
-  cases, all fifty-two requested per-case unit regions had
-  nonzero bounds coverage. This oracle checks bounds and independently
+  nonzero coverage for its requested phrase region. The dedicated karaoke
+  fixture produced IoU `0.8325508607198748`, visible-envelope IoU
+  `0.9953271028037384`, and nonzero coverage for all four requested
+  syllable/word regions. Across the twenty cases, all fifty-eight requested
+  per-case unit regions had nonzero bounds coverage. This oracle checks bounds and independently
   annotated unit identity, not arbitrary stock-mpv glyph layout. The default-strip native path is
   observation-only and limited to centered-top text with the observed default
   renderer options; the SubRip path is limited to ordinary text conversion with
@@ -87,15 +89,15 @@ cannot universally position and attach to another client's surface.
 - The same deterministic fixture run records additive `envelopeRects` and
   visible-envelope IoUs from the rebuilt libass helper. These rectangles are
   independent stock-pixel evidence for outline/shadow bounds; fill rectangles
-  remain the runtime hit/highlight contract. Across the seventeen deterministic
+  remain the runtime hit/highlight contract. Across the twenty deterministic
   cases, visible-envelope IoU ranged from `0.8845315904139434` to `1.0`.
 - Supplied-media ASS attachment smoke: the selected real MKV stream demuxed
   24 embedded fonts, requested 30 visible graphemes, and produced nonzero
   coverage for all seven word probes. The visible-envelope IoU was `1.0`, while
   the primary-colour fill IoU was
-  `0.9990138067061144`; the remaining renderer-envelope mismatch is the
-  per-glyph decorative outline/shadow assignment, so exact full stock-mpv ASS
-  equivalence remains open.
+  `0.9990138067061144`; the selected alpha-isolated per-glyph fixture also
+  passed all seven visible-fill comparisons. Decorative outline/shadow
+  ownership for arbitrary ASS remains outside the exact full stock-mpv gate.
 - Hoshi adapter smoke: `npm run test:hoshi` passed on 2026-09-06 with the
   bundled validated arm64 helper and a local Jitendex ZIP. Import, worker
   readiness, and lookup of `猫を見る` succeeded. The portable dictionary
@@ -111,6 +113,29 @@ cannot universally position and attach to another client's surface.
   replay pass on the mounted Hunter × Hunter Blu-ray fixture, including native
   popup input and dismissal. OCR remains deliberately approximate and the
   portable worker reports it unavailable on Windows/Linux.
+- macOS controller transport: the signed helper's native HID probe now reports
+  the complete configured button/trigger schema, including Square and analog
+  L2/R2 thresholds. The host arbitrates native HID ahead of the browser
+  Gamepad fallback so unrecognized macOS controllers can still use the same
+  bindings. A signed live Electron/stock-mpv replay passed cursor-free Cross
+  lookup, right-stick subtitle targeting, proportional left-stick popup
+  scrolling, Cross/D-pad dictionary-entry navigation, Triangle/audio hold,
+  Circle/back dismissal, pause preservation, and no-mpv-leak checks using the
+  real downloaded Jitendex catalog. The combined feature-parity replay also
+  selected an Anki-capable source using native D-pad row/column navigation,
+  passed the subsequent outside-panel dismissal after controller close/reopen,
+  and recovered from Finder foregrounding through a trusted native user click
+  while preserving the user's pause state. These replays inject the native-HID
+  state contract rather than asserting physical button actuation; physical
+  focus, hotplug, device-compatibility, and exact stock-mpv decorative glyph
+  acceptance remain unverified.
+- macOS hover continuity: the passive highlight surface now remains visible
+  while the popup is open, and cursor polling outside the measured popup panel
+  replaces the popup when another subtitle unit is entered. A signed native
+  replay observed the popup's bound unit change from `c` to adjacent `a` in
+  `129.377 ms`; enlarged recording frames showed the selection-style highlight
+  move between those glyphs while native selection and both dismissal paths
+  remained green. Evidence is under `/tmp/iinatan-hover-fix-evidence4/`.
 - Electron: pinned to `44.2.0` in `package.json`; the direct runtime startup
   smoke test passed on this macOS arm64 host, including the settings
   BrowserWindow load. Headless stock-mpv IPC attachment and the signed
@@ -146,6 +171,16 @@ cannot universally position and attach to another client's surface.
   popup-owned scroll, pause ownership, and native Escape dismissal. It used the
   opt-in instrumented geometry backend, so
   stock-mpv glyph equivalence remains intentionally unpromoted.
+- Feature-parity extension: the signed live Japanese replay exercised measured
+  native audio and Anki action regions before selection/scroll. It also applied
+  the profile's selector-based custom CSS to the live popup and confirmed the
+  computed `#popup-panel` background, border color, and border width. Audio
+  returned five bounded candidates; the loopback Anki service recorded
+  `findNotes` and one `addNote` without touching the user's collection. The
+  popup-visibility-scoped macOS Escape fallback was also exercised because a
+  transparent overlay can retain Electron window focus while mpv remains the
+  frontmost application. Evidence remains bounded to the signed macOS slice;
+  Linux and Windows native validation are deferred.
 - Fullscreen follow-up: the real supplied MARRIAGETOXIN MKV passed the same
   strict desktop harness with `IINATAN_E2E_FULLSCREEN=1`. The sidecar reported
   exact AppKit content bounds `1470x923`, `fullscreenObserved:true`, and the

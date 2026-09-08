@@ -8,7 +8,6 @@ handlers. Its states are:
 - `subtitle-hover-candidate`
 - `lookup-pending`
 - `popup-active`
-- `nested-popup-active`
 - `text-selection-drag-capture`
 - `audio-menu-active`
 - `settings-dialog`
@@ -26,7 +25,10 @@ receives normal native selection, links, buttons, keyboard focus, wheel, and
 drag events; a primary-button drag that begins on text enters
 `text-selection-drag-capture`, uses DOM pointer capture, and returns to the
 prior popup depth on release or cancellation. The transparent surrounding area
-reports an outside click to the host and is consumed before the surface is hidden.
+reports an outside click to the host and is consumed before the surface is
+hidden. A canceled or focus-interrupted outside pointer sequence is treated as
+a dismissal too, so native pointer capture cannot leave a stale popup-owned
+gesture behind.
 Stale passive-surface subtitle targets are ignored while any popup-owned state is
 active, so crossing nearby subtitle words cannot reclaim lookup ownership.
 Focus loss also cancels the active selection capture, so a renderer crash,
@@ -37,6 +39,12 @@ backgrounding, and shutdown.
 The host keeps that full window hidden until the popup document has sent its
 `ready` message, so renderer startup and surface recovery cannot expose a blank
 transparent input region.
+On macOS the popup is a non-activating `panel` window. Showing it, clicking in
+it, selecting text, scrolling, and using keyboard controls therefore do not
+activate the companion application or leave a native mpv fullscreen Space; the
+explicit dismissal transition may restore focus to mpv.
+The native desktop harness records this as `popupForegroundSamples` and fails
+closed if any active-popup sample no longer reports mpv as frontmost.
 The popup renderer publishes bounded `panel`, `headword`, and visible `content`
 regions plus a separate scroll-state telemetry message for diagnostics and
 native acceptance tests. The content region is intersected with the visible
@@ -68,21 +76,53 @@ lookup on Shift without making the passive surface interactive.
 own pause, not a pause that existed before lookup or a later user pause. Media,
 geometry, cancellation, and shutdown invalidate the ownership generation.
 
-Nested dictionary references are host-owned: the popup sends only a bounded
-term, the host performs the lookup, and the parent result remains on a stack
-until the deepest popup is dismissed. The generic browser Gamepad API is
+Nested lookup stays inside the existing popup state rather than creating a new
+gamepad context. The setting is `off`, `click`, `hover`, or `shift-hover`, with
+a bounded maximum depth (1–8, default 3). Cross-references and text inside the
+popup can start a child lookup; a child request carries the popup session,
+depth, UTF-16 source offset, and a request ID. Replacing a child, closing the
+root popup, or changing sessions cancels pending child work, and Escape closes
+the deepest child before it reaches the root popup. The generic browser Gamepad API is
 polled by the passive surface and also publishes browser hotplug events when
 available, then translated through the configured no-popup/popup/audio
 binding maps. Repeat timing and edge detection live in
 `src/interaction/controller-runtime.js`; a changed gamepad id/index and every
-disconnect reset edge/repeat state so a replacement device cannot inherit a
-held-button action. On macOS, enabling the controller preference also asks the
-capable HoshiDicts helper to publish its native HID state; the main process
-polls that bounded state file, routes it through the same controller router,
-and suppresses browser polling when the native source is available. A stale,
-malformed, or temporarily missing native snapshot produces one neutral
-disconnected state while polling remains alive, so a later device reconnect is
-observable without restarting the dictionary worker. The native HID contract,
-stale/disconnect recovery, and replacement-device edge handling are
-unit-tested, but physical focus, hotplug, and device compatibility still
-require platform testing before being called supported.
+disconnect reset edge/repeat state, and all input remains suppressed until the
+replacement device reports a neutral sample, so a held-button action cannot
+leak across a device or focus transition. Browser analog-button values use the
+same `0.65` pressed threshold as iinatan; native HID snapshots publish
+already-debounced boolean button state. On macOS, enabling the controller
+preference also asks the capable HoshiDicts helper to publish its native HID
+state; the main process polls that bounded state file at a display-frame
+cadence, routes it through the same controller router, and suppresses browser
+polling when the native source is available. A stale, malformed, or temporarily
+missing native snapshot produces one neutral disconnected state while polling
+remains alive, so a later device reconnect is observable without restarting the
+dictionary worker. The router applies a dead-zoned, proportional left-stick
+scroll sample in popup/audio contexts, while the right stick moves the
+cursor-free subtitle target or dictionary entry. The audio menu exposes
+row/column focus, including the per-source Anki selection action when
+configured. The native HID contract, stale/disconnect recovery,
+replacement-device edge handling, and the macOS semantic path through subtitle
+targeting, popup entry selection, proportional popup scrolling, audio-menu hold,
+and dismissal are covered by tests and a signed native desktop replay.
+Changing between no-popup, popup, and audio contexts clears pending repeat
+deadlines while retaining the held-button record needed to release a hold
+cleanly, so an input begun in one context cannot repeat as another context's
+action.
+The browser fallback also publishes a forced neutral snapshot when its document
+blurs, becomes hidden, or is torn down, and stops its poller on page teardown;
+this closes the renderer-lifecycle edge without changing the native-HID source
+arbitration rule. That replay injects state through the live native-HID worker
+contract; physical button actuation, focus behavior during a real controller
+session, hotplug, and device compatibility still require platform testing
+before being called supported.
+
+Controller selection has an explicit input-modality rule: after a controller
+selects a subtitle target, passive mouse motion through empty space or back over
+that same target does not clear the controller target or its highlight. An
+actual mouse hit on a different subtitle unit is the hand-off point back to
+pointer ownership. The integration test named
+`mouse motion through empty space does not steal a controller-selected target`
+enforces the first two cases; the native desktop matrix separately exercises
+the different-unit hand-off.

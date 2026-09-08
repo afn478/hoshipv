@@ -1,15 +1,18 @@
 # Optional native subtitle geometry
 
-The normal runtime starts with a deterministic, explicitly approximate
-subtitle geometry provider. It refuses ordinary lookup when `source.exact` is
-false. The macOS package contains a validated HoshiDicts helper and an
-optional stock-mpv content-boundary C-plugin; the patched ASS backend remains
-disabled for ordinary stock attachment until the stock-mpv equivalence oracle
-closes. Explicitly opt into that separate backend path with:
+The runtime starts with a deterministic, explicitly approximate subtitle
+geometry provider and refuses ordinary lookup when `source.exact` is false.
+The packaged macOS companion enables the validated HoshiDicts ASS backend by
+default, together with the optional stock-mpv content-boundary C-plugin. The
+backend remains tuple-gated and fail-closed; source development launches can
+explicitly opt in with:
 
 ```sh
 npm run start -- --enable-patched-native-geometry
 ```
+
+Pass `--disable-patched-native-geometry` or set
+`IINATAN_DISABLE_NATIVE_GEOMETRY=1` to disable the packaged macOS default.
 
 Other platforms or a replacement geometry helper can use:
 
@@ -24,8 +27,10 @@ is written atomically and removed after the helper exits. An explicitly
 configured executable is not downloaded, started through a shell, or inferred
 from the reference IINA repository. Windows/Linux packages now include the
 portable dictionary worker, but they do not yet include an equivalent exact
-subtitle-geometry helper. The geometry executable remains an explicit separate
-capability and is never inferred from the dictionary worker.
+subtitle-geometry helper. The geometry executable remains a separate capability
+on non-macOS platforms; the packaged macOS artifact intentionally bundles and
+selects its validated helper without changing the user's mpv executable or
+renderer.
 
 ## Data flow
 
@@ -48,6 +53,27 @@ capability and is never inferred from the dictionary worker.
    refresh serial are still current. Any helper error or mismatch leaves the
    approximation in place, so normal mpv attachment does not silently claim
    exactness.
+
+The bridge forwards the live renderer controls that directly affect libass
+placement or shaping, including `sub-ass-force-margins`, `sub-hinting`,
+`sub-shaper`, and `embeddedfonts`. They are observed before the initial
+geometry snapshot and invalidate it when changed; the helper applies the same
+values through its libass renderer API. This prevents a changed mpv renderer
+setting from being silently rendered with stale helper defaults. The helper
+currently rejects
+non-default `sub-ass`, `sub-ass-scale-with-window`, `sub-ass-justify`,
+`sub-justify`, and `sub-font-provider` values explicitly, so the bridge rejects
+those modes before sending a native request. It also fails closed for
+non-default subtitle timing (`sub-fix-timing*`, `sub-fps`, and
+`sub-stretch-durations`), cue-cache/end-of-video (`sub-clear-on-seek` and
+`sub-past-video-end`), and text-filter list controls (`sub-filter-regex`,
+`sub-filter-jsre`, and `sub-filter-sdh-enclosures`). The selected mpv build
+documents `sub-ass-scale-with-window` as an ASS-only scaling control with a
+default of `no`; the helper has no equivalent ASS-specific control, so
+accepting `yes` would risk a false exact result. These gates are conservative:
+they preserve the native exact path at the documented defaults and withdraw it
+when a setting is not represented by the helper, rather than returning a false
+exact-geometry result.
 
 The current protocol is compatible with the validated backend's
 `ass-geometry` response shape. Passing that protocol check is not release
@@ -78,23 +104,50 @@ instance, or a CoreGraphics frame into exact subtitle geometry. See mpv’s [lib
 documentation](https://github.com/mpv-player/mpv/blob/master/DOCS/man/libmpv.rst)
 and [property/input documentation](https://github.com/mpv-player/mpv/blob/master/DOCS/man/input.rst).
 
+The reproducible public-interface probe
+(`IINATAN_PUBLIC_LAYOUT_REQUIRED=1 npm run test:mpv:layout-interface`) exercises
+mpv 0.41.0's supported in-process `mp.create_osd_overlay("ass-events")` and
+`compute_bounds` path. It returns one aggregate rectangle for the submitted
+synthetic ASS overlay, including when the probe submits one glyph at a time.
+Those are independent overlays using mpv's OSD styles; the API cannot attach to
+the built-in subtitle event, return its per-glyph boxes, or preserve that
+event's live style/collision history. It is therefore useful evidence about the
+supported public boundary, but not a runtime source for exact subtitle-unit
+geometry. mpv documents `compute_bounds` as a full-overlay render/bounds
+operation whose result depends on the current VO size and libass version.
+
 The current host now uses libass 0.17.5 in both stock mpv `0.41.0_9` and the
 bundled geometry helper. The helper uses private unit-ID and additive
 visible-envelope patches and a different static dependency/configuration/font
 environment, so matching the version alone does not prove raster equivalence.
 The pixel oracle therefore remains an independent bounded comparison and does
 not promote the helper to universal exact stock-mpv geometry. Fill rectangles
-remain the runtime hit/highlight target; envelope rectangles are reported only
-to compare visible outline/shadow bounds. Closing that gate requires either a
-geometry adapter built against the exact stock renderer stack or a supported
-live layout source from the player process.
+remain the runtime hit-test target; validated envelope rectangles are used
+additively for the visible highlight and popup anchor so outline/shadow-visible
+glyphs are not clipped. The envelope does not widen per-unit hit testing or
+assign decorative pixels to adjacent units. Closing the remaining exactness
+gate requires either a geometry adapter built against the exact stock renderer
+stack or a supported live layout source from the player process.
+
+The selected per-glyph diagnostic is now alpha-isolated rather than based on
+chroma classification. `npm run test:stock-glyph-diagnostic` adds a
+seven-character ASS fixture, renders one character at a time in unmodified
+stock mpv while preserving the original layout, and compares each bound with
+the helper's unit rectangle. The 2026-09-08 macOS arm64 run passed all seven
+characters with IoU `1` and edge error `0`. The older color-composite probe
+showed three- and two-pixel edge differences for `r` and `l`; those were
+antialiasing overlap in the color classifier, not isolated glyph geometry.
+This closes the selected visible-fill fixture while universal exact ASS
+equivalence for arbitrary fonts, advanced effects, and decorative
+outline/shadow ownership remains open.
 
 Simple supplementary code points, combining marks, ASS line breaks, and
 explicit `\\pos(x,y)` placement are covered by the native adapter and the
-independent stock-mpv oracle. Unsupported ASS tags and advanced renderer modes
-are rejected by the native adapter rather than assigned guessed rectangles.
-This is intentional until each additional native mode has matching stock-mpv
-evidence.
+independent stock-mpv oracle. Unsupported ASS tags, drawing-only modes, and
+malformed renderer forms are rejected by the native adapter rather than
+assigned guessed rectangles. The bounded non-drawing advanced tags covered by
+the oracle are passed through only after both the JavaScript and native
+allowlists accept their exact syntax.
 
 External `.srt` and `.subrip` tracks have a bounded observation path for simple
 text cues. Stock mpv converts text subtitles to ASS internally; when the bridge
@@ -144,7 +197,13 @@ produced IoU `0.8862068965517241` with nonzero coverage for its requested
 phrase region. The static-tag fixture produced IoU `0.9422287390029326` with
 nonzero coverage for its requested phrase region. The bounded-transform
 fixture produced IoU `0.8994301994301994` with nonzero coverage for its
-requested phrase region. Across the seventeen cases, all fifty-two requested
+requested phrase region. The vector-clip fixture produced IoU
+`0.8388552093613422`, with visible-envelope IoU `0.9971181556195965`. The
+advanced non-drawing-tag fixture produced IoU `0.9065478657273104`, with
+visible-envelope IoU `1.0`. The dedicated multi-syllable karaoke fixture
+produced IoU `0.8325508607198748`, with visible-envelope IoU
+`0.9953271028037384` and nonzero coverage for all four requested
+syllable/word regions. Across the twenty cases, all fifty-eight requested
 regions had nonzero bounds coverage. This is a
 bounds-and-unit-coverage comparison with independently annotated unit
 identity evidence, not proof of arbitrary stock-mpv glyph layout. The
@@ -152,14 +211,17 @@ default-strip case uses observation-only
 reconstruction of centered-top plain ASS styling from the observed default
 renderer options; these independent fixtures do not promote arbitrary custom
 alignments, fonts, colors, scale options, or advanced ASS features to native
-adapter support. The explicit-position, explicit-movement, static-tag, and
-transform fixtures are accepted only for the validated `\\pos(x,y)`,
-`\\move(x1,y1,x2,y2[,t1,t2])`, bounded static renderer tags (including
-`\\an`, `\\fn`, `\\fs`, `\\fsp`, `\\bord`, `\\shad`, `\\frz`, rectangular
-`\\clip`, and bounded `\\k` karaoke), and bounded `\\t(...)` forms with
-numeric timing and already-supported nested modifiers. Nested transforms,
-vector clipping, and other advanced tags remain fail-closed. Platform scaling and
-combined desktop capture still require separate evidence.
+adapter support. The explicit-position, explicit-movement, static-tag,
+vector-clip, advanced-tag, and transform fixtures are accepted only for the
+validated `\\pos(x,y)`, `\\move(x1,y1,x2,y2[,t1,t2])`, bounded static renderer
+tags (including `\\an`, `\\fn`, `\\fs`, `\\fsp`, `\\bord`, `\\shad`, `\\frz`,
+rectangular `\\clip` including bounded vector paths, and bounded `\\k`
+karaoke), the non-drawing `\\fad`, `\\fade`, `\\org`, legacy alignment,
+underline/strikeout, `\\p0`, and axis-border forms, and bounded `\\t(...)`
+forms with numeric timing and already-supported nested modifiers. Nested
+transforms, drawing mode, unknown tags, and other unvalidated advanced forms
+remain fail-closed. Platform scaling and combined desktop capture still
+require separate evidence.
 
 The supplied-media ASS attachment smoke exercises the direct source path
 without observation-only reconstruction:
@@ -178,19 +240,29 @@ also reporting word coverage. The current supplied-media run found 24
 attachments, requested 30 visible graphemes, and reported nonzero coverage for
 all seven words; its visible-envelope IoU was `1.0`, while the style
 primary-colour fill IoU was `0.9990138067061144`. The character-plane
-registration and whole-subtitle envelope are therefore strong, but the result
-does not promote exact per-glyph ASS raster equivalence because decorative
-outline/shadow pixels are not assigned to adjacent units. Unsupported renderer
-modes remain fail-closed.
+registration and whole-subtitle envelope are therefore strong. The selected
+alpha-isolated per-glyph fixture also passed all seven visible-fill
+comparisons, but decorative outline/shadow pixels are not assigned to
+adjacent units, so arbitrary exact ASS raster equivalence remains open.
+Unsupported renderer modes remain fail-closed.
 
-The shipped runtime contract remains fill-based. The new envelope field is
-deliberately additive and does not widen per-unit hit rectangles; it is used
-only by the independent stock-pixel oracle.
+The shipped runtime contract keeps fill rectangles for hit testing. The new
+envelope field is deliberately additive: the runtime uses it for visual
+highlight/popup anchoring, while the independent stock-pixel oracle uses it for
+visible-envelope comparison. It does not widen per-unit hit rectangles.
 
-The `native-ass-geometry-unsupported-modes-smoke.ass` fixture and core
-regression reject vector clipping, drawing mode, unknown tags, and other
-unsupported forms. These cases remain visible as bounded
+The `native-ass-geometry-vector-clip-smoke.ass` fixture covers a bounded vector
+clip around lookupable text and is included in the independent stock-mpv pixel
+oracle. The `native-ass-geometry-unsupported-modes-smoke.ass` fixture and core
+regression still reject drawing mode, unknown tags, and other unsupported forms.
+These cases remain visible as bounded
 native-geometry diagnostics and never receive guessed rectangles.
+
+The `native-ass-geometry-advanced-tags-smoke.ass` fixture covers non-drawing
+`\\fad`, `\\fade`, `\\org`, legacy alignment, axis-border, underline/strikeout,
+font-encoding, and explicit text-mode tags. Its stock-mpv fill IoU was
+`0.9065478657273104` and its visible-envelope IoU was `1.0`; the helper and
+stock renderer both reject drawing-mode `\\p1` and malformed forms.
 
 The boundary follows Electron's security guidance for context isolation and
 sandboxing and mpv's documented JSON IPC/property model:

@@ -12,10 +12,15 @@ or subtitle images into mpv.
 - HoshiDicts revision: `a28d82eb0f169b8ceff79e8c99ffe0b96709ab27`.
 - Helper artifact: `bin/iina-hoshi-dicts`.
 - Corresponding-source archive: `vendor/iina-hoshi-dicts-native-source.tar.gz`.
-- Helper SHA-256:
-  `c10f850e6c6fcd1de95e4789259d938d6d4425985d46ca436abec92abb60ff07`.
+- Helper SHA-256 (current Apple Development-signed macOS build):
+  `1036f1c96b83db5ce400dc67de6281008627ca40c20dc296e55aa40564e1b736`.
 - Source archive SHA-256:
-  `05c0f105c3e7452f292ffcd1ff23c6f362eb01b856cec31790127fc5e8c4359a`.
+  `77292ffd1aa3e2ecc0f99f7c1973040a8261ecf4111bda76a5f8238c139d7326`.
+
+The code signature is part of the finished macOS helper and therefore changes
+the helper digest when another valid development or distribution identity is
+used. The native-controller smoke reports the exact signer and CDHash; a
+macOS build that is only ad-hoc signed is not a supported finished helper.
 
 The helper reports HoshiDicts revision `a28d82e`, patched libass 0.17.5
 unit-ID geometry and additive visible-envelope rectangles, CoreText font metrics,
@@ -67,18 +72,33 @@ The refreshed helper reports FFmpeg 9.0.1 and libass 0.17.5, passed the
 recommended-dictionary import/lookup smoke, and passed the deterministic
 stock-pixel oracle. Fixture runs now record the
 additive visible-envelope rectangles as well as fill rectangles; the runtime
-still uses fill rectangles for hit testing. The supplied-media run now records
-visible-envelope IoU `1.0` alongside fill IoU `0.9990138067061144`; exact
-per-glyph stock-mpv equivalence remains open because the envelope does not
-assign decorative pixels to individual units.
+still uses fill rectangles for hit testing and uses the envelope only for the
+visual highlight and popup anchor. The supplied-media run now records
+visible-envelope IoU `1.0` alongside fill IoU `0.9990138067061144`. The
+selected alpha-isolated per-glyph fixture also passed all seven visible-fill
+comparisons; the envelope still does not assign decorative pixels to
+individual units, so universal exact stock-mpv equivalence remains open.
+
+When the host enables the exact native geometry path (the packaged macOS host
+does this by default; development launches use the explicit flag), `PlayerBridge` observes
+mpv's `mpv-version`, `libass-version`, and `ffmpeg-version` properties. The
+service fails closed unless they match the validated tuple `0.41.0` / `0.17.5`
+/ `9.0.1`; a different or unobserved tuple is reported as a bounded native
+geometry diagnostic instead of being treated as exact evidence.
 
 When controller support is enabled on macOS, the helper publishes a bounded
-`state/controller.json` snapshot for its recognized DualSense HID devices. The
-Electron main process consumes the snapshot and routes it through the same binding and
-focus state machine as browser Gamepad input. The transport, stale-state, and
-disconnect-recovery behavior are covered by unit tests; polling remains active
-after a stale or missing snapshot so a later reconnect can be observed.
-Physical device/focus/hotplug acceptance remains a native-desktop gate.
+`state/controller.json` snapshot for HID gamepads selected through the same
+generic usage-page and device-scoring path as IINA. Standard gamepads use their
+declared stick, trigger, button, and hat usages; DualSense keeps its vendor
+specific axis layout and analog L2/R2 thresholds. The snapshot includes the
+complete configured button contract, including Square. The Electron main
+process gives a connected native snapshot priority and keeps the browser
+Gamepad API available as a fallback for controllers the native HID path cannot
+select. Both sources route through the same binding and focus state machine,
+while the native source, stale-state, disconnect-recovery, and hot-plug polling
+behavior are covered by unit tests and the native helper smoke. Physical
+button actuation, focus, and device-compatibility acceptance remain separate
+native-desktop gates.
 
 ## Stock-mpv content bounds
 
@@ -108,6 +128,13 @@ then supplies and identity-checks the real window ID. On macOS, the session
 script does not promote mpv's non-CoreGraphics `window-id` value into that
 contract. Independent stock-mpv
 pixel-oracle and real desktop/input tests remain separate acceptance gates.
+
+The companion reaps only geometry sidecars whose PID is no longer alive,
+including interrupted `.next` writes. It deliberately retains dead session
+descriptors so the crash-recovery path can observe and ignore them before a
+replacement session is attached. The packaged autostart replay on 2026-09-08
+left no geometry sidecar for test mpv PID `49746` after teardown while
+preserving the pre-existing descriptor contract.
 
 The entry-point and event-loop shape follows mpv's [C-plugin documentation](https://github.com/mpv-player/mpv/blob/master/DOCS/man/libmpv.rst)
 and its [minimal public-API C-plugin example](https://raw.githubusercontent.com/mpv-player/mpv-examples/master/cplugins/simple/simple.c).
@@ -152,9 +179,12 @@ observation-only ASS reconstruction, as does the bounded ordinary-SubRip
 conversion path. The independent fixture set also covers
 mixed-language text, missing-font fallback, simultaneous events, bounded
 color-separated, single-event inline-color, unique-color unit-identity, and
-validated explicit-position, explicit-movement, static-tag, and bounded-transform cases; arbitrary secondary positions, alignments,
-fonts, colors, scale options, and advanced ASS features remain outside the
-native adapter claim.
+validated explicit-position, explicit-movement, static-tag, bounded-vector-clip,
+advanced non-drawing-tag, bounded-transform, and multi-syllable karaoke cases;
+the karaoke case retains nonzero coverage for all four annotated
+syllable/word regions. Arbitrary secondary positions, alignments, fonts,
+colors, scale options, and advanced ASS features remain outside the native
+adapter claim.
 
 The supplied-media ASS attachment smoke is:
 
@@ -173,10 +203,10 @@ embedded font attachments and produced nonzero stock-pixel coverage for all
 IoU was `1.0`. The ASS style's primary-colour fill, separated
 from its decorative outline/shadow in the oracle, registered at IoU
 `0.9990138067061144` against the character-plane rectangles. This distinguishes
-the usable per-character registration from the still-unresolved per-glyph
-assignment problem. Exact stock-mpv glyph equivalence remains open because
-outline and shadow pixels cannot be assigned to adjacent units without risking
-identity overlap.
+the usable per-character registration from arbitrary ASS raster equivalence.
+The selected alpha-isolated fixture passed all seven visible-fill comparisons,
+but outline and shadow pixels cannot be assigned to adjacent units without
+risking identity overlap, so the universal exactness gate remains open.
 
 ## Portable dictionary worker
 

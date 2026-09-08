@@ -30,13 +30,15 @@
       "tests": [
         "tests/integration/mpv-ipc.test.js",
         "scripts/e2e/stock-mpv-ipc-smoke.js",
+        "scripts/e2e/stock-mpv-command-smoke.js",
         "scripts/e2e/stock-mpv-multi-session-smoke.js",
         "scripts/e2e/stock-mpv-recovery-smoke.js",
         "scripts/e2e/stock-mpv-subtitle-smoke.js",
-        "scripts/e2e/stock-mpv-media-smoke.js"
+        "scripts/e2e/stock-mpv-media-smoke.js",
+        "scripts/e2e/native-multi-session-smoke.js"
       ],
-      "status": "stock-mpv-headless-descriptor-ipc-subtitle-property-timing-oversized-ipc-fails-closed-multiple-session-isolation-crash-recovery-and-opt-in-real-media-smoke",
-      "nativeDesktopStatus": "windowed-native-window-content-sidecar-and-native-input-tested;stock-glyph-equivalence-open"
+      "status": "stock-mpv-headless-descriptor-ipc-subtitle-property-timing-oversized-ipc-fails-closed-multiple-session-isolation-crash-recovery-mapped-player-commands-real-media-and-opt-in-real-media-smoke",
+      "nativeDesktopStatus": "windowed-native-window-content-sidecar-and-native-input-tested;macos-two-stock-mpv-session-attachment-foreground-switch-removal-and-replacement-passed;stock-glyph-equivalence-open"
     },
     {
       "id": "ordinary-mpv-bootstrap",
@@ -45,18 +47,19 @@
       "tests": [
         "tests/integration/mpv-launcher.test.js",
         "tests/core.test.js (explicit --open-media argument parsing)",
-        "scripts/e2e/mpv-launcher-smoke.js (opt-in real stock-mpv run)"
+        "scripts/e2e/mpv-launcher-smoke.js (opt-in real stock-mpv run)",
+        "scripts/e2e/native-autostart-smoke.js (opt-in macOS LaunchServices run)"
       ],
-      "status": "native-file-picker-and-explicit-path-bootstrap;launch-time-session-script-and-private-ipc-only;no-config-mutation;platform-named-pipe-contract-tested",
-      "nativeDesktopStatus": "macos-arm64-packaged-GUI-menu-file-picker-launch-passed;real-stock-mpv-process-loaded-bundled-session-script-and-private-IPC;real-stock-mpv-launcher-descriptor-and-IPC-smoke-passed"
+      "status": "native-file-picker-and-explicit-path-bootstrap;direct-mpv-session-script-derives-private-ipc-and-descriptor-location;macos-companion-auto-start;no-config-mutation;platform-named-pipe-contract-tested;current-dist-launchservices-selection-and-supplied-live-popup-passed",
+      "nativeDesktopStatus": "macos-arm64-packaged-GUI-menu-file-picker-launch-passed;real-stock-mpv-process-loaded-bundled-session-script-and-private-IPC;real-stock-mpv-launcher-descriptor-and-IPC-smoke-passed;direct-script-default-session-contract-passed;refreshed-signed-package-direct-attach-detach-passed;direct-macos-auto-start-exact-session-attachment-and-default-native-geometry-passed"
     },
     {
       "id": "explicit-session-identity",
       "source": "objective shared session/process/window identity",
       "implementation": "src/player/session-descriptor.js",
-      "tests": ["tests/core.test.js"],
-      "status": "unit-tested",
-      "nativeDesktopStatus": "unverified"
+      "tests": ["tests/core.test.js", "scripts/e2e/native-multi-session-smoke.js"],
+      "status": "unit-tested;macos-native-multi-session-identity-and-lifecycle-smoke-passed",
+      "nativeDesktopStatus": "macos-two-stock-mpv-process-and-window-identities-attached-without-cross-talk-and-replacement-passed;linux-windows-unverified"
     },
     {
       "id": "coordinate-contract",
@@ -89,10 +92,12 @@
       "tests": [
         "tests/core.test.js",
         "scripts/e2e/stock-mpv-pixel-oracle.js",
+        "scripts/e2e/stock-mpv-glyph-equivalence-diagnostic.js",
+        "scripts/e2e/mpv-public-layout-interface-probe.js",
         "scripts/e2e/stock-mpv-real-media-pixel-oracle.js",
         "scripts/e2e/stock-mpv-real-media-ass-smoke.js"
       ],
-      "status": "unit-tested; stock-mpv-selected-supported-subrip-mixed-language-missing-font-multi-event-multiline-simultaneous-positioned-style-explicit-position-explicit-movement-static-tags-bounded-transforms-bounded-default-strip-color-identity-inline-color-identity-and-unique-color-per-unit-pixel-bounds-and-visible-envelope-smoke; supplied-mkv-japanese-subrip-pixel-and-visible-envelope-oracle-passed; supplied-mkv-ASS-attachment-demux-visible-grapheme-word-coverage-primary-colour-fill-and-visible-envelope-registration-passed; stock-and-helper-libass-0.17.5-version-aligned; per-glyph-renderer-patch-build-environment-equivalence-open",
+      "status": "unit-tested; public-mpv-osd-overlay-compute-bounds-probe-confirmed-aggregate-only; stock-mpv-selected-supported-subrip-mixed-language-missing-font-multi-event-multiline-simultaneous-positioned-style-explicit-position-explicit-movement-static-tags-karaoke-vector-clipping-advanced-non-drawing-tags-bounded-transforms-bounded-default-strip-color-identity-inline-color-identity-and-unique-color-per-unit-pixel-bounds-and-visible-envelope-smoke; supplied-mkv-japanese-subrip-pixel-and-visible-envelope-oracle-passed; supplied-mkv-ASS-attachment-demux-visible-grapheme-word-coverage-primary-colour-fill-and-visible-envelope-registration-passed; stock-and-helper-libass-0.17.5-version-aligned; selected seven-character alpha-isolated per-glyph visible-fill diagnostic passed with IoU 1 and zero edge error; universal arbitrary-ASS renderer equivalence and decorative outline/shadow ownership remain open",
       "nativeDesktopStatus": "advanced-renderer-modes-and-platform-input-oracle-open"
     },
     {
@@ -100,7 +105,7 @@
       "source": "objective geometry investigation order",
       "implementation": "src/geometry/subtitle-geometry-provider.js; src/geometry/native-subtitle-geometry-service.js; src/services/native-geometry-client.js; native window probe boundary",
       "tests": ["tests/core.test.js", "scripts/e2e/native-geometry-smoke.js"],
-      "status": "opt-in-client-integrated; macos-helper-bundled; fill-rectangles-hit-geometry-and-additive-visible-envelope-rectangles; supported-mode-bounded-default-strip-simple-external-subrip-and-explicit-position-explicit-movement-static-tags-and-transform-oracle-passed; supplied-mkv-japanese-subrip-pixel-oracle-passed; supplied-mkv-ASS-attachment-demux-visible-grapheme-and-word-coverage-passed; unsupported-vector-clipping-drawing-and-unknown-modes-fail-closed; full-stock-exact-support-open",
+      "status": "macos-packaged-default-client-integrated;development-explicit-opt-in;macos-helper-bundled;validated-mpv-libass-ffmpeg-tuple-gate;fill-rectangles-hit-geometry-and-additive-visible-envelope-rectangles;supported-mode-bounded-default-strip-simple-external-subrip-explicit-position-explicit-movement-static-tags-karaoke-vector-clipping-advanced-non-drawing-tags-and-transform-oracle-passed;supplied-mkv-japanese-subrip-pixel-oracle-passed;supplied-mkv-ASS-attachment-demux-visible-grapheme-and-word-coverage-passed;drawing-only-and-unknown-modes-fail-closed;live-unsupported-renderer-options-fail-closed-and-recovery-smoke-passed;supported-embeddedfonts-toggle-remained-exact;full-stock-exact-support-open",
       "nativeDesktopStatus": "macos-supplied-media-windowed-and-fullscreen-instrumented-native-e2e-passed; stock-glyph-equivalence-and-nonmacos-platform-oracle-open"
     },
     {
@@ -120,7 +125,7 @@
       "source": "objective explicit state machine",
       "implementation": "src/interaction/interaction-controller.js",
       "tests": ["tests/core.test.js", "scripts/e2e/browser-integration.js"],
-      "status": "unit-tested;browser-document-selection-focus-context-menu-and-native-wheel-coverage;native-scroll-selection-outside-dismissal-matrix-passed;smooth-popup-approach-regression-passed;live-hoshi-smooth-approach-passed",
+      "status": "unit-tested;browser-document-selection-focus-context-menu-native-wheel-and-canceled-outside-pointer-coverage;native-scroll-selection-outside-dismissal-matrix-passed;smooth-popup-approach-regression-passed;live-hoshi-smooth-approach-passed",
       "nativeDesktopStatus": "macos-supplied-media-native-selection-scroll-focus-transition-focus-restoration-and-outside-dismissal-passed;nonmacos-focus-and-input-unverified"
     },
     {
@@ -129,10 +134,10 @@
       "implementation": "src/player/application-controller.js; tests/integration/application-controller.test.js",
       "tests": [
         "tests/integration/application-controller.test.js",
-        "scripts/e2e/desktop-vertical-slice.js (including optional additional native pointer probes)"
+        "scripts/e2e/desktop-vertical-slice.js (including optional native pointer probes and window-scale resize transition)"
       ],
-      "status": "controller-integration-tested;real-media-native-geometry-tested;windowed-and-fullscreen-native-harness-passed-with-instrumented-geometry;four-unit-multi-pointer-probe-passed-on-macos;native-selection-scroll-outside-dismissal-matrix-passed;smooth-popup-approach-regression-passed;live-hoshi-smooth-approach-passed",
-      "nativeDesktopStatus": "macos-windowed-and-supplied-media-fullscreen-hover-popup-click-selection-scroll-focus-restoration-outside-dismissal-escape-combined-capture-and-live-hoshi-tested;four-unit-multi-pointer-probe-passed;real-pgs-bitmap-ocr-live-hoshi-replay-passed-with-approximate-geometry;stock-glyph-equivalence-open"
+      "status": "controller-integration-tested;real-media-native-geometry-tested;windowed-and-fullscreen-native-harness-passed-with-instrumented-geometry;four-unit-multi-pointer-probe-passed-on-macos;native-selection-scroll-outside-dismissal-matrix-passed;smooth-popup-approach-regression-passed;live-hoshi-smooth-approach-passed;macos-window-scale-resize-and-recovery-passed",
+      "nativeDesktopStatus": "macos-windowed-and-supplied-media-fullscreen-hover-popup-click-selection-scroll-focus-restoration-outside-dismissal-escape-combined-capture-and-live-hoshi-tested;four-unit-multi-pointer-probe-passed;real-pgs-bitmap-ocr-live-hoshi-replay-passed-with-approximate-geometry;macos-live-window-scale-resize-and-recovery-passed;stock-glyph-equivalence-open"
     },
     {
       "id": "pause-ownership",
@@ -146,9 +151,13 @@
       "id": "gamepad-contexts",
       "source": "reference controller bindings",
       "implementation": "src/interaction/controller-bindings.js; src/interaction/controller-runtime.js; app/renderer.js; src/player/application-controller.js",
-      "tests": ["tests/core.test.js"],
-      "status": "generic-browser-gamepad-router;browser-hotplug-event-and-poll-transport;macos-native-HID-worker-state-transport;native-contract-stale-disconnect-recovery-and-device-hot-swap-edge-state-unit-tested",
-      "nativeDesktopStatus": "macos-native-HID-path-wired;physical-controller-focus-hotplug-and-device-compatibility-unverified"
+      "tests": [
+        "tests/core.test.js",
+        "tests/integration/application-controller.test.js (including controller/mouse modality)",
+        "scripts/e2e/browser-integration.js"
+      ],
+      "status": "generic-browser-gamepad-router-with-iinatan-0.65-analog-press-threshold;browser-hotplug-event-poll-and-focus-lifecycle-neutral-reset;generic-macos-native-HID-device-scoring-and-hotplug-transport;macos-native-over-browser-fallback-arbitration;complete-native-button-and-trigger-contract;proportional-popup-scroll;audio-menu-row-column-focus-and-selected-source-Anki-action;three-context-first-class-settings-editor-with-independent-reset;native-contract-stale-disconnect-recovery-and-device-hot-swap-edge-state-unit-tested",
+      "nativeDesktopStatus": "macos-native-HID-semantic-replay-passed-with-live-Electron-stock-mpv-and-Hoshi-for-cursor-free-lookup-right-stick-targeting-proportional-left-stick-scroll-D-pad-entry-navigation-audio-hold-and-dismissal;browser-fallback-path-and-audio-row-column-selection-tested;synthetic-native-HID-Anki-audio-column-selection-post-controller-outside-dismissal-and-Finder-foreground-recovery-via-trusted-native-user-click-passed;physical-controller-focus-hotplug-device-compatibility-and-exact-stock-glyph-equivalence-unverified"
     },
     {
       "id": "hoshidicts-worker",
@@ -169,7 +178,7 @@
       "implementation": "src/services/language-registry.js; src/services/deinflection.js; src/services/language-rules/; src/services/dictionary-service.js; src/settings/defaults.js",
       "tests": ["tests/core.test.js"],
       "status": "six-language-routing-and-bounded-deinflection-candidates; dictionary-candidate-merge-tested",
-      "nativeDesktopStatus": "unverified"
+      "nativeDesktopStatus": "macos-native-demo-and-live-recommended-six-language-popup-matrix-passed;all-dictionary-corpus-correctness-unverified"
     },
     {
       "id": "dictionary-import-and-profiles",
@@ -177,15 +186,15 @@
       "implementation": "src/services/dictionary-catalog.js; src/services/dictionary-download.js; src/services/recommended-dictionaries.js; src/settings/settings-store.js; app/settings-renderer.js",
       "tests": ["tests/core.test.js", "scripts/e2e/settings-integration.js"],
       "status": "managed-import-ordering-profiles-and-bounded-recommended-download-update;live-jitendex-download-import-worker-lookup-smoke-passed",
-      "nativeDesktopStatus": "macos-live-recommended-download-import-and-hoshi-popup-passed;profile-switch-native-unverified"
+      "nativeDesktopStatus": "macos-live-recommended-download-import-and-hoshi-popup-passed;macos-native-default-study-profile-switch-passed"
     },
     {
       "id": "structured-dictionary-rendering",
       "source": "reference overlay dictionary document",
       "implementation": "app/renderer.js; src/services/content-security.js",
       "tests": ["tests/core.test.js", "scripts/e2e/browser-integration.js"],
-      "status": "secure-structured-content-renderer-with-scoped-etymology-grammar-and-non-lemma-presentation",
-      "nativeDesktopStatus": "macos-live-structured-popup-native-selection-scroll-and-combined-capture-passed;nonmacos-native-rendering-unverified"
+      "status": "secure-structured-content-renderer-with-scoped-etymology-grammar-and-non-lemma-presentation;bounded-nested-child-lookup-rendering-tested",
+      "nativeDesktopStatus": "macos-live-structured-popup-native-selection-scroll-and-combined-capture-passed;native-nested-child-result-injection-not-yet-replayed;nonmacos-native-rendering-unverified"
     },
     {
       "id": "browser-document-integration",
@@ -196,8 +205,8 @@
         "scripts/validate-release.js",
         ".github/workflows/native-release.yml (Linux Xvfb document-integration job)"
       ],
-      "status": "real-electron-chromium-document-smoke-with-structured-content-input-events-context-menu-focus-layout-reflow-capability-handshake-nested-click-hover-shift-hover-parent-navigation-request-correlated-audio-and-release-security-contract",
-      "nativeDesktopStatus": "macos-native-live-popup-selection-scroll-focus-dismissal-and-measured-action-clicks-passed;nonmacos-native-desktop-unverified"
+      "status": "real-electron-chromium-document-smoke-with-structured-content-input-events-context-menu-focus-layout-reflow-capability-handshake-nested-lookup-depth-cancellation-escape-request-correlation-request-correlated-audio-and-release-security-contract",
+      "nativeDesktopStatus": "macos-native-live-popup-selection-scroll-focus-dismissal-and-measured-action-clicks-passed;native-nested-child-result-injection-not-yet-replayed;nonmacos-native-desktop-unverified"
     },
     {
       "id": "phase-a-performance-and-lifecycle-stress",
@@ -208,7 +217,7 @@
         "tests/integration/application-controller.test.js"
       ],
       "status": "host-microbenchmarks-and-twelve-cycle-attach-detach-stress",
-      "nativeDesktopStatus": "native-harness-status-and-combined-capture-latency-telemetry-added;scanout-latency-and-long-run-compositor-stress-unverified"
+      "nativeDesktopStatus": "native-harness-status-and-combined-capture-latency-telemetry-added;macos-native-demo-24-cycle-popup-lifecycle-replay-passed;scanout-latency-and-unbounded-compositor-stress-unverified"
     },
     {
       "id": "directory-package-layout",
@@ -260,10 +269,11 @@
       "tests": [
         "tests/core.test.js",
         "tests/integration/application-controller.test.js",
-        "scripts/e2e/settings-integration.js"
+        "scripts/e2e/settings-integration.js",
+        "scripts/e2e/settings-native-window-smoke.js"
       ],
       "status": "unit-tested;bounded-runtime-timeout-and-refresh-controls;sanitized-native-geometry-diagnostics",
-      "nativeDesktopStatus": "unverified"
+      "nativeDesktopStatus": "macos-native-legacy-profile-and-global-settings-normalization-passed;macos-native-save-open-backup-restore-passed"
     },
     {
       "id": "settings-window-and-profile-editor",
@@ -274,8 +284,8 @@
         "scripts/e2e/settings-native-window-smoke.js",
         ".github/workflows/native-release.yml (Linux Xvfb document-integration job)"
       ],
-      "status": "real-electron-sandboxed-settings-document-preload-and-capability-diagnostics-smoke",
-      "nativeDesktopStatus": "macos-settings-window-visibility-geometry-and-activation-passed;trusted-Cmd-comma-helper-path-recorded;profile-lifecycle-covered-by-settings-document-smoke;other-menu-accelerators-unverified"
+      "status": "real-electron-sandboxed-settings-document-preload-capability-diagnostics-and-three-context-controller-binding-editor-smoke",
+      "nativeDesktopStatus": "macos-settings-window-visibility-geometry-and-activation-passed;trusted-Cmd-comma-helper-path-recorded;native-open-media-Cmd-O-menu-metadata-verified;native-default-study-profile-switch-passed;native-profile-name-edit-create-delete-passed;macos-native-legacy-settings-normalization-passed;macos-native-save-open-backup-restore-passed"
     },
     {
       "id": "custom-css-boundary",
@@ -284,10 +294,11 @@
       "tests": [
         "tests/core.test.js",
         "scripts/e2e/browser-integration.js",
+        "scripts/e2e/desktop-vertical-slice.js (macOS feature-parity mode)",
         "scripts/validate-release.js"
       ],
       "status": "unit-tested;selector-based-custom-css-and-declaration-fragments-rendered-in-real-electron;unsafe-resource-and-expression-inputs-rejected;browser-CSP-and-release-security-contract-tested",
-      "nativeDesktopStatus": "unverified"
+      "nativeDesktopStatus": "macos-signed-live-popup-confirmed-profile-custom-css-selector-remapping-and-computed-background-border;linux-and-windows-native-unverified"
     },
     {
       "id": "macos-arm64-window-probe",
@@ -306,10 +317,10 @@
       "implementation": "native/mpv-cplugin-api.h; native/mpv_window_shim_macos.mm; src/platform/native-window-adapter.js",
       "tests": [
         "cmake --preset release; cmake --build --preset release",
-        "scripts/e2e/stock-mpv-window-smoke.js (IINATAN_NATIVE_SHIM)",
+        "scripts/e2e/stock-mpv-window-smoke.js (IINATAN_NATIVE_SHIM; IINATAN_NATIVE_SHIM_AUTO_REQUIRED)",
         "tests/core.test.js"
       ],
-      "status": "macos-stock-mpv-appkit-content-sidecar-smoke",
+      "status": "macos-stock-mpv-appkit-content-sidecar-smoke;session-auto-discovery-passed",
       "nativeDesktopStatus": "windowed-and-supplied-media-fullscreen-combined-desktop-and-native-input-passed;stock-glyph-equivalence-unverified"
     },
     {
