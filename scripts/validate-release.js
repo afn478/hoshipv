@@ -3,6 +3,7 @@
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
+const { spawnSync } = require("node:child_process");
 
 const root = path.resolve(__dirname, "..");
 const required = [
@@ -56,6 +57,7 @@ const required = [
   "scripts/e2e/windows-window-probe-main.js",
   "scripts/e2e/windows-window-probe-smoke.js",
   "scripts/e2e/stock-mpv-real-media-ass-smoke.js",
+  "scripts/e2e/stock-mpv-glyph-equivalence-diagnostic.js",
 ];
 for (const relative of required) {
   if (!fs.existsSync(path.join(root, relative)))
@@ -116,7 +118,7 @@ const sha256 = (filePath) =>
   crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
 if (
   sha256(sourceArchive) !==
-  "05c0f105c3e7452f292ffcd1ff23c6f362eb01b856cec31790127fc5e8c4359a"
+  "77292ffd1aa3e2ecc0f99f7c1973040a8261ecf4111bda76a5f8238c139d7326"
 )
   throw new Error(
     "HoshiDicts corresponding-source archive checksum does not match the reviewed artifact",
@@ -126,12 +128,20 @@ if (process.platform === "darwin") {
   const helper = path.join(root, "bin", "iina-hoshi-dicts");
   if (!fs.existsSync(helper))
     throw new Error("macOS release requires the bundled HoshiDicts helper");
+  const verification = spawnSync("codesign", ["--verify", "--strict", helper], {
+    encoding: "utf8",
+  });
+  const details = spawnSync("codesign", ["-dvvv", helper], {
+    encoding: "utf8",
+  });
+  const signingOutput = `${details.stdout || ""}\n${details.stderr || ""}`;
+  const authority = signingOutput.match(/^Authority=(.+)$/m)?.[1] || "";
   if (
-    sha256(helper) !==
-    "c10f850e6c6fcd1de95e4789259d938d6d4425985d46ca436abec92abb60ff07"
+    verification.status !== 0 ||
+    !/^(Apple Development|Developer ID Application):/.test(authority)
   )
     throw new Error(
-      "bundled HoshiDicts helper checksum does not match the reviewed artifact",
+      `bundled HoshiDicts helper must have a verified Apple Development or Developer ID signature (authority=${authority || "none"})`,
     );
 }
 

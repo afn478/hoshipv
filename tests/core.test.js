@@ -2,6 +2,7 @@
 
 const test = require("node:test");
 const { EventEmitter } = require("node:events");
+const { spawn } = require("node:child_process");
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const os = require("node:os");
@@ -17,9 +18,11 @@ const { placePopup } = require("../src/geometry/popup-placement");
 const {
   createGeometrySnapshot,
   highlightForHit,
+  highlightForUnits,
   hitTest,
   isSnapshotCurrent,
 } = require("../src/geometry/snapshot");
+const { buildPlainSubtitleGeometry } = require("../src/geometry/plain-subtitle");
 const { createTextIndex } = require("../src/geometry/unicode-index");
 const {
   SubtitleGeometryProvider,
@@ -124,6 +127,8 @@ const { NativeWindowAdapter } = require("../src/platform/native-window-adapter")
 const { PlayerBridge } = require("../src/player/player-bridge");
 const { BrowserHost } = require("../src/platform/browser-host");
 const { requestedMediaPath } = require("../src/player/launch-arguments");
+const { defaultSessionDirectory } = require("../src/player/session-directory");
+const { listDescriptors } = require("../src/player/session-descriptor");
 const {
   assTimestampMilliseconds,
   parseAssDialogue,
@@ -163,6 +168,63 @@ test("media launch arguments resolve both packaged-file and explicit forms", () 
   );
   assert.equal(requestedMediaPath(["electron", ".", "--open-media"]), null);
   assert.equal(requestedMediaPath(["electron", ".", "--settings"]), null);
+});
+
+test("default session directory follows the per-platform companion location", () => {
+  assert.equal(
+    defaultSessionDirectory({ platform: "darwin", home: "/Users/test", env: {} }),
+    path.join(
+      "/Users/test",
+      "Library",
+      "Application Support",
+      "iinatan for mpv",
+      "sessions",
+    ),
+  );
+  assert.equal(
+    defaultSessionDirectory({
+      platform: "win32",
+      home: "C:\\Users\\test",
+      env: { APPDATA: "C:\\Users\\test\\AppData\\Roaming" },
+    }),
+    path.join("C:\\Users\\test\\AppData\\Roaming", "iinatan for mpv", "sessions"),
+  );
+  assert.equal(
+    defaultSessionDirectory({
+      platform: "linux",
+      home: "/home/test",
+      env: { XDG_CONFIG_HOME: "/tmp/test-config" },
+    }),
+    path.join("/tmp/test-config", "iinatan for mpv", "sessions"),
+  );
+});
+
+test("session discovery reaps dead native geometry sidecars without touching live ones", async () => {
+  const directory = await fs.mkdtemp(
+    path.join(os.tmpdir(), "iinatan-session-sidecars-"),
+  );
+  const child = spawn(process.execPath, ["-e", "process.exit(0)"], {
+    stdio: "ignore",
+  });
+  await new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("exit", resolve);
+  });
+  const deadPath = path.join(directory, `${child.pid}.geometry.json`);
+  const deadNextPath = `${deadPath}.next`;
+  const livePath = path.join(directory, `${process.pid}.geometry.json`);
+  await Promise.all([
+    fs.writeFile(deadPath, "{}"),
+    fs.writeFile(deadNextPath, "partial"),
+    fs.writeFile(livePath, "{}"),
+  ]);
+
+  await listDescriptors(directory);
+
+  await assert.rejects(fs.access(deadPath));
+  await assert.rejects(fs.access(deadNextPath));
+  await assert.doesNotReject(fs.access(livePath));
+  await fs.rm(directory, { recursive: true, force: true });
 });
 
 class FakeWebContents extends EventEmitter {
@@ -403,6 +465,29 @@ test("hit testing keeps tracks, events, and unit identity separate", () => {
   );
 });
 
+test("highlight geometry can cover every unit in the lookup span", () => {
+  const snapshot = snapshotFixture();
+  const hit = hitTest(snapshot, { x: 40, y: 660 });
+  const units = snapshot.tracks[0].events[0].units;
+  assert.deepEqual(highlightForUnits(snapshot, hit, units), [
+    { x: 0, y: 650, width: 40, height: 50 },
+    { x: 40, y: 650, width: 40, height: 50 },
+  ]);
+});
+
+test("plain top subtitle geometry starts at the toptitle edge", () => {
+  const geometry = buildPlainSubtitleGeometry({
+    text: "上字幕",
+    osdWidth: 1280,
+    osdHeight: 720,
+    fontSize: 38,
+    lineHeight: 48,
+    marginY: 34,
+    position: "top",
+  });
+  assert.equal(geometry.units[0].rects[0].y, 0);
+});
+
 test("placement is deterministic and prefers a previous side within hysteresis", () => {
   const input = {
     anchor: { x: 460, y: 330, width: 30, height: 30 },
@@ -426,7 +511,33 @@ test("placement is deterministic and prefers a previous side within hysteresis",
   assert.equal(second.cursorCorridor.width > 0, true);
 });
 
-test("interaction state machine consumes popup input and closes deepest UI first", () => {
+test("placement does not keep a previous side over the active subtitle anchor", () => {
+  const result = placePopup({
+    anchor: { x: 448, y: 449, width: 20, height: 16 },
+    popupSize: { width: 405, height: 302 },
+    bounds: { x: 160, y: 123, width: 640, height: 360 },
+    previous: { x: 160, y: 181, width: 405, height: 302 },
+    previousSide: "left",
+    hysteresis: 1000,
+  });
+  assert.equal(result.side, "above");
+  assert.equal(result.y + result.height <= 449, true);
+});
+
+test("placement constrains a tall popup to keep the active subtitle reachable", () => {
+  const result = placePopup({
+    anchor: { x: 448, y: 449, width: 20, height: 16 },
+    popupSize: { width: 405, height: 337 },
+    bounds: { x: 160, y: 123, width: 640, height: 360 },
+    gap: 12,
+  });
+  assert.equal(result.side, "above");
+  assert.equal(result.wasResized, true);
+  assert.equal(result.y, 123);
+  assert.equal(result.y + result.height, 437);
+});
+
+test("interaction state machine consumes popup input and closes the popup first", () => {
   const controller = new InteractionController();
   controller.dispatch(EVENTS.SESSION_READY, {
     sessionId: "session-a",
@@ -444,16 +555,28 @@ test("interaction state machine consumes popup input and closes deepest UI first
     [],
   );
   assert.equal(controller.state, STATES.POPUP_ACTIVE);
-  controller.dispatch(EVENTS.NESTED_OPENED, { id: "nested" });
-  assert.equal(controller.state, STATES.NESTED_POPUP_ACTIVE);
   assert.ok(
     controller.dispatch(EVENTS.POINTER_DOWN, { button: 0 }).includes("consume-input"),
   );
   controller.dispatch(EVENTS.ESCAPE);
-  assert.equal(controller.state, STATES.POPUP_ACTIVE);
-  controller.dispatch(EVENTS.ESCAPE);
   assert.equal(controller.state, STATES.PLAYER_INTERACTION);
   assert.equal(controller.capture, null);
+});
+
+test("interaction state machine accepts a new hover target while lookup is pending", () => {
+  const controller = new InteractionController();
+  controller.dispatch(EVENTS.SESSION_READY, {
+    sessionId: "session-hover-cancel",
+    geometryGeneration: 1,
+  });
+  controller.dispatch(EVENTS.POINTER_TARGET, { hit: { unitId: "first" } });
+  controller.dispatch(EVENTS.LOOKUP_REQUESTED, { requestId: "first-request" });
+  const effects = controller.dispatch(EVENTS.POINTER_TARGET, {
+    hit: { unitId: "second" },
+  });
+  assert.ok(effects.includes("cancel-lookup"));
+  assert.equal(controller.state, STATES.HOVER_CANDIDATE);
+  assert.equal(controller.requestId, null);
 });
 
 test("interaction state machine owns native text-selection drag capture", () => {
@@ -535,6 +658,51 @@ test("controller binding normalization preserves all contexts and rejects unknow
     assert.equal(bindings.dpadUp, ACTIONS[context][1]);
     assert.equal(Object.keys(bindings).length, BUTTONS.length);
   }
+  // Keep the shipped defaults aligned with iinatan's checked-in profile.
+  // This is deliberately an exact contract: a partial assertion could let a
+  // context silently drift while the settings editor still appears complete.
+  assert.deepEqual(normalizeBindings({}, "noPopup"), {
+    primary: "lookup",
+    back: "resume-playback",
+    square: "toggle-pause",
+    audio: "audio-menu",
+    leftShoulder: "subtitle-previous",
+    rightShoulder: "subtitle-next",
+    leftTrigger: "anki-force-add",
+    rightTrigger: "anki-primary",
+    dpadUp: "volume-up",
+    dpadDown: "volume-down",
+    dpadLeft: "seek-backward",
+    dpadRight: "seek-forward",
+  });
+  assert.deepEqual(normalizeBindings({}, "popup"), {
+    primary: "lookup",
+    back: "close-popup",
+    square: "toggle-pause",
+    audio: "audio-menu",
+    leftShoulder: "subtitle-previous",
+    rightShoulder: "subtitle-next",
+    leftTrigger: "anki-force-add",
+    rightTrigger: "anki-primary",
+    dpadUp: "popup-scroll-up",
+    dpadDown: "popup-scroll-down",
+    dpadLeft: "popup-left",
+    dpadRight: "popup-right",
+  });
+  assert.deepEqual(normalizeBindings({}, "audio"), {
+    primary: "audio-activate",
+    back: "close-audio-list",
+    square: "none",
+    audio: "none",
+    leftShoulder: "none",
+    rightShoulder: "none",
+    leftTrigger: "none",
+    rightTrigger: "none",
+    dpadUp: "audio-up",
+    dpadDown: "audio-down",
+    dpadLeft: "audio-left",
+    dpadRight: "audio-right",
+  });
 });
 
 test("controller router emits one action per press and bounded repeat events", () => {
@@ -548,6 +716,7 @@ test("controller router emits one action per press and bounded repeat events", (
     buttons: Array.from({ length: 16 }, () => ({ pressed: false, value: 0 })),
     axes: [],
   };
+  router.actionsFor(pad, "noPopup", 0);
   pad.buttons[0] = { pressed: true, value: 1 };
   assert.deepEqual(router.actionsFor(pad, "noPopup", 100), [
     { action: "lookup", button: "primary", phase: "press" },
@@ -573,23 +742,127 @@ test("controller router emits one action per press and bounded repeat events", (
     { action: "popup-scroll-down", button: "dpadDown", phase: "repeat" },
   ]);
 
+  const thresholdRouter = new ControllerRouter();
+  const thresholdPad = {
+    connected: true,
+    buttons: Array.from({ length: 16 }, () => ({ pressed: false, value: 0 })),
+    axes: [],
+  };
+  thresholdPad.buttons[0] = { pressed: false, value: 0.64 };
+  assert.deepEqual(thresholdRouter.actionsFor(thresholdPad, "noPopup", 100), []);
+  thresholdPad.buttons[0] = { pressed: false, value: 0.65 };
+  assert.deepEqual(thresholdRouter.actionsFor(thresholdPad, "noPopup", 101), [
+    { action: "lookup", button: "primary", phase: "press" },
+  ]);
+
   const stickRouter = new ControllerRouter({
     bindings: { popup: { dpadRight: "popup-right" } },
     deadzone: 0.4,
+    stickThreshold: 0.4,
   });
   const stick = {
     connected: true,
     buttons: [],
-    axes: [0.35, 0],
+    axes: [0, 0, 0.35, 0],
   };
+  stickRouter.actionsFor({ ...stick, axes: [0, 0, 0, 0] }, "popup", 0);
   assert.deepEqual(stickRouter.actionsFor(stick, "popup", 100), []);
-  stick.axes[0] = 0.5;
+  stick.axes[2] = 0.5;
   assert.deepEqual(stickRouter.actionsFor(stick, "popup", 200), [
-    { action: "popup-right", button: "dpadRight", phase: "press" },
+    { action: "controller-target-right", button: "rightStick", phase: "press" },
+  ]);
+  const diagonal = {
+    connected: true,
+    id: "diagonal-pad",
+    index: 0,
+    buttons: [],
+    axes: [0, 0, 0.8, 0.8],
+  };
+  const diagonalRouter = new ControllerRouter({ stickThreshold: 0.4 });
+  diagonalRouter.actionsFor({ ...diagonal, axes: [0, 0, 0, 0] }, "popup", 0);
+  assert.deepEqual(diagonalRouter.actionsFor(diagonal, "popup", 100), [
+    { action: "controller-target-down", button: "rightStick", phase: "press" },
+  ]);
+
+  const scrollRouter = new ControllerRouter({ deadzone: 0.18 });
+  const scrollingStick = {
+    connected: true,
+    buttons: [],
+    axes: [0, 0.5, 0, 0],
+  };
+  scrollRouter.actionsFor({ ...scrollingStick, axes: [0, 0, 0, 0] }, "popup", 0);
+  assert.deepEqual(scrollRouter.actionsFor(scrollingStick, "popup", 100), [
+    {
+      action: "popup-scroll-axis",
+      button: "leftStick",
+      phase: "press",
+      axis: 0.5,
+      deltaMs: 16,
+    },
+  ]);
+  assert.deepEqual(scrollRouter.actionsFor(scrollingStick, "popup", 130), [
+    {
+      action: "popup-scroll-axis",
+      button: "leftStick",
+      phase: "repeat",
+      axis: 0.5,
+      deltaMs: 30,
+    },
   ]);
 });
 
-test("controller router resets edge state when a gamepad hot-swaps", () => {
+test("controller router preserves hold release actions across context changes", () => {
+  const router = new ControllerRouter();
+  const pad = {
+    connected: true,
+    id: "hold-pad",
+    index: 0,
+    buttons: Array.from({ length: 16 }, () => ({ pressed: false, value: 0 })),
+    axes: [],
+  };
+  router.actionsFor(pad, "noPopup", 0);
+  pad.buttons[3] = { pressed: true, value: 1 };
+  assert.deepEqual(router.actionsFor(pad, "noPopup", 100), [
+    { action: "audio-menu", button: "audio", phase: "press" },
+  ]);
+  assert.deepEqual(router.actionsFor(pad, "popup", 200), []);
+  pad.buttons[3] = { pressed: false, value: 0 };
+  assert.deepEqual(router.actionsFor(pad, "audio", 201), [
+    {
+      action: "controller-hold-release",
+      holdAction: "audio-menu",
+      button: "audio",
+      phase: "release",
+    },
+  ]);
+});
+
+test("controller router does not carry a repeat deadline into a new context", () => {
+  const router = new ControllerRouter();
+  const pad = {
+    connected: true,
+    id: "context-pad",
+    index: 0,
+    buttons: Array.from({ length: 16 }, () => ({ pressed: false, value: 0 })),
+    axes: [],
+  };
+  router.actionsFor(pad, "noPopup", 0);
+  pad.buttons[12] = { pressed: true, value: 1 };
+  assert.deepEqual(router.actionsFor(pad, "noPopup", 100), [
+    { action: "volume-up", button: "dpadUp", phase: "press" },
+  ]);
+  // D-pad Up is repeatable in the popup context, but this held press started
+  // in no-popup mode and must not become a popup repeat after the transition.
+  assert.deepEqual(router.actionsFor(pad, "popup", 1000), []);
+  pad.buttons[12] = { pressed: false, value: 0 };
+  assert.deepEqual(router.actionsFor(pad, "popup", 1100), []);
+  pad.buttons[12] = { pressed: true, value: 1 };
+  assert.deepEqual(router.actionsFor(pad, "popup", 1200), [
+    { action: "popup-scroll-up", button: "dpadUp", phase: "press" },
+  ]);
+});
+
+test("controller router suppresses held input across gamepad hot-swaps", () => {
   const router = new ControllerRouter({
     bindings: { noPopup: { primary: "lookup" } },
   });
@@ -600,21 +873,51 @@ test("controller router resets edge state when a gamepad hot-swaps", () => {
     buttons: [{ pressed: true, value: 1 }],
     axes: [],
   });
+  const neutralPad = (id, index) => ({
+    ...pad(id, index),
+    buttons: [{ pressed: false, value: 0 }],
+  });
 
+  assert.deepEqual(router.actionsFor(neutralPad("first", 0), "noPopup", 0), []);
   assert.deepEqual(router.actionsFor(pad("first", 0), "noPopup", 100), [
     { action: "lookup", button: "primary", phase: "press" },
   ]);
   assert.deepEqual(router.actionsFor(pad("first", 0), "noPopup", 200), []);
-  assert.deepEqual(router.actionsFor(pad("second", 1), "noPopup", 300), [
+  assert.deepEqual(router.actionsFor(neutralPad("second", 1), "noPopup", 300), []);
+  assert.deepEqual(router.actionsFor(pad("second", 1), "noPopup", 301), [
     { action: "lookup", button: "primary", phase: "press" },
   ]);
   assert.deepEqual(
     router.actionsFor({ connected: false, id: "second", index: 1 }, "noPopup", 400),
     [],
   );
-  assert.deepEqual(router.actionsFor(pad("second", 1), "noPopup", 500), [
+  assert.deepEqual(router.actionsFor(pad("second", 1), "noPopup", 500), []);
+  assert.deepEqual(router.actionsFor(neutralPad("second", 1), "noPopup", 501), []);
+  assert.deepEqual(router.actionsFor(pad("second", 1), "noPopup", 502), [
     { action: "lookup", button: "primary", phase: "press" },
   ]);
+});
+
+test("controller router restarts proportional stick timing after disconnect", () => {
+  const router = new ControllerRouter();
+  const pad = {
+    connected: true,
+    id: "scroll-pad",
+    index: 0,
+    buttons: [],
+    axes: [0, 0.8, 0, 0],
+  };
+  router.actionsFor({ ...pad, axes: [0, 0, 0, 0] }, "popup", 0);
+  assert.equal(router.actionsFor(pad, "popup", 100)[0].deltaMs, 16);
+  assert.deepEqual(
+    router.actionsFor({ connected: false, id: "scroll-pad", index: 0 }, "popup", 1000),
+    [],
+  );
+  assert.deepEqual(
+    router.actionsFor({ ...pad, axes: [0, 0, 0, 0] }, "popup", 1900),
+    [],
+  );
+  assert.equal(router.actionsFor(pad, "popup", 2000)[0].deltaMs, 16);
 });
 
 test("controller router accepts the native HID state contract", () => {
@@ -629,12 +932,25 @@ test("controller router accepts the native HID state contract", () => {
     connected: true,
     id: "DualSense Wireless Controller",
     buttons: { primary: true },
-    axes: { leftY: 0, rightX: 0.6, rightY: 0 },
+    axes: { leftY: 0, rightX: 0.8, rightY: 0 },
   });
   assert.equal(snapshot.id, "DualSense Wireless Controller");
+  assert.deepEqual(
+    router.actionsFor(
+      normalizeNativeControllerState({
+        ...snapshot,
+        sequence: 3,
+        buttons: {},
+        axes: { leftY: 0, rightX: 0, rightY: 0 },
+      }),
+      "popup",
+      0,
+    ),
+    [],
+  );
   assert.deepEqual(router.actionsFor(snapshot, "popup", 100), [
     { action: "lookup", button: "primary", phase: "press" },
-    { action: "popup-right", button: "dpadRight", phase: "press" },
+    { action: "controller-target-right", button: "rightStick", phase: "press" },
   ]);
   assert.equal(normalizeNativeControllerState({ protocol: 1 }), null);
 });
@@ -654,8 +970,14 @@ test("settings inventory has the reference 59 profile and 2 global preferences",
     "shift-hover",
   );
   assert.equal(
-    normalizePreferences({ nestedPopupMode: "shift-hover" }).nestedPopupMode,
-    "shift-hover",
+    normalizePreferences({ nestedPopupMode: "hover", nestedPopupMaxDepth: 5 })
+      .nestedPopupMode,
+    "hover",
+  );
+  assert.equal(
+    normalizePreferences({ nestedPopupMode: "hover", nestedPopupMaxDepth: 99 })
+      .nestedPopupMaxDepth,
+    8,
   );
   assert.equal(
     normalizePreferences({ wiktionaryEtymologyCollapseOverride: "inherit" })
@@ -719,6 +1041,29 @@ test("protocol validates sender-facing messages and external URL policy", () => 
     { sessionId: "s-1", requestId: "r-1", geometryGeneration: 2 },
   );
   assert.doesNotThrow(() => validateHostRequest(request));
+  assert.doesNotThrow(() =>
+    validateHostRequest(
+      makeEnvelope(
+        "audio-anki-selection",
+        {
+          url: "https://audio.example/alternate.mp3",
+          candidateIndex: 1,
+        },
+        { sessionId: "s-1", geometryGeneration: 2 },
+      ),
+    ),
+  );
+  assert.throws(
+    () =>
+      validateHostRequest(
+        makeEnvelope(
+          "audio-anki-selection",
+          { url: "http://evil.example/redirect" },
+          { sessionId: "s-1" },
+        ),
+      ),
+    /allowed audio URL/,
+  );
   assert.throws(
     () =>
       validateHostRequest(
@@ -735,6 +1080,38 @@ test("protocol validates sender-facing messages and external URL policy", () => 
     validateHostRequest(
       makeEnvelope("popup-size", { width: 320, height: 240 }, { sessionId: "s-1" }),
     ),
+  );
+  assert.doesNotThrow(() =>
+    validateHostRequest(
+      makeEnvelope(
+        "nested-lookup",
+        {
+          requestId: "nested-1",
+          popupSessionId: "popup-1",
+          depth: 1,
+          text: "猫",
+          utf16Start: 0,
+        },
+        { sessionId: "s-1", geometryGeneration: 2 },
+      ),
+    ),
+  );
+  assert.throws(
+    () =>
+      validateHostRequest(
+        makeEnvelope(
+          "nested-lookup",
+          {
+            requestId: "nested-1",
+            popupSessionId: "popup-1",
+            depth: 9,
+            text: "猫",
+            utf16Start: 0,
+          },
+          { sessionId: "s-1" },
+        ),
+      ),
+    /between 1 and 8/,
   );
   assert.doesNotThrow(() =>
     validateHostRequest(
@@ -809,6 +1186,36 @@ test("protocol validates sender-facing messages and external URL policy", () => 
     validateHostRequest(
       makeEnvelope("popup-scroll", { left: 0, top: 180 }, { sessionId: "s-1" }),
     ),
+  );
+  assert.doesNotThrow(() =>
+    validateHostRequest(
+      makeEnvelope(
+        "popup-style",
+        {
+          customCssApplied: true,
+          backgroundColor: "rgb(236, 253, 245)",
+          borderTopColor: "rgb(13, 148, 136)",
+          borderTopWidth: "6px",
+        },
+        { sessionId: "s-1" },
+      ),
+    ),
+  );
+  assert.throws(
+    () =>
+      validateHostRequest(
+        makeEnvelope(
+          "popup-style",
+          {
+            customCssApplied: "yes",
+            backgroundColor: "rgb(236, 253, 245)",
+            borderTopColor: "rgb(13, 148, 136)",
+            borderTopWidth: "6px",
+          },
+          { sessionId: "s-1" },
+        ),
+      ),
+    /payload\.customCssApplied/,
   );
   assert.throws(
     () =>
@@ -1076,6 +1483,7 @@ test("BrowserHost keeps passive and popup surfaces separate and validates sender
   const ipcMain = new EventEmitter();
   const host = new BrowserHost({
     BrowserWindow: FakeBrowserWindow,
+    platform: "darwin",
     ipcMain,
     preloadPath: "/tmp/iinatan-preload.js",
     overlayUrl: "iinatan://app/overlay.html",
@@ -1092,6 +1500,8 @@ test("BrowserHost keeps passive and popup surfaces separate and validates sender
     const [highlight, popup] = FakeBrowserWindow.instances;
     assert.equal(highlight.options.focusable, false);
     assert.equal(popup.options.focusable, true);
+    assert.equal(highlight.options.type, "panel");
+    assert.equal(popup.options.type, "panel");
     assert.deepEqual(highlight.ignoreMouse, {
       ignore: true,
       options: { forward: true },
@@ -1123,10 +1533,10 @@ test("BrowserHost keeps passive and popup surfaces separate and validates sender
     assert.equal(popup.focused, true);
     assert.deepEqual(popup.ignoreMouse, { ignore: false, options: undefined });
     assert.deepEqual(popup.alwaysOnTop, { flag: true, level: "floating" });
-    assert.deepEqual(highlight.alwaysOnTop, { flag: false, level: "floating" });
+    assert.deepEqual(highlight.alwaysOnTop, { flag: true, level: "floating" });
     assert.ok(popup.topMoves >= 1);
     assert.deepEqual(highlight.ignoreMouse, { ignore: true, options: undefined });
-    assert.equal(highlight.visible, false);
+    assert.equal(highlight.visible, true);
     assert.equal(host.hasSessionFocus(), true);
     requests.splice(0, requests.length);
 
@@ -1215,6 +1625,61 @@ test("BrowserHost negotiates DOM and native-input capabilities after surface rea
     });
     assert.equal(message.sessionId, "session-capabilities");
     assert.equal(message.geometryGeneration, 3);
+
+    host.setControllerSource("native-hid+browser-gamepad");
+    assert.equal(
+      highlight.webContents.sent.at(-1).message.payload.controller.source,
+      "native-hid+browser-gamepad",
+    );
+  } finally {
+    host.close();
+  }
+});
+
+test("BrowserHost uses a nonactivating macOS panel for interactive popup input", async () => {
+  FakeBrowserWindow.reset();
+  const ipcMain = new EventEmitter();
+  const globalShortcut = {
+    callbacks: new Map(),
+    unregistered: [],
+    register(accelerator, callback) {
+      this.callbacks.set(accelerator, callback);
+      return true;
+    },
+    unregister(accelerator) {
+      this.callbacks.delete(accelerator);
+      this.unregistered.push(accelerator);
+    },
+  };
+  const host = new BrowserHost({
+    BrowserWindow: FakeBrowserWindow,
+    platform: "darwin",
+    globalShortcut,
+    ipcMain,
+    preloadPath: "/tmp/iinatan-preload.js",
+    overlayUrl: "iinatan://app/overlay.html",
+  });
+
+  try {
+    await host.create();
+    host.showPopup({ position: { x: 10, y: 12 }, result: { entries: [] } });
+    const [, popup] = FakeBrowserWindow.instances;
+    assert.equal(popup.options.type, "panel");
+    ipcMain.emit(
+      "host-request",
+      { sender: popup.webContents },
+      { protocol: 1, type: "ready", payload: { surface: "popup" } },
+    );
+    assert.equal(popup.visible, true);
+    assert.equal(popup.focused, true);
+    const requests = [];
+    host.on("request", (value) => requests.push(value));
+    globalShortcut.callbacks.get("Escape")();
+    assert.equal(requests.at(-1).surface, "popup");
+    assert.equal(requests.at(-1).message.type, "popup-action");
+    assert.equal(requests.at(-1).message.payload.action, "escape");
+    host.hidePopup({ focusPlayer: false });
+    assert.deepEqual(globalShortcut.unregistered, ["Escape"]);
   } finally {
     host.close();
   }
@@ -1316,6 +1781,9 @@ test("subtitle provider keeps primary and secondary events independent and parse
         event.units.map((unit) => ({
           position: unit.position,
           rects: [{ x: 10 + unit.position, y: 20, w: 12, h: 20 }],
+          ...(unit.position === 0
+            ? { envelopeRects: [{ x: 8, y: 18, w: 16, h: 24 }] }
+            : {}),
         })),
       ),
     ),
@@ -1328,6 +1796,15 @@ test("subtitle provider keeps primary and secondary events independent and parse
   assert.deepEqual(native.tracks[0].events[0].units[0].rects, [
     { x: 10, y: 20, width: 12, height: 20 },
   ]);
+  assert.deepEqual(native.tracks[0].events[0].units[0].envelopeRects, [
+    { x: 8, y: 18, width: 16, height: 24 },
+  ]);
+  const normalizedNative = createGeometrySnapshot(native);
+  const nativeUnit = normalizedNative.tracks[0].events[0].units[0];
+  assert.deepEqual(
+    highlightForUnits(normalizedNative, { unit: nativeUnit }, [nativeUnit]),
+    [{ x: 8, y: 18, width: 16, height: 24 }],
+  );
   const inexactWindow = provider.applyNativeResponse(
     { ...value, source: { ...value.source, contentExact: false } },
     response,
@@ -1339,6 +1816,15 @@ test("subtitle provider keeps primary and secondary events independent and parse
     provider.applyNativeResponse(value, {
       ...response,
       units: response.units.slice(1),
+    }),
+    null,
+  );
+  assert.equal(
+    provider.applyNativeResponse(value, {
+      ...response,
+      units: response.units.map((unit) =>
+        unit.position === 0 ? { ...unit, envelopeRects: [] } : unit,
+      ),
     }),
     null,
   );
@@ -1547,6 +2033,61 @@ test("native subtitle geometry maps browser graphemes to validated libass units"
   const strippedUnicodeIndex = nativeStrippedDisplayIndex("A😀é\\Nline");
   assert.equal(strippedUnicodeIndex.supported, true);
   assert.equal(strippedUnicodeIndex.logicalLength, 10);
+});
+
+test("native subtitle geometry fails closed for an unvalidated player tuple", async () => {
+  const provider = new SubtitleGeometryProvider();
+  const input = provider.snapshotInput(
+    {
+      sessionId: "incompatible-native-session",
+      mediaGeneration: 0,
+      geometryGeneration: 1,
+      timeMs: 1500,
+      player: {
+        mpvVersion: "0.40.0",
+        libassVersion: "0.17.5",
+        ffmpegVersion: "9.0.1",
+        versionsObserved: true,
+      },
+      osd: { width: 1280, height: 720 },
+      primary: {
+        assFull: "Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,猫",
+        extradata: "",
+        source: { path: "/tmp/video.mkv", ffIndex: 0, external: false },
+        startMs: 1000,
+        endMs: 3000,
+        renderer: { storageWidth: 1280, storageHeight: 720 },
+      },
+      secondary: {},
+    },
+    { content: { x: 0, y: 0, width: 1280, height: 720 } },
+  );
+  let measured = false;
+  const service = new NativeSubtitleGeometryService({
+    geometryProvider: provider,
+    playerCompatibility: {
+      mpvVersion: "0.41.0",
+      libassVersion: "0.17.5",
+      ffmpegVersion: "9.0.1",
+    },
+    client: {
+      async measure() {
+        measured = true;
+        return { ok: true, protocol: 1, units: [] };
+      },
+    },
+  });
+  await assert.rejects(
+    () => service.apply(input),
+    (error) => {
+      assert.equal(error.code, "NATIVE_GEOMETRY_PLAYER_INCOMPATIBLE");
+      assert.deepEqual(error.mismatches, [
+        { name: "mpvVersion", expected: "0.41.0", observed: "0.40.0" },
+      ]);
+      return true;
+    },
+  );
+  assert.equal(measured, false);
 });
 
 test("native geometry preserves ASS event metadata when extradata is empty", () => {
@@ -1977,11 +2518,83 @@ test("native geometry fails closed for malformed explicit ASS positioning", () =
   }
 });
 
+test("native geometry accepts vector clipping for lookupable ASS text", () => {
+  const rawText =
+    "{\\clip(m 400 500 l 900 500 l 900 720 l 400 720)}Vector clipped event";
+  const request = trackRequest(
+    {
+      sessionId: "vector-clip-session",
+      mediaGeneration: 0,
+      geometryGeneration: 0,
+      timeMs: 2000,
+      osd: { width: 1280, height: 720 },
+    },
+    {
+      id: "vector-clip",
+      role: "primary",
+      selected: true,
+      source: { path: "/tmp/vector-clip.ass", ffIndex: 0, external: true },
+      startMs: 1000,
+      endMs: 3000,
+      events: [
+        {
+          rawText,
+          startMs: 1000,
+          endMs: 3000,
+          layer: 0,
+          drawing: false,
+          units: [{ position: 0, utf16Range: [0, 20], lookupable: true }],
+        },
+      ],
+      renderer: { overrideMode: "no" },
+    },
+    1,
+  );
+  assert.ok(request);
+  assert.equal(request.cue.observedAss, rawText);
+});
+
+test("native geometry accepts the remaining non-drawing ASS renderer tags", () => {
+  const rawText =
+    "{\\xbord2\\ybord1\\fsc\\fad(50,50)\\fade(0,0,0,0,50,1950,2000)\\org(640,360)\\a5\\u1\\s0\\p0\\pbo2\\fe1}Advanced tags";
+  const request = trackRequest(
+    {
+      sessionId: "advanced-ass-tags-session",
+      mediaGeneration: 0,
+      geometryGeneration: 0,
+      timeMs: 2000,
+      osd: { width: 1280, height: 720 },
+    },
+    {
+      id: "advanced-ass-tags",
+      role: "primary",
+      selected: true,
+      source: { path: "/tmp/advanced-tags.ass", ffIndex: 0, external: true },
+      startMs: 1000,
+      endMs: 3000,
+      events: [
+        {
+          rawText,
+          startMs: 1000,
+          endMs: 3000,
+          layer: 0,
+          drawing: false,
+          units: [{ position: 0, utf16Range: [0, 13], lookupable: true }],
+        },
+      ],
+      renderer: { overrideMode: "no" },
+    },
+    1,
+  );
+  assert.ok(request);
+  assert.equal(request.cue.observedAss, rawText);
+});
+
 test("native geometry fails closed for unsupported ASS renderer modes", () => {
   const unsupported = [
-    "{\\clip(m 0 0 l 400 300)}Vector clipped event",
     "{\\p1}Drawing event",
     "{\\unknown1}Unknown event",
+    "{\\clip(m 0 0 l 400)}Malformed vector clip",
   ];
   const snapshotInput = {
     sessionId: "unsupported-ass-modes-session",
@@ -2015,6 +2628,73 @@ test("native geometry fails closed for unsupported ASS renderer modes", () => {
       index + 1,
     );
     assert.equal(request, null, `unsupported ASS mode accepted: ${rawText}`);
+  }
+});
+
+test("native geometry fails closed for unrepresented mpv renderer options", () => {
+  const snapshotInput = {
+    sessionId: "unsupported-renderer-options-session",
+    mediaGeneration: 0,
+    geometryGeneration: 0,
+    timeMs: 2000,
+    osd: { width: 1280, height: 720 },
+  };
+  const track = {
+    id: "unsupported-renderer-options",
+    role: "primary",
+    selected: true,
+    source: {
+      path: "/tmp/unsupported-renderer-options.ass",
+      ffIndex: 0,
+      external: true,
+    },
+    startMs: 1000,
+    endMs: 3000,
+    events: [
+      {
+        rawText: "Unsupported renderer option",
+        startMs: 1000,
+        endMs: 3000,
+        layer: 0,
+        drawing: false,
+        units: [{ position: 0, utf16Range: [0, 9], lookupable: true }],
+      },
+    ],
+    renderer: { overrideMode: "no" },
+  };
+  const unsupported = [
+    ["assEnabled", false],
+    ["assScaleWithWindow", true],
+    ["assJustify", true],
+    ["justify", "left"],
+    ["fontProvider", "none"],
+    ["styleOverrides", ["FontName=Helvetica"]],
+    ["stylesPath", "/tmp/custom-styles.ass"],
+    ["fontsDirectory", "/tmp/custom-fonts"],
+    ["useVideoData", "none"],
+    ["videoAspectOverride", 1.5],
+    ["scaleSigns", true],
+    ["fixTimingThreshold", 100],
+    ["fixTimingKeep", 100],
+    ["fps", 23.976],
+    ["stretchDurations", true],
+    ["clearOnSeek", true],
+    ["pastVideoEnd", true],
+    ["filterRegex", ["opensubtitles"]],
+    ["filterJsre", ["opensubtitles"]],
+    ["filterSdhEnclosures", ["<>"]],
+    ["filterSdh", true],
+  ];
+  for (const [property, value] of unsupported) {
+    assert.equal(
+      trackRequest(
+        snapshotInput,
+        { ...track, renderer: { ...track.renderer, [property]: value } },
+        1,
+      ),
+      null,
+      `unsupported renderer option was accepted: ${property}`,
+    );
   }
 });
 
@@ -2091,6 +2771,9 @@ test("native geometry synthesizes stock secondary strip styling from mpv options
 test("player bridge exports exact-geometry track and renderer inputs", async () => {
   const values = new Map([
     ["pid", 42],
+    ["mpv-version", "mpv v0.41.0"],
+    ["libass-version", 24137728],
+    ["ffmpeg-version", "9.0.1"],
     ["path", "/tmp/movie.mkv"],
     ["track-list", [{ type: "sub", id: 3, "ff-index": 7 }]],
     ["sid", 3],
@@ -2106,6 +2789,22 @@ test("player bridge exports exact-geometry track and renderer inputs", async () 
     ["sub-scale", 1.1],
     ["sub-pos", 82],
     ["sub-font", "Noto Sans"],
+    ["sub-ass-force-margins", true],
+    ["sub-hinting", "light"],
+    ["sub-shaper", "simple"],
+    ["sub-justify", "left"],
+    ["sub-ass-scale-with-window", true],
+    ["embeddedfonts", false],
+    ["sub-ass", false],
+    ["sub-fix-timing-threshold", 100],
+    ["sub-fix-timing-keep", 100],
+    ["sub-fps", 23.976],
+    ["sub-stretch-durations", true],
+    ["sub-clear-on-seek", true],
+    ["sub-past-video-end", true],
+    ["sub-filter-regex", ["opensubtitles"]],
+    ["sub-filter-jsre", ["opensubtitles"]],
+    ["sub-filter-sdh-enclosures", ["<>"]],
     ["sub-ass-override", "scale"],
   ]);
   class FakeIpc extends EventEmitter {
@@ -2137,6 +2836,12 @@ test("player bridge exports exact-geometry track and renderer inputs", async () 
   );
   await bridge.connect();
   const input = bridge.geometryInput();
+  assert.deepEqual(input.player, {
+    mpvVersion: "0.41.0",
+    libassVersion: "0.17.5",
+    ffmpegVersion: "9.0.1",
+    versionsObserved: true,
+  });
   assert.deepEqual(input.primary.source, {
     path: "/tmp/movie.mkv",
     ffIndex: 7,
@@ -2150,6 +2855,22 @@ test("player bridge exports exact-geometry track and renderer inputs", async () 
   assert.equal(input.primary.renderer.pixelAspect, 1.25);
   assert.equal(input.primary.renderer.linePosition, 18);
   assert.equal(input.primary.renderer.overrideMode, "scale");
+  assert.equal(input.primary.renderer.forceMargins, true);
+  assert.equal(input.primary.renderer.hinting, "light");
+  assert.equal(input.primary.renderer.shaper, "simple");
+  assert.equal(input.primary.renderer.justify, "left");
+  assert.equal(input.primary.renderer.assScaleWithWindow, true);
+  assert.equal(input.primary.renderer.embeddedFonts, false);
+  assert.equal(input.primary.renderer.assEnabled, false);
+  assert.equal(input.primary.renderer.fixTimingThreshold, 100);
+  assert.equal(input.primary.renderer.fixTimingKeep, 100);
+  assert.equal(input.primary.renderer.fps, 23.976);
+  assert.equal(input.primary.renderer.stretchDurations, true);
+  assert.equal(input.primary.renderer.clearOnSeek, true);
+  assert.equal(input.primary.renderer.pastVideoEnd, true);
+  assert.deepEqual(input.primary.renderer.filterRegex, ["opensubtitles"]);
+  assert.deepEqual(input.primary.renderer.filterJsre, ["opensubtitles"]);
+  assert.deepEqual(input.primary.renderer.filterSdhEnclosures, ["<>"]);
   assert.deepEqual(input.primary.track, {
     id: 3,
     codec: "",
@@ -3702,6 +4423,99 @@ test("native window adapter targets a macOS sidecar window before the unqualifie
     assert.equal(geometry.contentExact, true);
     assert.equal(geometry.inProcessShim, true);
     assert.equal(geometry.fullscreenObserved, true);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("native window adapter uses the macOS sidecar identity when focusing one of multiple mpv processes", async () => {
+  const root = await fs.mkdtemp(
+    path.join(os.tmpdir(), "iinatan-window-focus-sidecar-"),
+  );
+  try {
+    const calls = [];
+    await fs.writeFile(
+      path.join(root, "42.geometry.json"),
+      JSON.stringify({
+        protocol: 1,
+        pid: 42,
+        windowId: 99,
+        content: { x: 0, y: 0, width: 800, height: 450 },
+        contentSource: "appkit-content-view",
+        contentExact: true,
+        isForeground: false,
+      }),
+      { mode: 0o600 },
+    );
+    const adapter = new NativeWindowAdapter({
+      platform: "darwin",
+      sessionDirectory: root,
+      focusRetryDelayMs: 0,
+      activate: async (descriptor) => {
+        calls.push(descriptor.windowId || null);
+        return {
+          ok: true,
+          activated: true,
+          isForeground: true,
+          foregroundVerified: true,
+        };
+      },
+    });
+
+    const result = await adapter.focus({
+      sessionId: "s-multi",
+      pid: 42,
+      ipcEndpoint: "ipc://multi",
+    });
+    assert.equal(result.foregroundVerified, true);
+    assert.deepEqual(calls, ["99"]);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("native window adapter refreshes a stale macOS sidecar identity before focus", async () => {
+  const root = await fs.mkdtemp(
+    path.join(os.tmpdir(), "iinatan-window-focus-refresh-"),
+  );
+  try {
+    const calls = [];
+    await fs.writeFile(
+      path.join(root, "42.geometry.json"),
+      JSON.stringify({
+        protocol: 1,
+        pid: 42,
+        windowId: 101,
+        content: { x: 0, y: 0, width: 800, height: 450 },
+        contentSource: "appkit-content-view",
+        contentExact: true,
+        isForeground: false,
+      }),
+      { mode: 0o600 },
+    );
+    const adapter = new NativeWindowAdapter({
+      platform: "darwin",
+      sessionDirectory: root,
+      focusRetryDelayMs: 0,
+      activate: async (descriptor) => {
+        calls.push(descriptor.windowId || null);
+        return {
+          ok: true,
+          activated: true,
+          isForeground: true,
+          foregroundVerified: true,
+        };
+      },
+    });
+
+    const result = await adapter.focus({
+      sessionId: "s-recreated",
+      pid: 42,
+      windowId: 99,
+      ipcEndpoint: "ipc://recreated",
+    });
+    assert.equal(result.foregroundVerified, true);
+    assert.deepEqual(calls, ["101"]);
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }

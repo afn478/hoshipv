@@ -11,9 +11,9 @@ const { listPackage } = require("@electron/asar");
 const root = path.resolve(__dirname, "..");
 const productName = "iinatan for mpv";
 const SOURCE_ARCHIVE_SHA256 =
-  "05c0f105c3e7452f292ffcd1ff23c6f362eb01b856cec31790127fc5e8c4359a";
+  "77292ffd1aa3e2ecc0f99f7c1973040a8261ecf4111bda76a5f8238c139d7326";
 const MAC_HELPER_BUILD_SHA256 =
-  "c10f850e6c6fcd1de95e4789259d938d6d4425985d46ca436abec92abb60ff07";
+  "1036f1c96b83db5ce400dc67de6281008627ca40c20dc296e55aa40564e1b736";
 const HOSHIDICTS_REVISION = "a28d82eb0f169b8ceff79e8c99ffe0b96709ab27";
 const LIBASS_VERSION = "0.17.5";
 const FFMPEG_VERSION = "9.0.1";
@@ -175,6 +175,9 @@ async function main() {
     assert.equal(version.assGeometry?.patch, LIBASS_PATCH);
     assert.equal(version.assGeometry?.envelopeRects, true);
     assert.equal(version.assGeometry?.architecture, "arm64");
+    assert.equal(version.controller?.protocol, 1);
+    assert.equal(version.controller?.source, "native-hid");
+    assert.ok(version.controller?.products?.includes("gamepad"));
   } else {
     const helper = layout.externalResources.find(
       ([, label]) => label === "portable HoshiDicts helper",
@@ -193,12 +196,20 @@ async function main() {
     "/app/preload.js",
     "/app/renderer.js",
     "/app/settings.html",
+    "/docs/architecture-decision-record.md",
+    "/docs/coordinate-geometry.md",
     "/docs/security.md",
     "/docs/dictionary-sources.md",
     "/docs/deinflection.md",
+    "/docs/feature-matrix.json",
+    "/docs/input-state-machine.md",
     "/docs/mpv-compatibility.md",
+    "/docs/native-geometry.md",
+    "/docs/platform-capability-matrix.md",
+    "/docs/settings-migration.md",
     "/docs/validation.md",
     "/src/geometry/coordinate-mapper.js",
+    "/src/player/session-directory.js",
     "/src/player/mpv-launcher.js",
     "/src/player/application-controller.js",
     "/src/services/dictionary-service.js",

@@ -50,6 +50,34 @@ test("mpv JSON IPC correlates responses and emits property changes", async () =>
   ipc.close();
 });
 
+test("mpv JSON IPC sends input commands as a flat command array", async () => {
+  class FakeSocket extends EventEmitter {
+    setEncoding() {}
+    write(line) {
+      const request = JSON.parse(line);
+      assert.deepEqual(request.command, ["sub-seek", -1]);
+      queueMicrotask(() =>
+        this.emit(
+          "data",
+          JSON.stringify({ request_id: request.request_id, error: "success" }) + "\n",
+        ),
+      );
+    }
+    destroy() {
+      queueMicrotask(() => this.emit("close"));
+    }
+  }
+  const ipc = new MpvJsonIpc("fake-command", {
+    createConnection: () => {
+      const socket = new FakeSocket();
+      queueMicrotask(() => socket.emit("connect"));
+      return socket;
+    },
+  });
+  await ipc.command("sub-seek", -1);
+  ipc.close();
+});
+
 test("mpv JSON IPC bounds connection establishment", async () => {
   class HangingSocket extends EventEmitter {
     destroy() {}

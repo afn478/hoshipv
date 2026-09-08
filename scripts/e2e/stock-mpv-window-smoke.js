@@ -107,6 +107,8 @@ async function main() {
   const executable = process.env.IINATAN_MPV || "mpv";
   const nativeShim = process.env.IINATAN_NATIVE_SHIM || "";
   const loadShimViaSession = process.env.IINATAN_NATIVE_SHIM_VIA_SESSION === "1";
+  const requireAutoShim = process.env.IINATAN_NATIVE_SHIM_AUTO_REQUIRED === "1";
+  const expectNativeShim = !!nativeShim || requireAutoShim;
   const fullscreen = process.env.IINATAN_NATIVE_WINDOW_FULLSCREEN === "1";
   const version = spawnSync(executable, ["--version"], { encoding: "utf8" });
   if (version.error || version.status !== 0)
@@ -197,29 +199,32 @@ async function main() {
       sessionDirectory,
       timeoutMs: 3000,
     });
-    const geometry = await waitForValue(
-      () => adapter.read(descriptor),
-      10000,
-      "native stock-mpv window geometry",
-    );
     const shimGeometryPath = path.join(
       sessionDirectory,
       `${descriptor.pid}.geometry.json`,
     );
-    const shimGeometry = nativeShim
+    // Runtime-loaded C plugins initialize asynchronously. Wait for the
+    // in-process AppKit sidecar before the first adapter read so that the
+    // adapter cannot win a race with the less precise CoreGraphics fallback.
+    const shimGeometry = expectNativeShim
       ? await waitForValue(
           () => readOptionalJson(shimGeometryPath),
           2000,
           "in-process content geometry shim",
         )
       : null;
+    const geometry = await waitForValue(
+      () => adapter.read(descriptor),
+      10000,
+      "native stock-mpv window geometry",
+    );
     if (
       !geometry.content ||
       geometry.content.width <= 0 ||
       geometry.content.height <= 0
     )
       throw new Error("native window probe returned a non-positive content frame");
-    if (nativeShim) {
+    if (expectNativeShim) {
       if (typeof geometry.fullscreenObserved !== "boolean")
         throw new Error(
           "in-process content shim did not report AppKit fullscreen state",
@@ -269,6 +274,7 @@ async function main() {
             displayVisible: geometry.displayVisible,
             capability: geometry.capability,
           },
+          shimRequested: expectNativeShim,
           shimGeometry,
           activation,
           fullscreenRequested: fullscreen,

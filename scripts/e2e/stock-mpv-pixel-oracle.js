@@ -188,6 +188,59 @@ const cases = [
     identityEdgeTolerance: 1,
     primaryAssOverride: "no",
   },
+  ...(process.env.IINATAN_STOCK_PIXEL_ORACLE_INCLUDE_PER_GLYPH === "1"
+    ? [
+        {
+          id: "unit-identity-per-glyph-colors",
+          isolatedGlyphOracle: true,
+          fixture: path.join(
+            root,
+            "tests",
+            "fixtures",
+            "native-ass-geometry-per-glyph-colors-smoke.ass",
+          ),
+          text: "Careful",
+          events: [
+            {
+              rawText:
+                "{\\c&H000000FF&}C{\\c&H0000FF00&}a{\\c&H00FF0000&}r{\\c&H00FFFF00&}e{\\c&H00FF00FF&}f{\\c&H0000FFFF&}u{\\c&H000080FF&}l",
+              startMs: 1000,
+              endMs: 3000,
+              layer: 0,
+              drawing: false,
+              units: [
+                { position: 0, utf16Range: [0, 1], lookupable: true },
+                { position: 1, utf16Range: [1, 2], lookupable: true },
+                { position: 2, utf16Range: [2, 3], lookupable: true },
+                { position: 3, utf16Range: [3, 4], lookupable: true },
+                { position: 4, utf16Range: [4, 5], lookupable: true },
+                { position: 5, utf16Range: [5, 6], lookupable: true },
+                { position: 6, utf16Range: [6, 7], lookupable: true },
+              ],
+            },
+          ],
+          units: [
+            { position: 0, displayStartUtf16: 0, displayEndUtf16: 1 },
+            { position: 1, displayStartUtf16: 1, displayEndUtf16: 2 },
+            { position: 2, displayStartUtf16: 2, displayEndUtf16: 3 },
+            { position: 3, displayStartUtf16: 3, displayEndUtf16: 4 },
+            { position: 4, displayStartUtf16: 4, displayEndUtf16: 5 },
+            { position: 5, displayStartUtf16: 5, displayEndUtf16: 6 },
+            { position: 6, displayStartUtf16: 6, displayEndUtf16: 7 },
+          ],
+          unitIdentity: [
+            { position: 0, color: [255, 0, 0] },
+            { position: 1, color: [0, 255, 0] },
+            { position: 2, color: [0, 0, 255] },
+            { position: 3, color: [0, 255, 255] },
+            { position: 4, color: [255, 0, 255] },
+            { position: 5, color: [255, 255, 0] },
+            { position: 6, color: [255, 128, 0] },
+          ],
+          primaryAssOverride: "no",
+        },
+      ]
+    : []),
   {
     id: "subrip-primary",
     fixture: path.join(root, "tests", "fixtures", "stock-mpv-primary.srt"),
@@ -317,6 +370,30 @@ const cases = [
     primaryAssOverride: "no",
   },
   {
+    id: "vector-clip-ass-tag",
+    fixture: path.join(
+      root,
+      "tests",
+      "fixtures",
+      "native-ass-geometry-vector-clip-smoke.ass",
+    ),
+    text: "{\\clip(m 400 500 l 900 500 l 900 720 l 400 720)}Vector clipped event",
+    units: [{ position: 0, displayStartUtf16: 0, displayEndUtf16: 20 }],
+    primaryAssOverride: "no",
+  },
+  {
+    id: "advanced-ass-tags",
+    fixture: path.join(
+      root,
+      "tests",
+      "fixtures",
+      "native-ass-geometry-advanced-tags-smoke.ass",
+    ),
+    text: "{\\xbord2\\ybord1\\fsc\\fad(50,50)\\fade(0,0,0,0,50,1950,2000)\\org(640,360)\\a5\\u1\\s0\\p0\\pbo2\\fe1}Advanced tags",
+    units: [{ position: 0, displayStartUtf16: 0, displayEndUtf16: 13 }],
+    primaryAssOverride: "no",
+  },
+  {
     id: "transform-ass-tags",
     fixture: path.join(
       root,
@@ -326,6 +403,23 @@ const cases = [
     ),
     text: "{\\t(0,500,\\fs48)}Transform ASS tags",
     units: [{ position: 0, displayStartUtf16: 0, displayEndUtf16: 18 }],
+    primaryAssOverride: "no",
+  },
+  {
+    id: "karaoke-ass-tags",
+    fixture: path.join(
+      root,
+      "tests",
+      "fixtures",
+      "native-ass-geometry-karaoke-smoke.ass",
+    ),
+    text: "{\\k20}Ka{\\k20}ra{\\k20}oke {\\kf20}test",
+    units: [
+      { position: 0, displayStartUtf16: 0, displayEndUtf16: 2 },
+      { position: 2, displayStartUtf16: 2, displayEndUtf16: 4 },
+      { position: 4, displayStartUtf16: 4, displayEndUtf16: 7 },
+      { position: 8, displayStartUtf16: 8, displayEndUtf16: 12 },
+    ],
     primaryAssOverride: "no",
   },
   {
@@ -825,6 +919,106 @@ async function captureFrame(
   return decodePng(await fs.readFile(path.join(outputDirectory, files[0])));
 }
 
+function isolateAssGlyphText(rawText, targetPosition) {
+  // The per-glyph fixture uses inline colour tags only to label identities.
+  // Remove those tags and reset to the declared style so the isolation pass
+  // changes visibility without changing the ASS shaping inputs.
+  let result = "{\\r}";
+  let index = 0;
+  let displayPosition = 0;
+  while (index < rawText.length) {
+    if (rawText[index] === "{") {
+      const end = rawText.indexOf("}", index + 1);
+      if (end < 0) throw new Error("per-glyph ASS fixture contains an unclosed tag");
+      index = end + 1;
+      continue;
+    }
+    if (
+      rawText[index] === "\\" &&
+      (rawText[index + 1] === "N" || rawText[index + 1] === "n")
+    ) {
+      result += rawText.slice(index, index + 2);
+      index += 2;
+      displayPosition++;
+      continue;
+    }
+    const codePoint = rawText.codePointAt(index);
+    const character = String.fromCodePoint(codePoint);
+    const alpha = displayPosition === targetPosition ? "00" : "FF";
+    result += `{\\alpha&H${alpha}&}${character}`;
+    displayPosition += character.length;
+    index += character.length;
+  }
+  return result;
+}
+
+async function writeIsolatedAssFixture(
+  sourceFixture,
+  rawText,
+  targetPosition,
+  outputPath,
+) {
+  const contents = await fs.readFile(sourceFixture, "utf8");
+  const occurrences = contents.split(rawText).length - 1;
+  if (occurrences !== 1)
+    throw new Error(
+      `per-glyph ASS fixture text occurs ${occurrences} times instead of once`,
+    );
+  await fs.writeFile(
+    outputPath,
+    contents.replace(rawText, isolateAssGlyphText(rawText, targetPosition)),
+    "utf8",
+  );
+}
+
+async function isolatedGlyphCoverage(
+  executable,
+  video,
+  baseline,
+  temporaryRoot,
+  testCase,
+  track,
+  response,
+) {
+  const event = track.events?.[0];
+  if (!event || track.events.length !== 1)
+    throw new Error(`${testCase.id} isolated glyph oracle requires one ASS event`);
+  const result = [];
+  for (const unit of response.units) {
+    const fixture = path.join(
+      temporaryRoot,
+      `isolated-${testCase.id}-${unit.position}.ass`,
+    );
+    await writeIsolatedAssFixture(track.fixture, event.rawText, unit.position, fixture);
+    const frame = await captureFrame(
+      executable,
+      video,
+      path.join(temporaryRoot, `isolated-${testCase.id}-${unit.position}`),
+      fixture,
+      testCase,
+    );
+    const actual = subtitleMask(baseline, frame, PIXEL_CHANGE_THRESHOLD).bounds;
+    const predicted = unit.rects[0] || null;
+    const predictedBounds = predicted
+      ? {
+          x: predicted.x,
+          y: predicted.y,
+          width: predicted.w,
+          height: predicted.h,
+        }
+      : null;
+    result.push({
+      track: track.id || "track",
+      position: unit.position,
+      actual,
+      predicted,
+      iou: iou(predictedBounds, actual),
+      edgeError: edgeError(predicted, actual),
+    });
+  }
+  return result;
+}
+
 function multiEventNativeRequest(testCase, track, metadata) {
   return trackRequest(
     {
@@ -1105,6 +1299,21 @@ async function main() {
           };
         }),
       );
+      const isolatedCoverage = [];
+      if (testCase.isolatedGlyphOracle) {
+        for (const { track, response } of responses)
+          isolatedCoverage.push(
+            ...(await isolatedGlyphCoverage(
+              mpv,
+              video,
+              baseline,
+              temporaryRoot,
+              testCase,
+              track,
+              response,
+            )),
+          );
+      }
       const identityGroups = new Map();
       for (const { track, response } of responses) {
         const identities = Array.isArray(track.unitIdentity) ? track.unitIdentity : [];
@@ -1130,51 +1339,57 @@ async function main() {
           predicted: rectBounds(group.units),
         });
       }
-      const identityCoverage = responses.flatMap(({ track, response }) => {
-        const identities = Array.isArray(track.unitIdentity) ? track.unitIdentity : [];
-        return response.units.flatMap((unit) => {
-          const identity = identities.find(
-            (candidate) => candidate.position === unit.position,
-          );
-          if (!identity) return [];
-          const rect = unit.rects[0];
-          const key = `${track.id || "track"}:${identity.color.join(",")}`;
-          const groupBounds = identityGroupBounds.get(key);
-          let changedPixels = 0;
-          let matchingPixels = 0;
-          for (
-            let y = Math.max(0, Math.floor(rect.y));
-            y < Math.min(withSubtitle.height, Math.ceil(rect.y + rect.h));
-            y++
-          )
-            for (
-              let x = Math.max(0, Math.floor(rect.x));
-              x < Math.min(withSubtitle.width, Math.ceil(rect.x + rect.w));
-              x++
-            ) {
-              const before = pixel(baseline, x, y);
-              const after = pixel(withSubtitle, x, y);
-              if (colorDistance(before, after) <= PIXEL_CHANGE_THRESHOLD) continue;
-              changedPixels++;
-              if (colorIdentityMatches(before, after, identity.color)) matchingPixels++;
-            }
-          return [
-            {
-              track: track.id || "track",
-              position: unit.position,
-              changedPixels,
-              matchingPixels,
-              identityGroupBounds: groupBounds?.actual || null,
-              identityGroupIou: groupBounds?.actual
-                ? iou(groupBounds.predicted, groupBounds.actual)
-                : 0,
-              identityEdgeError: groupBounds?.actual
-                ? edgeError(groupBounds.predicted, groupBounds.actual)
-                : Number.POSITIVE_INFINITY,
-            },
-          ];
-        });
-      });
+      const identityCoverage = testCase.isolatedGlyphOracle
+        ? []
+        : responses.flatMap(({ track, response }) => {
+            const identities = Array.isArray(track.unitIdentity)
+              ? track.unitIdentity
+              : [];
+            return response.units.flatMap((unit) => {
+              const identity = identities.find(
+                (candidate) => candidate.position === unit.position,
+              );
+              if (!identity) return [];
+              const rect = unit.rects[0];
+              const key = `${track.id || "track"}:${identity.color.join(",")}`;
+              const groupBounds = identityGroupBounds.get(key);
+              let changedPixels = 0;
+              let matchingPixels = 0;
+              for (
+                let y = Math.max(0, Math.floor(rect.y));
+                y < Math.min(withSubtitle.height, Math.ceil(rect.y + rect.h));
+                y++
+              )
+                for (
+                  let x = Math.max(0, Math.floor(rect.x));
+                  x < Math.min(withSubtitle.width, Math.ceil(rect.x + rect.w));
+                  x++
+                ) {
+                  const before = pixel(baseline, x, y);
+                  const after = pixel(withSubtitle, x, y);
+                  if (colorDistance(before, after) <= PIXEL_CHANGE_THRESHOLD) continue;
+                  changedPixels++;
+                  if (colorIdentityMatches(before, after, identity.color))
+                    matchingPixels++;
+                }
+              return [
+                {
+                  track: track.id || "track",
+                  position: unit.position,
+                  changedPixels,
+                  matchingPixels,
+                  identityGroupBounds: groupBounds?.actual || null,
+                  identityPredictedBounds: groupBounds?.predicted || null,
+                  identityGroupIou: groupBounds?.actual
+                    ? iou(groupBounds.predicted, groupBounds.actual)
+                    : 0,
+                  identityEdgeError: groupBounds?.actual
+                    ? edgeError(groupBounds.predicted, groupBounds.actual)
+                    : Number.POSITIVE_INFINITY,
+                },
+              ];
+            });
+          });
       if (score < 0.8)
         throw new Error(
           `${testCase.id} stock pixel/native geometry IoU ${score.toFixed(4)} is below 0.8`,
@@ -1191,6 +1406,16 @@ async function main() {
               predictedBounds,
               unitCoverage,
             },
+          )}`,
+        );
+      if (
+        isolatedCoverage.some(
+          (unit) => !unit.actual || unit.iou < 0.999 || unit.edgeError > 0,
+        )
+      )
+        throw new Error(
+          `${testCase.id} isolated stock glyph bounds did not exactly match native geometry: ${JSON.stringify(
+            isolatedCoverage,
           )}`,
         );
       if (identityCoverage.some((unit) => unit.matchingPixels === 0))
@@ -1245,6 +1470,7 @@ async function main() {
           : {}),
         maskPixels: mask.pixels,
         unitCoverage,
+        ...(isolatedCoverage.length ? { isolatedGlyphCoverage: isolatedCoverage } : {}),
         ...(identityCoverage.length ? { identityCoverage } : {}),
       });
     }
@@ -1279,6 +1505,7 @@ module.exports = {
   decodePng,
   exists,
   iou,
+  main,
   pixel,
   rectBounds,
   run,

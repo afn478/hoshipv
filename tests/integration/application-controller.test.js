@@ -5,9 +5,16 @@ const assert = require("node:assert/strict");
 const { EventEmitter } = require("node:events");
 const {
   ApplicationController,
+  coalesceHighlightRects,
+  controllerTargetForDirection,
+  controllerTargetsForSnapshot,
   flattenSubtitleText,
+  lookupGeometryForHit,
+  lookupHighlightRects,
   subtitleLookupText,
 } = require("../../src/player/application-controller");
+const { CoordinateMapper } = require("../../src/geometry/coordinate-mapper");
+const { createGeometrySnapshot, hitTest } = require("../../src/geometry/snapshot");
 const { DictionaryService } = require("../../src/services/dictionary-service");
 const fs = require("node:fs/promises");
 
@@ -21,6 +28,7 @@ class FakeBrowserHost extends EventEmitter {
     this.closeCount = 0;
     this.active = false;
     this.createCount = 0;
+    this.interactiveInputCount = 0;
   }
 
   async create() {
@@ -49,6 +57,9 @@ class FakeBrowserHost extends EventEmitter {
     this.popupHidden = true;
   }
   setPassiveInput() {}
+  setInteractiveInput() {
+    this.interactiveInputCount++;
+  }
   hasSessionFocus() {
     return this.sessionFocused;
   }
@@ -68,6 +79,155 @@ test("flattened subtitle lookup text preserves UTF-16 hit offsets", () => {
   });
 });
 
+test("controller target navigation does not resolve overlapping spans backwards", () => {
+  const track = { id: "track" };
+  const event = { id: "event" };
+  const units = ["A", "B", "C"].map((text, index) => ({
+    id: `unit-${index}`,
+    text,
+  }));
+  const hit = (index) => ({ track, event, unit: units[index] });
+  const targets = [
+    { key: "target-a", hit: hit(0), units: units.slice(0, 3) },
+    { key: "target-b", hit: hit(1), units: units.slice(1, 3) },
+    { key: "target-c", hit: hit(2), units: units.slice(2, 3) },
+  ];
+
+  assert.equal(
+    controllerTargetForDirection(targets, hit(1), "right", "target-b")?.key,
+    "target-c",
+  );
+});
+
+test("Japanese controller targets remain traversable beyond the second character", () => {
+  const sourceText = "日本語";
+  const snapshot = createGeometrySnapshot({
+    sessionId: "controller-japanese-session",
+    mediaGeneration: 0,
+    geometryGeneration: 1,
+    content: { x: 0, y: 0, width: 300, height: 120 },
+    osd: { width: 300, height: 120 },
+    source: { exact: true },
+    tracks: [
+      {
+        id: "primary",
+        role: "primary",
+        selected: true,
+        events: [
+          {
+            id: "event",
+            sourceText,
+            units: [...sourceText].map((text, index) => ({
+              id: `unit-${index}`,
+              text,
+              sourceText,
+              utf16Range: [index, index + 1],
+              utf8Range: [index * 3, index * 3 + 3],
+              rects: [{ x: 20 + index * 30, y: 70, width: 24, height: 24 }],
+              position: index,
+            })),
+          },
+        ],
+      },
+    ],
+  });
+  const targets = controllerTargetsForSnapshot(snapshot, {
+    lookupLanguage: "ja",
+    scanLength: 24,
+  });
+
+  assert.deepEqual(
+    targets.map((target) => target.hit.unit.id),
+    ["unit-0", "unit-1", "unit-2"],
+  );
+  const first = controllerTargetForDirection(targets, null, "right");
+  const second = controllerTargetForDirection(targets, first.hit, "right", first.key);
+  const third = controllerTargetForDirection(targets, second.hit, "right", second.key);
+  assert.equal(first.hit.unit.id, "unit-0");
+  assert.equal(second.hit.unit.id, "unit-1");
+  assert.equal(third.hit.unit.id, "unit-2");
+  assert.equal(
+    controllerTargetForDirection(targets, third.hit, "right", third.key),
+    null,
+  );
+});
+
+test("lookup highlights coalesce character boxes and cover approximate wide glyphs", () => {
+  const rects = coalesceHighlightRects(
+    ["日", "本", "語"].map((text, index) => ({
+      rect: { x: index * 13, y: 100, width: 13, height: 29 },
+      unitId: `unit-${index}`,
+      text,
+    })),
+    { approximate: true },
+  );
+  assert.equal(rects.length, 1);
+  assert.ok(rects[0].x < 0);
+  assert.ok(rects[0].width > 39);
+  assert.ok(rects[0].height > 29);
+});
+
+test("native visible envelopes expand highlights without widening hit testing", () => {
+  const snapshot = createGeometrySnapshot({
+    sessionId: "envelope-session",
+    mediaGeneration: 0,
+    geometryGeneration: 1,
+    content: { x: 0, y: 0, width: 200, height: 100 },
+    osd: { width: 200, height: 100 },
+    source: { exact: true },
+    tracks: [
+      {
+        id: "primary",
+        role: "primary",
+        events: [
+          {
+            id: "event",
+            units: [
+              {
+                id: "unit",
+                text: "語",
+                sourceText: "語",
+                utf16Range: [0, 1],
+                utf8Range: [0, 3],
+                rect: { x: 20, y: 70, width: 20, height: 20 },
+                envelopeRects: [{ x: 18, y: 68, width: 24, height: 24 }],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  });
+  const hit = hitTest(snapshot, { x: 25, y: 75 });
+  assert.equal(hit.unit.id, "unit");
+  assert.equal(hitTest(snapshot, { x: 19, y: 69 }), null);
+  assert.deepEqual(lookupHighlightRects(snapshot, hit, [hit.unit]), [
+    { x: 18, y: 68, width: 24, height: 24 },
+  ]);
+});
+
+test("lookup geometry spans the complete word used by an English lookup", () => {
+  const sourceText = "I walked home";
+  const units = [...sourceText].map((text, index) => ({
+    id: `unit-${index}`,
+    text,
+    sourceText,
+    utf16Range: [index, index + 1],
+    lookupable: !/\s/.test(text),
+    rects: [{ x: index * 10, y: 100, width: 10, height: 20 }],
+  }));
+  const hit = {
+    unit: units[3],
+    event: { sourceText, units },
+  };
+  const geometry = lookupGeometryForHit(hit, {
+    lookupLanguage: "en",
+    scanLength: 24,
+  });
+  assert.equal(geometry.request.lookupText, "walked");
+  assert.equal(geometry.units.map((unit) => unit.text).join(""), "walked");
+});
+
 test("demo controller uses one geometry snapshot for highlight, lookup, popup, and owned pause", async () => {
   const browserHost = new FakeBrowserHost();
   const controller = new ApplicationController({
@@ -85,12 +245,285 @@ test("demo controller uses one geometry snapshot for highlight, lookup, popup, a
     await new Promise((resolve) => setTimeout(resolve, 90));
     assert.ok(browserHost.highlights.length > 0);
     assert.equal(browserHost.popupVisible, true);
+    assert.equal(browserHost.interactiveInputCount, 1);
     assert.equal(browserHost.popups[0].result.entries[0].headword, "日本語");
     assert.equal(controller.interaction.state, "popup-active");
     await controller.closePopup("test");
     assert.equal(browserHost.popupVisible, false);
   } finally {
     await controller.detach("test");
+  }
+});
+
+test("controller lookup and right-stick navigation do not require a pointer hit", async () => {
+  const browserHost = new FakeBrowserHost();
+  const controller = new ApplicationController({
+    browserHost,
+    screen: {
+      getCursorScreenPoint: () => ({ x: 0, y: 0 }),
+      getDisplayNearestPoint: () => ({ scaleFactor: 1 }),
+    },
+    dictionary: new DictionaryService({ demo: true }),
+    allowApproximateGeometry: true,
+    config: { controllerEnabled: true, lookupLanguage: "ja" },
+  });
+  const state = (buttons, axes = []) => ({
+    source: "browser-gamepad",
+    connected: true,
+    id: "cursor-free-pad",
+    index: 0,
+    buttons,
+    axes,
+  });
+  try {
+    await controller.attachDemo();
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    assert.equal(controller.lastHit, null);
+
+    await controller.handleControllerState(state([]));
+    await controller.handleControllerState(state([{ pressed: true, value: 1 }]));
+    assert.equal(controller.browserHost.popupVisible, true);
+    assert.ok(controller.controllerTarget);
+    assert.ok(controller.browserHost.highlights.at(-1).rects.length > 0);
+    const firstTargetId = controller.popupContext.hit.unit.id;
+
+    await controller.handleControllerState(state([]));
+    await controller.handleControllerState(state([], [0, 0, 0.9, 0]));
+    assert.equal(controller.browserHost.popupVisible, true);
+    assert.notEqual(controller.popupContext.hit.unit.id, firstTargetId);
+    assert.ok(controller.browserHost.popups.length >= 2);
+    assert.equal(browserHost.interactiveInputCount, 2);
+  } finally {
+    await controller.detach("cursor-free-controller-test");
+  }
+});
+
+test("mouse motion through empty space does not steal a controller-selected target", async () => {
+  const browserHost = new FakeBrowserHost();
+  let cursor = { x: 0, y: 0 };
+  const controller = new ApplicationController({
+    browserHost,
+    screen: {
+      getCursorScreenPoint: () => cursor,
+      getDisplayNearestPoint: () => ({ scaleFactor: 1 }),
+    },
+    dictionary: new DictionaryService({ demo: true }),
+    allowApproximateGeometry: true,
+    config: { controllerEnabled: true, lookupLanguage: "ja" },
+  });
+  const state = (buttons) => ({
+    source: "browser-gamepad",
+    connected: true,
+    id: "modality-pad",
+    index: 0,
+    buttons,
+    axes: [],
+  });
+  try {
+    await controller.attachDemo();
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    await controller.handleControllerState(state([]));
+    await controller.handleControllerState(state([{ pressed: true, value: 1 }]));
+    const selectedKey = controller.controllerTarget?.key;
+    assert.ok(selectedKey);
+    assert.equal(controller.browserHost.popupVisible, true);
+
+    await controller.handleControllerState(state([]));
+    cursor = { x: 0, y: 0 };
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    assert.equal(
+      controller.controllerTarget?.key,
+      selectedKey,
+      "empty-space mouse motion must not cancel cursor-free controller selection",
+    );
+
+    const selectedUnit = controller.controllerTarget.hit.unit;
+    const mapper = new CoordinateMapper(controller.snapshot);
+    const rect = selectedUnit.rects[0];
+    cursor = mapper.osdToDesktop({
+      x: rect.x + rect.width / 2,
+      y: rect.y + rect.height / 2,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    assert.equal(
+      controller.controllerTarget?.key,
+      selectedKey,
+      "returning over the selected unit must not switch input modality",
+    );
+  } finally {
+    await controller.detach("controller-mouse-modality-test");
+  }
+});
+
+test("controller audio hold opens the menu or plays on early release", async () => {
+  const browserHost = new FakeBrowserHost();
+  const controller = new ApplicationController({
+    browserHost,
+    screen: {
+      getCursorScreenPoint: () => ({ x: 0, y: 0 }),
+      getDisplayNearestPoint: () => ({ scaleFactor: 1 }),
+    },
+    dictionary: new DictionaryService({ demo: true }),
+    audio: {
+      async resolve() {
+        return [{ url: "https://audio.example/selected.mp3", name: "Selected" }];
+      },
+    },
+    allowApproximateGeometry: true,
+    config: { controllerEnabled: true, lookupLanguage: "ja" },
+  });
+  const state = (buttons) => ({
+    source: "browser-gamepad",
+    connected: true,
+    id: "hold-pad",
+    index: 0,
+    buttons,
+    axes: [],
+  });
+  try {
+    await controller.attachDemo();
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    await controller.handleControllerState(state([]));
+    await controller.handleControllerState(state([{ pressed: true, value: 1 }]));
+    await controller.handleControllerState(state([]));
+    await controller.handleControllerState(
+      state([{}, {}, {}, { pressed: true, value: 1 }]),
+    );
+    assert.equal(controller.controllerHold?.action, "audio-menu");
+    await controller.handleControllerState(state([]));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(controller.interaction.state, "popup-active");
+    const audioResult = browserHost.events
+      .slice()
+      .reverse()
+      .find((event) => event.type === "audio-result" && !event.payload.loading);
+    assert.deepEqual(audioResult.payload, {
+      candidates: [{ url: "https://audio.example/selected.mp3", name: "Selected" }],
+      autoPlay: true,
+      showMenu: false,
+    });
+  } finally {
+    await controller.detach("controller-audio-hold-test");
+  }
+});
+
+test("hovering a different subtitle unit replaces the active popup and highlight", async () => {
+  const browserHost = new FakeBrowserHost();
+  let cursor = { x: 590, y: 740 };
+  const controller = new ApplicationController({
+    browserHost,
+    screen: {
+      getCursorScreenPoint: () => cursor,
+      getDisplayNearestPoint: () => ({ scaleFactor: 1 }),
+    },
+    dictionary: new DictionaryService({ demo: true }),
+    allowApproximateGeometry: true,
+    config: { lookupLanguage: "ja", pauseWhilePopupVisible: true },
+  });
+  try {
+    await controller.attachDemo();
+    await new Promise((resolve) => setTimeout(resolve, 90));
+    assert.equal(browserHost.popupVisible, true);
+    const snapshot = controller.snapshot;
+    const mapper = new CoordinateMapper(snapshot);
+    const primaryUnits = snapshot.tracks
+      .filter((track) => track.role === "primary")
+      .flatMap((track) => track.events.flatMap((event) => event.units))
+      .filter((unit) => unit.lookupable && unit.text.trim());
+    const nextUnit = primaryUnits.find(
+      (unit) => unit.id !== controller.lastHit.unit.id,
+    );
+    assert.ok(nextUnit);
+    const nextRect = nextUnit.rects[0];
+    cursor = mapper.osdToDesktop({
+      x: nextRect.x + nextRect.width / 2,
+      y: nextRect.y + nextRect.height / 2,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 180));
+    assert.equal(controller.popupContext?.hit.unit.id, nextUnit.id);
+    assert.equal(browserHost.popupVisible, true);
+    assert.equal(browserHost.popups.length, 2);
+    assert.notEqual(
+      browserHost.popups[0].result.entries[0].headword,
+      browserHost.popups[1].result.entries[0].headword,
+    );
+    assert.ok(
+      browserHost.highlights.some(
+        (payload) => payload.rects[0]?.x !== browserHost.highlights[0].rects[0]?.x,
+      ),
+    );
+    assert.ok(
+      controller.interaction.transitionLog.some(
+        (entry) => entry.event === "close-popup" && entry.to === "player-interaction",
+      ),
+    );
+
+    await controller.closePopup("escape");
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    assert.equal(browserHost.popupVisible, false);
+    assert.equal(browserHost.popups.length, 2);
+
+    cursor = { x: 0, y: 0 };
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    cursor = mapper.osdToDesktop({
+      x: nextRect.x + nextRect.width / 2,
+      y: nextRect.y + nextRect.height / 2,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    assert.equal(browserHost.popupVisible, true);
+    assert.equal(browserHost.popups.length, 3);
+  } finally {
+    await controller.detach("hover-target-change-test");
+  }
+});
+
+test("rapid hover changes cancel a pending lookup and keep the latest target", async () => {
+  const browserHost = new FakeBrowserHost();
+  let cursor = { x: 0, y: 0 };
+  const requests = [];
+  const dictionary = new DictionaryService({
+    handler: async (request) => {
+      requests.push(request.text);
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      return {
+        lookupString: request.text,
+        entries: [{ headword: request.text, readings: [], senses: [] }],
+      };
+    },
+  });
+  const controller = new ApplicationController({
+    browserHost,
+    screen: {
+      getCursorScreenPoint: () => cursor,
+      getDisplayNearestPoint: () => ({ scaleFactor: 1 }),
+    },
+    dictionary,
+    allowApproximateGeometry: true,
+    config: { lookupLanguage: "ja", pauseWhilePopupVisible: true },
+  });
+  try {
+    await controller.attachDemo();
+    const mapper = new CoordinateMapper(controller.snapshot);
+    const units = controller.snapshot.tracks
+      .filter((track) => track.role === "primary")
+      .flatMap((track) => track.events.flatMap((event) => event.units))
+      .filter((unit) => unit.lookupable && unit.text.trim());
+    const centerOf = (unit) => {
+      const value = unit.rects[0];
+      return mapper.osdToDesktop({
+        x: value.x + value.width / 2,
+        y: value.y + value.height / 2,
+      });
+    };
+    cursor = centerOf(units[0]);
+    await new Promise((resolve) => setTimeout(resolve, 35));
+    cursor = centerOf(units[1]);
+    await new Promise((resolve) => setTimeout(resolve, 220));
+    assert.ok(requests.length >= 2);
+    assert.equal(controller.popupContext?.hit.unit.id, units[1].id);
+    assert.equal(browserHost.popupVisible, true);
+  } finally {
+    await controller.detach("rapid-hover-test");
   }
 });
 
@@ -336,6 +769,47 @@ test("controller reflows popup placement from the rendered popup size", async ()
     browserHost.emit("request", {
       surface: "popup",
       message: {
+        type: "controller-state",
+        payload: {
+          connected: true,
+          id: "test-pad",
+          index: 0,
+          buttons: [],
+          axes: [],
+        },
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    browserHost.emit("request", {
+      surface: "popup",
+      message: {
+        type: "controller-state",
+        payload: {
+          connected: true,
+          id: "test-pad",
+          index: 0,
+          buttons: [],
+          axes: [],
+        },
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    browserHost.emit("request", {
+      surface: "popup",
+      message: {
+        type: "controller-state",
+        payload: {
+          connected: true,
+          id: "test-pad",
+          index: 0,
+          buttons: [],
+          axes: [],
+        },
+      },
+    });
+    browserHost.emit("request", {
+      surface: "popup",
+      message: {
         type: "popup-size",
         payload: { width: 240, height: 160, scrollable: true },
       },
@@ -384,6 +858,19 @@ test("controller records popup regions, scroll, and selection telemetry for nati
     browserHost.emit("request", {
       surface: "popup",
       message: {
+        type: "popup-style",
+        geometryGeneration: generation,
+        payload: {
+          customCssApplied: true,
+          backgroundColor: "rgb(236, 253, 245)",
+          borderTopColor: "rgb(13, 148, 136)",
+          borderTopWidth: "6px",
+        },
+      },
+    });
+    browserHost.emit("request", {
+      surface: "popup",
+      message: {
         type: "popup-action",
         payload: { action: "selection-changed", text: "selected definition" },
       },
@@ -396,6 +883,12 @@ test("controller records popup regions, scroll, and selection telemetry for nati
       height: 28,
     });
     assert.deepEqual(controller.popupScroll, { left: 0, top: 180 });
+    assert.deepEqual(controller.popupStyle, {
+      customCssApplied: true,
+      backgroundColor: "rgb(236, 253, 245)",
+      borderTopColor: "rgb(13, 148, 136)",
+      borderTopWidth: "6px",
+    });
     assert.equal(controller.popupSelectionText, "selected definition");
   } finally {
     await controller.detach("popup-telemetry-test");
@@ -599,9 +1092,11 @@ test("controller waits for mpv OSD geometry during startup and resize recovery",
     ["path", "/tmp/startup-race.mkv"],
     ["track-list", [{ type: "sub", id: 1, "ff-index": 0 }]],
     ["sid", 1],
+    ["window-minimized", false],
     ["sub-text/ass-full", "Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,startup"],
     ["osd-dimensions", { w: 0, h: 0, par: 1 }],
   ]);
+  let displayAsleep = false;
   class FakeIpc extends EventEmitter {
     async connect() {}
     async getProperty(name) {
@@ -625,6 +1120,8 @@ test("controller waits for mpv OSD geometry during startup and resize recovery",
           contentSource: "test-window",
           desktopScale: 1,
           browserScale: 1,
+          displayAsleep,
+          displayVisible: !displayAsleep,
           isForeground: true,
         };
       },
@@ -652,6 +1149,30 @@ test("controller waits for mpv OSD geometry during startup and resize recovery",
     await new Promise((resolve) => setTimeout(resolve, 50));
     assert.equal(controller.snapshot.osd.width, 1280);
     assert.equal(controller.snapshot.osd.height, 720);
+    assert.equal(controller.windowUnavailable, false);
+
+    values.set("window-minimized", true);
+    ipc.emit("property-change", "window-minimized", true);
+    assert.equal(controller.bridge.property("window-minimized"), true);
+    await new Promise((resolve) => setTimeout(resolve, 210));
+    assert.equal(controller.snapshot, null);
+    assert.equal(controller.interaction.state, "suspended");
+    assert.equal(browserHost.highlightHidden, true);
+
+    values.set("window-minimized", false);
+    ipc.emit("property-change", "window-minimized", false);
+    await new Promise((resolve) => setTimeout(resolve, 210));
+    assert.ok(controller.snapshot);
+    assert.equal(controller.windowUnavailable, false);
+
+    displayAsleep = true;
+    await new Promise((resolve) => setTimeout(resolve, 210));
+    assert.equal(controller.snapshot, null);
+    assert.equal(controller.interaction.state, "suspended");
+
+    displayAsleep = false;
+    await new Promise((resolve) => setTimeout(resolve, 210));
+    assert.ok(controller.snapshot);
     assert.equal(controller.windowUnavailable, false);
 
     values.set("osd-dimensions", { w: 0, h: 0, par: 1 });
@@ -910,6 +1431,7 @@ test("controller stores word audio and an mpv screenshot before rendering an Ank
   const ankiNotes = [];
   const storedMedia = [];
   const screenshotCalls = [];
+  const resolvedAudioUrls = [];
   const controller = new ApplicationController({
     browserHost,
     screen: {
@@ -918,17 +1440,23 @@ test("controller stores word audio and an mpv screenshot before rendering an Ank
     },
     dictionary: new DictionaryService({ demo: true }),
     audio: {
-      fetch: async () => ({
-        ok: true,
-        headers: {
-          get(name) {
-            return name === "content-length" ? "10" : "audio/mpeg";
+      fetch: async (url) => {
+        resolvedAudioUrls.push(url);
+        return {
+          ok: true,
+          headers: {
+            get(name) {
+              return name === "content-length" ? "10" : "audio/mpeg";
+            },
           },
-        },
-        arrayBuffer: async () => Uint8Array.from(Buffer.from("word-audio")).buffer,
-      }),
+          arrayBuffer: async () => Uint8Array.from(Buffer.from("word-audio")).buffer,
+        };
+      },
       async resolve() {
-        return [{ url: "https://audio.example/word.mp3" }];
+        return [
+          { url: "https://audio.example/word.mp3", name: "Default" },
+          { url: "https://audio.example/alternate.mp3", name: "Alternate" },
+        ];
       },
     },
     anki: {
@@ -973,6 +1501,29 @@ test("controller stores word audio and an mpv screenshot before rendering an Ank
     const entry = browserHost.popups[0].result.entries[0];
     browserHost.emit("request", {
       message: {
+        type: "audio-source",
+        requestId: "audio-controller-selection",
+        payload: {
+          requestId: "audio-controller-selection",
+          term: entry.headword,
+          reading: entry.reading,
+          sources: [{ url: "https://audio.example/lookup?term={term}" }],
+        },
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    browserHost.emit("request", {
+      message: {
+        type: "audio-anki-selection",
+        payload: {
+          url: "https://audio.example/alternate.mp3",
+          candidateIndex: 1,
+        },
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    browserHost.emit("request", {
+      message: {
         type: "anki-action",
         payload: { action: "add-note", entryId: entry.id },
       },
@@ -980,6 +1531,11 @@ test("controller stores word audio and an mpv screenshot before rendering an Ank
     await new Promise((resolve) => setTimeout(resolve, 30));
 
     assert.equal(screenshotCalls.length, 1);
+    assert.equal(
+      resolvedAudioUrls.at(-1),
+      "https://audio.example/alternate.mp3",
+      "Anki word audio should use the controller-selected candidate",
+    );
     assert.equal(screenshotCalls[0].quality, 82);
     assert.equal(storedMedia.length, 2);
     assert.match(storedMedia[0].filename, /^iinatan-word-[a-f0-9]{20}\.mp3$/);
@@ -997,19 +1553,24 @@ test("controller stores word audio and an mpv screenshot before rendering an Ank
   }
 });
 
-test("controller keeps nested lookup results inside the same popup and restores the parent", async () => {
+test("controller routes nested lookups and cancels stale child requests", async () => {
   const browserHost = new FakeBrowserHost();
+  const requests = [];
+  let cancelObserved = false;
   const dictionary = new DictionaryService({
-    handler: async (request) => ({
-      lookupString: request.text,
-      entries: [
-        {
-          id: `entry-${request.text}`,
-          headword: request.text,
-          glossaries: [{ content: [{ type: "paragraph", text: "definition" }] }],
-        },
-      ],
-    }),
+    handler: async (request) => {
+      requests.push(request);
+      return {
+        lookupString: request.text,
+        entries: [
+          {
+            id: `entry-${request.text}`,
+            headword: request.text,
+            glossaries: [{ content: [{ type: "paragraph", text: "definition" }] }],
+          },
+        ],
+      };
+    },
   });
   const controller = new ApplicationController({
     browserHost,
@@ -1028,30 +1589,80 @@ test("controller keeps nested lookup results inside the same popup and restores 
   try {
     await controller.attachDemo();
     await new Promise((resolve) => setTimeout(resolve, 90));
+    assert.equal(controller.interaction.state, "popup-active");
+    const sessionId = controller.popupSessionId;
+    assert.ok(sessionId);
     browserHost.emit("request", {
+      surface: "popup",
       message: {
-        type: "popup-action",
-        payload: { action: "selection-changed", text: "parent selection" },
+        type: "nested-lookup",
+        payload: {
+          requestId: "nested-controller-1",
+          popupSessionId: sessionId,
+          depth: 1,
+          text: "猫",
+          utf16Start: 0,
+        },
       },
     });
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    assert.equal(requests.at(-1)?.text, "猫");
+    const nestedResult = browserHost.events.find(
+      (event) =>
+        event.type === "nested-lookup-result" &&
+        event.payload.requestId === "nested-controller-1",
+    );
+    assert.equal(nestedResult.payload.ok, true);
+    assert.equal(nestedResult.payload.popupSessionId, sessionId);
+    assert.equal(nestedResult.payload.depth, 1);
+    assert.equal(nestedResult.payload.result.entries[0].headword, "猫");
+
+    const pendingDictionary = new DictionaryService({
+      handler: async (request) => {
+        if (request.requestId !== "nested-controller-cancel")
+          return nestedResult.payload.result;
+        request.signal.addEventListener("abort", () => {
+          cancelObserved = true;
+        });
+        return new Promise(() => {});
+      },
+    });
+    controller.dictionary = pendingDictionary;
     browserHost.emit("request", {
-      message: { type: "nested-lookup", payload: { term: "猫" } },
+      surface: "popup",
+      message: {
+        type: "nested-lookup",
+        payload: {
+          requestId: "nested-controller-cancel",
+          popupSessionId: sessionId,
+          depth: 1,
+          text: "犬",
+          utf16Start: 0,
+        },
+      },
     });
     await new Promise((resolve) => setTimeout(resolve, 20));
-    assert.equal(controller.interaction.state, "nested-popup-active");
-    assert.equal(controller.popupSelectionText, "");
-    assert.equal(browserHost.events.at(-1).payload.result.entries[0].headword, "猫");
-
     browserHost.emit("request", {
-      message: { type: "dismiss-popup", payload: { reason: "back" } },
+      surface: "popup",
+      message: {
+        type: "nested-lookup-cancel",
+        payload: {
+          requestId: "nested-controller-cancel",
+          popupSessionId: sessionId,
+          depth: 1,
+        },
+      },
     });
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    assert.equal(controller.interaction.state, "popup-active");
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.equal(cancelObserved, true);
     assert.equal(
-      browserHost.events.at(-1).payload.result.entries[0].headword,
-      "日本語",
+      browserHost.events.some(
+        (event) =>
+          event.type === "nested-lookup-result" &&
+          event.payload.requestId === "nested-controller-cancel",
+      ),
+      false,
     );
-    assert.equal(controller.popupSelectionText, "parent selection");
     await controller.closePopup("test");
   } finally {
     await controller.detach("test");
@@ -1078,7 +1689,6 @@ test("controller owns audio menus and routes configured gamepad actions", async 
     allowApproximateGeometry: true,
     config: {
       controllerEnabled: true,
-      nestedPopupMode: "click",
     },
   });
   try {
@@ -1091,12 +1701,25 @@ test("controller owns audio menus and routes configured gamepad actions", async 
           connected: true,
           id: "test-pad",
           index: 0,
+          buttons: [],
+          axes: [],
+        },
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    browserHost.emit("request", {
+      message: {
+        type: "controller-state",
+        payload: {
+          connected: true,
+          id: "test-pad",
+          index: 0,
           buttons: [{}, {}, {}, { pressed: true, value: 1 }],
           axes: [],
         },
       },
     });
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await new Promise((resolve) => setTimeout(resolve, 700));
     assert.equal(controller.interaction.state, "audio-menu-active");
     assert.deepEqual(browserHost.events.at(-1).payload.candidates, [
       { url: "https://audio.example/one.mp3", name: "One" },
@@ -1104,11 +1727,97 @@ test("controller owns audio menus and routes configured gamepad actions", async 
     ]);
 
     browserHost.emit("request", {
+      message: {
+        type: "controller-state",
+        payload: {
+          connected: true,
+          id: "test-pad",
+          index: 0,
+          buttons: [],
+          axes: [],
+        },
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    browserHost.emit("request", {
       message: { type: "popup-action", payload: { action: "escape" } },
     });
     await new Promise((resolve) => setTimeout(resolve, 10));
     assert.equal(controller.interaction.state, "popup-active");
     assert.equal(browserHost.events.at(-1).payload.command, "close-audio-menu");
+  } finally {
+    await controller.detach("test");
+  }
+});
+
+test("native controller input takes priority while browser gamepad remains a macOS fallback", async () => {
+  const browserHost = new FakeBrowserHost();
+  const controller = new ApplicationController({
+    browserHost,
+    screen: {
+      getCursorScreenPoint: () => ({ x: 0, y: 0 }),
+      getDisplayNearestPoint: () => ({ scaleFactor: 1 }),
+    },
+    dictionary: new DictionaryService({ demo: true }),
+    allowApproximateGeometry: true,
+    config: { controllerEnabled: true },
+  });
+  const commands = [];
+  try {
+    await controller.attachDemo();
+    controller.bridge.command = async (action) => commands.push(action);
+
+    await controller.handleControllerState({
+      source: "native-hid",
+      connected: true,
+      id: "native-pad",
+      buttons: {},
+      axes: {},
+    });
+    await controller.handleControllerState({
+      source: "native-hid",
+      connected: true,
+      id: "native-pad",
+      buttons: { square: true },
+      axes: {},
+    });
+    assert.deepEqual(commands, ["toggle-pause"]);
+
+    await controller.handleControllerState({
+      source: "browser-gamepad",
+      connected: true,
+      id: "same-pad-through-browser",
+      index: 0,
+      buttons: [{}, {}, { pressed: true, value: 1 }],
+      axes: [],
+    });
+    assert.deepEqual(commands, ["toggle-pause"]);
+
+    await controller.handleControllerState({
+      source: "native-hid",
+      connected: false,
+      id: "native-pad",
+      buttons: {},
+      axes: {},
+    });
+    await controller.handleControllerState({
+      source: "browser-gamepad",
+      connected: true,
+      id: "fallback-pad",
+      index: 0,
+      buttons: [],
+      axes: [],
+    });
+    await controller.handleControllerState({
+      source: "browser-gamepad",
+      connected: true,
+      id: "fallback-pad",
+      index: 0,
+      buttons: [{}, {}, { pressed: true, value: 1 }],
+      axes: [],
+    });
+    assert.deepEqual(commands, ["toggle-pause", "toggle-pause"]);
   } finally {
     await controller.detach("test");
   }
@@ -1134,6 +1843,14 @@ test("controller ignores gamepad input from a background session", async () => {
     };
     const commands = [];
     controller.bridge.command = async (action) => commands.push(action);
+    await controller.handleControllerState({
+      source: "browser-gamepad",
+      connected: true,
+      id: "background-pad",
+      index: 0,
+      buttons: [],
+      axes: [],
+    });
     browserHost.emit("request", {
       message: {
         type: "controller-state",
@@ -1148,6 +1865,51 @@ test("controller ignores gamepad input from a background session", async () => {
     });
     await new Promise((resolve) => setTimeout(resolve, 10));
     assert.deepEqual(commands, []);
+
+    controller.snapshot = {
+      ...controller.snapshot,
+      source: { ...controller.snapshot.source, foreground: true },
+    };
+    browserHost.emit("request", {
+      message: {
+        type: "controller-state",
+        payload: {
+          connected: true,
+          id: "background-pad",
+          index: 0,
+          buttons: [{}, {}, { pressed: true, value: 1 }],
+          axes: [],
+        },
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.deepEqual(commands, []);
+    browserHost.emit("request", {
+      message: {
+        type: "controller-state",
+        payload: {
+          connected: true,
+          id: "background-pad",
+          index: 0,
+          buttons: [],
+          axes: [],
+        },
+      },
+    });
+    browserHost.emit("request", {
+      message: {
+        type: "controller-state",
+        payload: {
+          connected: true,
+          id: "background-pad",
+          index: 0,
+          buttons: [{}, {}, { pressed: true, value: 1 }],
+          axes: [],
+        },
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.deepEqual(commands, ["toggle-pause"]);
   } finally {
     await controller.detach("test");
   }

@@ -316,6 +316,29 @@ async function run() {
           "interactive-native",
       "browser capability handshake",
     );
+    const controllerMessagesBeforeBlur = messages.filter(
+      (item) =>
+        item.surface === "highlight" && item.message.type === "controller-state",
+    ).length;
+    await evaluate(highlight, "window.dispatchEvent(new Event('blur')); true");
+    await waitFor(
+      () =>
+        messages.filter(
+          (item) =>
+            item.surface === "highlight" && item.message.type === "controller-state",
+        ).length > controllerMessagesBeforeBlur,
+      "browser controller neutral reset on blur",
+    );
+    assert.equal(
+      messages
+        .filter(
+          (item) =>
+            item.surface === "highlight" && item.message.type === "controller-state",
+        )
+        .at(-1)?.message.payload.connected,
+      false,
+      "browser controller blur must publish a neutral disconnected state",
+    );
 
     sendEvent(
       highlight,
@@ -372,11 +395,12 @@ async function run() {
         fontScale: 1,
         theme: "light",
         customCss: "#popup .glossary { color: rgb(1, 2, 3); }",
-        nestedDepth: 0,
-        nestedPopupMode: "hover",
         audioSources: ["https://audio.example/{term}.mp3"],
         audioAutoPlay: false,
         anki: { enabled: true, configured: true },
+        nestedPopupMode: "click",
+        nestedPopupMaxDepth: 3,
+        popupSessionId: "popup-fixture-session",
         result: fixtureResult,
       },
       initialGeneration,
@@ -428,10 +452,8 @@ async function run() {
             'details[data-content="details-entry-etymology"]',
           )?.open,
           tables: document.querySelectorAll('table').length,
-          nested: document.querySelectorAll('[data-action="nested-lookup"]').length,
-          nestedMode: panel.dataset.nestedMode || "",
-          nestedDepth: panel.dataset.nestedDepth || "",
-          backVisible: !document.getElementById("popup-back").hidden,
+          crossReferences: document.querySelectorAll('.cross-reference').length,
+          nestedActions: document.querySelectorAll('[data-action="nested-lookup"]').length,
           links: document.querySelectorAll('[data-href]').length,
           audio: document.querySelectorAll('[data-action="dictionary-audio"]').length,
           anki: document.querySelectorAll('[data-action="anki-add"]').length,
@@ -464,10 +486,8 @@ async function run() {
     assert.equal(initialState.grammarRows, 1);
     assert.equal(initialState.etymologyOpen, true);
     assert.equal(initialState.tables, 1);
-    assert.equal(initialState.nested, 1);
-    assert.equal(initialState.nestedMode, "hover");
-    assert.equal(initialState.nestedDepth, "0");
-    assert.equal(initialState.backVisible, false);
+    assert.equal(initialState.crossReferences, 1);
+    assert.equal(initialState.nestedActions, 1);
     assert.equal(initialState.links, 1);
     assert.equal(initialState.audio, 1);
     assert.equal(initialState.anki, 2);
@@ -532,6 +552,122 @@ async function run() {
         reportedSelectionRegion.y + reportedSelectionRegion.height <=
           visiblePopupBounds.content.bottom + 0.5,
       "selection region telemetry must stay inside the visible content viewport",
+    );
+
+    const nestedRequestBefore = messages.filter(
+      (item) => item.message.type === "nested-lookup",
+    ).length;
+    await evaluate(popup, "document.querySelector('.cross-reference').click()");
+    await waitFor(
+      () =>
+        messages.filter((item) => item.message.type === "nested-lookup").length ===
+        nestedRequestBefore + 1,
+      "nested lookup request",
+    );
+    const nestedRequest = messages
+      .filter((item) => item.message.type === "nested-lookup")
+      .at(-1).message;
+    assert.equal(nestedRequest.payload.text, "言語");
+    assert.equal(nestedRequest.payload.utf16Start, 0);
+    assert.equal(nestedRequest.payload.depth, 1);
+    assert.equal(nestedRequest.payload.popupSessionId, "popup-fixture-session");
+    const nestedResult = (headword, crossReference) => ({
+      lookupString: headword,
+      matched: headword,
+      entries: [
+        {
+          id: `nested-${headword}`,
+          headword,
+          reading: "ごい",
+          glossaries: [
+            {
+              dictionary: "Nested fixture dictionary",
+              content: [
+                { type: "paragraph", text: "nested definition" },
+                ...(crossReference
+                  ? [
+                      {
+                        type: "cross-reference",
+                        text: crossReference,
+                        lookup: crossReference,
+                      },
+                    ]
+                  : []),
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    sendEvent(
+      popup,
+      "nested-lookup-result",
+      {
+        requestId: nestedRequest.payload.requestId,
+        popupSessionId: "popup-fixture-session",
+        depth: 1,
+        ok: true,
+        result: nestedResult("言語", "語彙"),
+      },
+      initialGeneration,
+      nestedRequest.payload.requestId,
+    );
+    await waitFor(
+      async () =>
+        (await evaluate(popup, "document.querySelectorAll('.nested-popup').length")) ===
+        1,
+      "nested popup rendering",
+    );
+    assert.equal(
+      await evaluate(
+        popup,
+        "document.querySelector('.nested-popup-headword')?.textContent",
+      ),
+      "言語",
+    );
+    await evaluate(
+      popup,
+      "document.querySelector('.nested-popup .cross-reference').click()",
+    );
+    await waitFor(
+      () =>
+        messages.filter((item) => item.message.type === "nested-lookup").length ===
+        nestedRequestBefore + 2,
+      "nested child lookup request",
+    );
+    const nestedChildRequest = messages
+      .filter((item) => item.message.type === "nested-lookup")
+      .at(-1).message;
+    assert.equal(nestedChildRequest.payload.text, "語彙");
+    assert.equal(nestedChildRequest.payload.depth, 2);
+    sendEvent(
+      popup,
+      "nested-lookup-result",
+      {
+        requestId: nestedChildRequest.payload.requestId,
+        popupSessionId: "popup-fixture-session",
+        depth: 2,
+        ok: true,
+        result: nestedResult("語彙"),
+      },
+      initialGeneration,
+      nestedChildRequest.payload.requestId,
+    );
+    await waitFor(
+      async () =>
+        (await evaluate(popup, "document.querySelectorAll('.nested-popup').length")) ===
+        2,
+      "second nested popup rendering",
+    );
+    await evaluate(
+      popup,
+      "document.querySelectorAll('.nested-popup')[1].dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))",
+    );
+    await waitFor(
+      async () =>
+        (await evaluate(popup, "document.querySelectorAll('.nested-popup').length")) ===
+        1,
+      "deepest nested popup Escape dismissal",
     );
 
     sendEvent(
@@ -641,8 +777,7 @@ async function run() {
         fontScale: 1,
         theme: "light",
         customCss: "outline: 2px solid rgb(1, 2, 3);",
-        nestedDepth: 0,
-        nestedPopupMode: "hover",
+        anki: { enabled: true, configured: true },
         result: fixtureResult,
       },
       initialGeneration + 1,
@@ -652,6 +787,65 @@ async function run() {
         (await evaluate(popup, "!document.getElementById('popup-panel').hidden")) ===
         true,
       "popup restoration after dismissal-cancel test",
+    );
+
+    await evaluate(
+      popup,
+      `(() => {
+        window.__iinatanCaptureEvents = [];
+        const panel = document.getElementById('popup-panel');
+        const root = document.getElementById('root');
+        panel.setPointerCapture = (pointerId) =>
+          window.__iinatanCaptureEvents.push(['set', pointerId]);
+        panel.releasePointerCapture = (pointerId) =>
+          window.__iinatanCaptureEvents.push(['release', pointerId]);
+        root.dispatchEvent(new PointerEvent('pointerdown', {
+          bubbles: true,
+          cancelable: true,
+          button: 0,
+          pointerId: 27,
+          isPrimary: true,
+        }));
+      })()`,
+    );
+    sendEvent(popup, "popup-state", { visible: false }, initialGeneration + 1);
+    await waitFor(
+      async () =>
+        (await evaluate(popup, "document.getElementById('popup-panel').hidden")) ===
+        true,
+      "host-driven popup hide during outside pointer capture",
+    );
+    assert.deepEqual(
+      await evaluate(popup, "window.__iinatanCaptureEvents"),
+      [
+        ["set", 27],
+        ["release", 27],
+      ],
+      "host-driven popup hide must release outside pointer capture",
+    );
+    sendEvent(
+      popup,
+      "popup-state",
+      {
+        visible: true,
+        position: { x: 40, y: 60 },
+        width: 640,
+        maxHeight: 520,
+        popupScale: 1,
+        popupMinWidth: 280,
+        popupMaxWidth: 640,
+        fontScale: 1,
+        theme: "light",
+        anki: { enabled: true, configured: true },
+        result: fixtureResult,
+      },
+      initialGeneration + 2,
+    );
+    await waitFor(
+      async () =>
+        (await evaluate(popup, "!document.getElementById('popup-panel').hidden")) ===
+        true,
+      "popup restoration after host-driven pointer capture cleanup",
     );
 
     const pointerMessagesBefore = messages.filter(
@@ -811,106 +1005,6 @@ async function run() {
       "text selection message",
     );
 
-    const nestedMessagesBeforeHover = messages.filter(
-      (item) => item.message.type === "nested-lookup",
-    ).length;
-    await evaluate(
-      popup,
-      `document.querySelector('[data-action="nested-lookup"]').dispatchEvent(new PointerEvent('pointermove', { bubbles: true, cancelable: true, shiftKey: false }))`,
-    );
-    await waitFor(
-      () =>
-        messages.filter((item) => item.message.type === "nested-lookup").length >
-        nestedMessagesBeforeHover,
-      "hover nested lookup message",
-    );
-    const nestedMessagesBeforeShiftHover = messages.filter(
-      (item) => item.message.type === "nested-lookup",
-    ).length;
-    sendEvent(
-      popup,
-      "popup-state",
-      {
-        visible: true,
-        position: { x: 40, y: 60 },
-        width: 640,
-        maxHeight: 520,
-        popupScale: 1,
-        popupMinWidth: 280,
-        popupMaxWidth: 640,
-        fontScale: 1,
-        theme: "light",
-        nestedDepth: 0,
-        nestedPopupMode: "shift-hover",
-        result: fixtureResult,
-      },
-      initialGeneration + 1,
-    );
-    await evaluate(
-      popup,
-      `document.querySelector('[data-action="nested-lookup"]').dispatchEvent(new PointerEvent('pointermove', { bubbles: true, cancelable: true, shiftKey: false }))`,
-    );
-    await delay(240);
-    assert.equal(
-      messages.filter((item) => item.message.type === "nested-lookup").length,
-      nestedMessagesBeforeShiftHover,
-      "shift-hover must not open without Shift",
-    );
-    await evaluate(
-      popup,
-      `document.querySelector('[data-action="nested-lookup"]').dispatchEvent(new PointerEvent('pointermove', { bubbles: true, cancelable: true, shiftKey: true }))`,
-    );
-    await waitFor(
-      () =>
-        messages.filter((item) => item.message.type === "nested-lookup").length >
-        nestedMessagesBeforeShiftHover,
-      "shift-hover nested lookup message",
-    );
-    sendEvent(
-      popup,
-      "popup-state",
-      {
-        visible: true,
-        position: { x: 40, y: 60 },
-        width: 640,
-        maxHeight: 520,
-        popupScale: 1,
-        popupMinWidth: 280,
-        popupMaxWidth: 640,
-        fontScale: 1,
-        theme: "light",
-        nestedDepth: 1,
-        nestedPopupMode: "click",
-        result: fixtureResult,
-      },
-      initialGeneration + 1,
-    );
-    await waitFor(
-      async () =>
-        (await evaluate(popup, "!document.getElementById('popup-back').hidden")) ===
-        true,
-      "nested back control",
-    );
-    await evaluate(popup, "document.getElementById('popup-back').click()");
-    await waitFor(
-      () =>
-        messages.some(
-          (item) =>
-            item.message.type === "dismiss-popup" &&
-            item.message.payload.reason === "nested-back",
-        ),
-      "nested back request",
-    );
-
-    await evaluate(
-      popup,
-      `document.querySelector('[data-action="nested-lookup"]').click()`,
-    );
-    await waitFor(
-      () => messages.some((item) => item.message.type === "nested-lookup"),
-      "nested lookup message",
-    );
-
     await evaluate(
       popup,
       "document.querySelector('[data-action=audio-source]').click()",
@@ -927,7 +1021,7 @@ async function run() {
       popup,
       "audio-result",
       { candidates: [{ name: "Stale", url: "https://audio.example/stale.mp3" }] },
-      initialGeneration + 1,
+      initialGeneration + 2,
       "audio-stale-request",
     );
     await delay(50);
@@ -945,7 +1039,7 @@ async function run() {
           { name: "Fallback", url: "https://audio.example/fallback.mp3" },
         ],
       },
-      initialGeneration + 1,
+      initialGeneration + 2,
       audioRequestId,
     );
     await waitFor(
@@ -969,7 +1063,7 @@ async function run() {
       popup,
       "controller-command",
       { command: "audio-down" },
-      initialGeneration + 1,
+      initialGeneration + 2,
     );
     assert.equal(
       await evaluate(
@@ -977,6 +1071,32 @@ async function run() {
         "document.querySelector('.audio-candidate[aria-selected=\"true\"]')?.textContent",
       ),
       "Fallback",
+    );
+    sendEvent(
+      popup,
+      "controller-command",
+      { command: "audio-right" },
+      initialGeneration + 2,
+    );
+    assert.equal(
+      await evaluate(
+        popup,
+        "document.querySelector('.audio-anki[aria-pressed=\"true\"]')?.previousElementSibling?.textContent",
+      ),
+      "Fallback",
+    );
+    await evaluate(
+      popup,
+      "document.querySelector('.audio-anki[aria-pressed=\"true\"]').click()",
+    );
+    await waitFor(
+      () => messages.some((item) => item.message.type === "audio-anki-selection"),
+      "audio Anki selection message",
+    );
+    assert.equal(
+      messages.filter((item) => item.message.type === "audio-anki-selection").at(-1)
+        ?.message.payload.url,
+      "https://audio.example/fallback.mp3",
     );
     sendEvent(
       popup,
@@ -991,11 +1111,9 @@ async function run() {
         popupMaxWidth: 640,
         fontScale: 1,
         theme: "light",
-        nestedDepth: 0,
-        nestedPopupMode: "hover",
         result: fixtureResult,
       },
-      initialGeneration + 1,
+      initialGeneration + 2,
     );
     await delay(50);
     assert.equal(
@@ -1087,11 +1205,57 @@ async function run() {
     );
     await evaluate(
       popup,
-      `document.getElementById('root').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0 }))`,
+      `document.getElementById('root').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerId: 1 }))`,
+    );
+    await evaluate(
+      popup,
+      `document.getElementById('root').dispatchEvent(new PointerEvent('pointerup', { bubbles: true, button: 0, pointerId: 1 }))`,
     );
     await waitFor(
       () => messages.some((item) => item.message.type === "dismiss-popup"),
       "outside pointer dismissal",
+    );
+    assert.equal(
+      messages.filter((item) => item.message.type === "dismiss-popup").at(-1)?.message
+        .payload.reason,
+      "outside-pointer-up",
+      "outside dismissal must wait for the completed pointer gesture",
+    );
+
+    const outsideCancelBefore = messages.filter(
+      (item) => item.message.type === "dismiss-popup",
+    ).length;
+    await evaluate(
+      popup,
+      `(() => {
+        const root = document.getElementById('root');
+        root.dispatchEvent(new PointerEvent('pointerdown', {
+          bubbles: true,
+          cancelable: true,
+          button: 0,
+          pointerId: 2,
+          isPrimary: true,
+        }));
+        root.dispatchEvent(new PointerEvent('pointercancel', {
+          bubbles: true,
+          cancelable: true,
+          button: 0,
+          pointerId: 2,
+          isPrimary: true,
+        }));
+      })()`,
+    );
+    await waitFor(
+      () =>
+        messages.filter((item) => item.message.type === "dismiss-popup").length >
+        outsideCancelBefore,
+      "outside pointer cancellation dismissal",
+    );
+    assert.equal(
+      messages.filter((item) => item.message.type === "dismiss-popup").at(-1)?.message
+        .payload.reason,
+      "outside-pointer-cancel",
+      "an interrupted outside gesture must still dismiss the popup",
     );
 
     sendEvent(

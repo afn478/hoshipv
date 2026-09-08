@@ -4,6 +4,11 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
 const { app, BrowserWindow, ipcMain } = require("electron");
+const {
+  ACTIONS: CONTROLLER_ACTIONS,
+  BUTTONS: CONTROLLER_BUTTONS,
+  DEFAULTS: CONTROLLER_DEFAULTS,
+} = require("../../src/interaction/controller-bindings");
 
 const root = path.resolve(__dirname, "../..");
 const resultPath = String(
@@ -60,10 +65,18 @@ function createState() {
           ankiConnectUrl: "http://127.0.0.1:8765",
           ankiConnectTimeoutSeconds: 3,
           controllerEnabled: false,
+          controllerNoPopupBindingsJson: JSON.stringify(CONTROLLER_DEFAULTS.noPopup),
+          controllerPopupBindingsJson: JSON.stringify(CONTROLLER_DEFAULTS.popup),
+          controllerAudioBindingsJson: JSON.stringify(CONTROLLER_DEFAULTS.audio),
         },
       },
     ],
     global: { importTimeoutMs: 120000 },
+    controllerBindings: {
+      buttons: CONTROLLER_BUTTONS,
+      actions: CONTROLLER_ACTIONS,
+      defaults: CONTROLLER_DEFAULTS,
+    },
     dictionaries: [
       {
         id: "fixture-dictionary",
@@ -271,6 +284,11 @@ async function run() {
         diagnosticsRuntime: document.querySelector('#diagnostics-list dd')?.textContent,
         diagnosticsText: document.querySelector('#diagnostics-sessions')?.textContent,
         diagnosticsBoundary: document.querySelector('#diagnostics-note')?.textContent,
+        controllerContexts: document.querySelectorAll('.controller-context').length,
+        controllerRows: document.querySelectorAll('.controller-binding-table tbody tr').length,
+        noPopupCross: document.querySelector('[data-controller-context="noPopup"][data-controller-button="primary"]')?.value,
+        popupCross: document.querySelector('[data-controller-context="popup"][data-controller-button="primary"]')?.value,
+        audioCross: document.querySelector('[data-controller-context="audio"][data-controller-button="primary"]')?.value,
         csp: document.querySelector('meta[http-equiv="Content-Security-Policy"]')?.content || '',
       }))()`,
     );
@@ -289,6 +307,11 @@ async function run() {
     assert.equal(initial.dictionaryTitle, "Fixture dictionary");
     assert.equal(initial.recommended, 1);
     assert.equal(initial.recommendedTitle, "Fixture recommended");
+    assert.equal(initial.controllerContexts, 3);
+    assert.equal(initial.controllerRows, CONTROLLER_BUTTONS.length * 3);
+    assert.equal(initial.noPopupCross, CONTROLLER_DEFAULTS.noPopup.primary);
+    assert.equal(initial.popupCross, CONTROLLER_DEFAULTS.popup.primary);
+    assert.equal(initial.audioCross, CONTROLLER_DEFAULTS.audio.primary);
     assert.match(initial.diagnosticsRuntime, /test x64/);
     assert.match(initial.diagnosticsText, /fixture-session/);
     assert.match(initial.diagnosticsText, /reconstructed geometry/);
@@ -304,6 +327,10 @@ async function run() {
     await evaluate(
       settings,
       `(() => {
+        const popupCross = document.querySelector('[data-controller-context="popup"][data-controller-button="primary"]');
+        popupCross.value = 'close-popup';
+        popupCross.dispatchEvent(new Event('change', { bubbles: true }));
+        document.querySelector('[data-controller-reset="audio"]').click();
         const input = document.querySelector('[data-pref="scanLength"]');
         input.value = '18';
         document.querySelector('[data-pref="lookupTimeoutMs"]').value = '12000';
@@ -324,6 +351,14 @@ async function run() {
     assert.equal(saveRequest.payload.preferences.flattenSubtitleLineBreaks, true);
     assert.equal(saveRequest.payload.preferences.popupMinWidth, "320");
     assert.equal(saveRequest.payload.preferences.workerIdleSleepMs, "8");
+    assert.equal(
+      JSON.parse(saveRequest.payload.preferences.controllerPopupBindingsJson).primary,
+      "close-popup",
+    );
+    assert.equal(
+      JSON.parse(saveRequest.payload.preferences.controllerAudioBindingsJson).primary,
+      CONTROLLER_DEFAULTS.audio.primary,
+    );
     assert.equal(state.profiles[0].preferences.scanLength, "18");
     assert.equal(state.profiles[0].preferences.lookupTimeoutMs, "12000");
     assert.equal(state.profiles[0].preferences.flattenSubtitleLineBreaks, true);
