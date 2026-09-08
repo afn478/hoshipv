@@ -33,10 +33,12 @@ function buildPlainSubtitleGeometry(input) {
   const lineStarts = buildLineStarts(text);
   const marginX = Math.max(0, Number(input.marginX) || 0);
   const marginY = Math.max(0, Number(input.marginY) || 0);
+  // mpv's stock secondary subtitle is a toptitle. Its default ASS strip
+  // style uses a zero vertical margin, while marginY is the primary/bottom
+  // subtitle margin. Reusing marginY here puts the highlight below the
+  // rendered top line when native geometry is unavailable.
   const position =
-    input.position === "top"
-      ? marginY
-      : osdHeight - marginY - lines.length * lineHeight;
+    input.position === "top" ? 0 : osdHeight - marginY - lines.length * lineHeight;
   const align =
     input.align === "left" ? "left" : input.align === "right" ? "right" : "center";
   const units = index.units.map((unit) => {

@@ -8,6 +8,12 @@ const OBSERVED_STRIP_SOURCE = "iinatan-observed-secondary-ass";
 const OBSERVED_STRIP_STYLE = "IinatanSecondaryStrip";
 const OBSERVED_SUBRIP_SOURCE = "iinatan-observed-subrip";
 const SUBRIP_PLAY_RES_Y = 288;
+const DEFAULT_FILTER_SDH_ENCLOSURES = Object.freeze(["()", "[]", "（）"]);
+const VALIDATED_PLAYER_CAPABILITY = Object.freeze({
+  mpvVersion: "0.41.0",
+  libassVersion: "0.17.5",
+  ffmpegVersion: "9.0.1",
+});
 const DEFAULT_STRIP_RENDERER = Object.freeze({
   fontFamily: "sans-serif",
   fontSize: 38,
@@ -42,6 +48,37 @@ function assDecimal(value) {
   return /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/u.test(String(value).trim());
 }
 
+function assVectorClip(value) {
+  let body = String(value).trim();
+  const comma = body.indexOf(",");
+  if (comma >= 0) {
+    if (!assDecimal(body.slice(0, comma))) return false;
+    body = body.slice(comma + 1).trim();
+  }
+  if (!body || body.includes(",")) return false;
+
+  let command = null;
+  let arity = 0;
+  let remaining = 0;
+  let pointFound = false;
+  for (const token of body.split(/\s+/u)) {
+    const lower = token.toLowerCase();
+    if (/^[mnlbspc]$/u.test(lower)) {
+      if (remaining !== 0) return false;
+      command = lower;
+      arity = lower === "b" || lower === "s" ? 6 : lower === "p" ? 1 : 2;
+      remaining = lower === "c" ? 0 : arity;
+      if (lower === "c") command = null;
+      continue;
+    }
+    if (!command || !assDecimal(token)) return false;
+    if (remaining === 0) remaining = arity;
+    remaining -= 1;
+    pointFound = true;
+  }
+  return pointFound && remaining === 0;
+}
+
 function assPositionTag(token) {
   const match = /^pos\(\s*([^,]+?)\s*,\s*([^,)]+?)\s*\)$/iu.exec(token);
   return !!match && assDecimal(match[1]) && assDecimal(match[2]);
@@ -56,18 +93,41 @@ function assMoveTag(token) {
 
 function assStaticRendererTag(token) {
   const scalar =
-    /^(?:xshad|yshad|fscx|fscy|fsp|bord|shad|frx|fry|frz|fax|fay|blur|fs|fr|be|b)(.+)$/iu.exec(
+    /^(?:xbord|ybord|xshad|yshad|fscx|fscy|fsp|bord|shad|frx|fry|frz|fax|fay|blur|fs|fr|be|b)(.*)$/iu.exec(
       token,
     );
-  if (scalar && assDecimal(scalar[1])) return true;
-  if (/^an[1-9]$/iu.test(token) || /^q[0-3]$/iu.test(token)) return true;
-  if (/^fn\S(?:.*\S)?$/iu.test(token)) return true;
+  if (scalar && (!scalar[1] || assDecimal(scalar[1]))) return true;
+  if (/^fsc$/iu.test(token)) return true;
+  if (/^an[1-9]$/iu.test(token) || /^a(?:[1-9]|1[01])?$/iu.test(token)) return true;
+  if (/^q[0-3]$/iu.test(token)) return true;
+  if (/^fn(?:\S(?:.*\S)?)?$/iu.test(token)) return true;
+  if (/^[isu][01]?$/iu.test(token)) return true;
+  if (/^p0?$/iu.test(token)) return true;
+  if (/^pbo(?:.*)$/iu.test(token)) {
+    const value = token.slice(3);
+    return !value || assDecimal(value);
+  }
+  if (/^fe(?:.*)$/iu.test(token)) {
+    const value = token.slice(2);
+    return !value || assDecimal(value);
+  }
+  const origin = /^org\(([^()]*)\)$/iu.exec(token);
+  if (origin) {
+    const values = origin[1].split(",");
+    if (values.length === 2 && values.every(assDecimal)) return true;
+  }
+  const fade = /^(?:fad|fade)\(([^()]*)\)$/iu.exec(token);
+  if (fade) {
+    const values = fade[1].split(",");
+    if ((values.length === 2 || values.length === 7) && values.every(assDecimal))
+      return true;
+  }
   if (/^r(?:[a-z0-9 _-]+)?$/iu.test(token)) return true;
   if (/^(?:k|kf|ko|kt)\d+$/iu.test(token)) return true;
   const clip = /^(?:i?clip)\(([^()]*)\)$/iu.exec(token);
   if (!clip) return false;
   const values = clip[1].split(",");
-  return values.length === 4 && values.every(assDecimal);
+  return (values.length === 4 && values.every(assDecimal)) || assVectorClip(clip[1]);
 }
 
 function assOverrideTokens(content) {
@@ -275,10 +335,73 @@ function sourceForTrack(track) {
   };
 }
 
+function hasNonEmptyList(value) {
+  if (Array.isArray(value))
+    return value.some((item) => String(item ?? "").trim().length > 0);
+  return String(value ?? "").trim().length > 0;
+}
+
+function stringList(value, fallback = []) {
+  if (value === undefined || value === null) return [...fallback];
+  if (Array.isArray(value)) return value.map((item) => String(item));
+  const text = String(value).trim();
+  return text ? text.split(",").map((item) => item.trim()) : [];
+}
+
+function sameStringList(left, right) {
+  return (
+    left.length === right.length && left.every((value, index) => value === right[index])
+  );
+}
+
+function unsupportedRendererOptions(renderer) {
+  const unsupported = [];
+  if (!renderer.assEnabled) unsupported.push("sub-ass");
+  if (renderer.assScaleWithWindow) unsupported.push("sub-ass-scale-with-window");
+  if (renderer.assJustify) unsupported.push("sub-ass-justify");
+  if (renderer.justify !== "auto") unsupported.push("sub-justify");
+  if (renderer.fontProvider !== "auto" && renderer.fontProvider !== "autodetect")
+    unsupported.push("sub-font-provider");
+  if (hasNonEmptyList(renderer.styleOverrides))
+    unsupported.push("sub-ass-style-overrides");
+  if (renderer.stylesPath) unsupported.push("sub-ass-styles");
+  if (renderer.fontsDirectory) unsupported.push("sub-fonts-dir");
+  if (renderer.useVideoData !== "all") unsupported.push("sub-ass-use-video-data");
+  if (renderer.videoAspectOverride !== 0)
+    unsupported.push("sub-ass-video-aspect-override");
+  if (renderer.vsfilterColorCompat !== "basic")
+    unsupported.push("sub-ass-vsfilter-color-compat");
+  if (renderer.vsfilterBidiCompat) unsupported.push("sub-vsfilter-bidi-compat");
+  if (renderer.scaleSigns) unsupported.push("sub-scale-signs");
+  if (renderer.blur !== 0) unsupported.push("sub-blur");
+  if (renderer.gauss !== 0) unsupported.push("sub-gauss");
+  if (renderer.gray) unsupported.push("sub-gray");
+  if (renderer.glyphLimit !== 0) unsupported.push("sub-glyph-limit");
+  if (renderer.hdrPeak !== "sdr") unsupported.push("sub-hdr-peak");
+  if (renderer.pruneDelay !== -1) unsupported.push("sub-ass-prune-delay");
+  if (renderer.fixTiming) unsupported.push("sub-fix-timing");
+  if (renderer.fixTimingThreshold !== 210) unsupported.push("sub-fix-timing-threshold");
+  if (renderer.fixTimingKeep !== 400) unsupported.push("sub-fix-timing-keep");
+  if (renderer.fps !== 0) unsupported.push("sub-fps");
+  if (renderer.stretchDurations) unsupported.push("sub-stretch-durations");
+  if (renderer.clearOnSeek) unsupported.push("sub-clear-on-seek");
+  if (renderer.pastVideoEnd) unsupported.push("sub-past-video-end");
+  if (renderer.forcedEventsOnly) unsupported.push("sub-forced-events-only");
+  if (!renderer.filterRegexEnable) unsupported.push("sub-filter-regex-enable");
+  if (renderer.filterRegexPlain) unsupported.push("sub-filter-regex-plain");
+  if (hasNonEmptyList(renderer.filterRegex)) unsupported.push("sub-filter-regex");
+  if (hasNonEmptyList(renderer.filterJsre)) unsupported.push("sub-filter-jsre");
+  if (renderer.filterSdh) unsupported.push("sub-filter-sdh");
+  if (!sameStringList(renderer.filterSdhEnclosures, DEFAULT_FILTER_SDH_ENCLOSURES))
+    unsupported.push("sub-filter-sdh-enclosures");
+  if (renderer.filterSdhHarder) unsupported.push("sub-filter-sdh-harder");
+  return unsupported;
+}
+
 function rendererForTrack(track, snapshotInput) {
   const renderer =
     track.renderer && typeof track.renderer === "object" ? track.renderer : {};
-  return {
+  const normalized = {
     width: Number(snapshotInput.osd.width),
     height: Number(snapshotInput.osd.height),
     storageWidth: Number(renderer.storageWidth || snapshotInput.osd.width),
@@ -307,7 +430,50 @@ function rendererForTrack(track, snapshotInput) {
       .toLowerCase(),
     scaleWithWindow: renderer.scaleWithWindow !== false,
     scaleByWindow: renderer.scaleByWindow !== false,
+    assScaleWithWindow: renderer.assScaleWithWindow === true,
+    assEnabled: renderer.assEnabled !== false,
     assJustify: renderer.assJustify === true,
+    justify: String(renderer.justify || "auto")
+      .trim()
+      .toLowerCase(),
+    styleOverrides: renderer.styleOverrides ?? [],
+    stylesPath: String(renderer.stylesPath || ""),
+    fontsDirectory: String(renderer.fontsDirectory || ""),
+    useVideoData: String(renderer.useVideoData || "all")
+      .trim()
+      .toLowerCase(),
+    videoAspectOverride: Number(renderer.videoAspectOverride || 0),
+    vsfilterColorCompat: String(renderer.vsfilterColorCompat || "basic")
+      .trim()
+      .toLowerCase(),
+    vsfilterBidiCompat: renderer.vsfilterBidiCompat === true,
+    scaleSigns: renderer.scaleSigns === true,
+    blur: Number(renderer.blur || 0),
+    gauss: Number(renderer.gauss || 0),
+    gray: renderer.gray === true,
+    glyphLimit: Number(renderer.glyphLimit || 0),
+    hdrPeak: String(renderer.hdrPeak || "sdr")
+      .trim()
+      .toLowerCase(),
+    pruneDelay: Number(renderer.pruneDelay ?? -1),
+    fixTiming: renderer.fixTiming === true,
+    fixTimingThreshold: Number(renderer.fixTimingThreshold ?? 210),
+    fixTimingKeep: Number(renderer.fixTimingKeep ?? 400),
+    fps: Number(renderer.fps || 0),
+    stretchDurations: renderer.stretchDurations === true,
+    clearOnSeek: renderer.clearOnSeek === true,
+    pastVideoEnd: renderer.pastVideoEnd === true,
+    forcedEventsOnly: renderer.forcedEventsOnly === true,
+    filterRegexEnable: renderer.filterRegexEnable !== false,
+    filterRegexPlain: renderer.filterRegexPlain === true,
+    filterRegex: stringList(renderer.filterRegex),
+    filterJsre: stringList(renderer.filterJsre),
+    filterSdh: renderer.filterSdh === true,
+    filterSdhEnclosures: stringList(
+      renderer.filterSdhEnclosures,
+      DEFAULT_FILTER_SDH_ENCLOSURES,
+    ),
+    filterSdhHarder: renderer.filterSdhHarder === true,
     hinting: String(renderer.hinting || "none"),
     shaper: String(renderer.shaper || "complex"),
     fontSize: Number(renderer.fontSize || 38),
@@ -325,6 +491,10 @@ function rendererForTrack(track, snapshotInput) {
     bold: renderer.bold === true,
     italic: renderer.italic === true,
     spacing: Number(renderer.spacing || 0),
+  };
+  return {
+    ...normalized,
+    unsupportedOptions: unsupportedRendererOptions(normalized),
   };
 }
 
@@ -673,6 +843,7 @@ function trackRequest(snapshotInput, track, serial) {
   const events = track.events || [];
   if (events.some((event) => event.drawing)) return null;
   const renderer = rendererForTrack(track, snapshotInput);
+  if (renderer.unsupportedOptions.length) return null;
   if (
     !NATIVE_OVERRIDE_MODES.has(renderer.overrideMode) &&
     renderer.overrideMode !== "strip"
@@ -739,12 +910,30 @@ function trackRequest(snapshotInput, track, serial) {
             : {}),
         };
 
+  const requestRenderer = stripObservation?.renderer || subrip?.renderer || renderer;
+  const {
+    unsupportedOptions: _unsupportedOptions,
+    assEnabled: _assEnabled,
+    assScaleWithWindow: _assScaleWithWindow,
+    justify: _justify,
+    fixTimingThreshold: _fixTimingThreshold,
+    fixTimingKeep: _fixTimingKeep,
+    fps: _fps,
+    stretchDurations: _stretchDurations,
+    clearOnSeek: _clearOnSeek,
+    pastVideoEnd: _pastVideoEnd,
+    filterRegex: _filterRegex,
+    filterJsre: _filterJsre,
+    filterSdhEnclosures: _filterSdhEnclosures,
+    ...nativeRenderer
+  } = requestRenderer;
+
   return {
     requestId: requestIdFor(snapshotInput, track, serial),
     source: stripObservation?.source || subrip?.source || source,
     cue: requestCue,
     units,
-    renderer: stripObservation?.renderer || subrip?.renderer || renderer,
+    renderer: nativeRenderer,
   };
 }
 
@@ -754,12 +943,37 @@ class NativeSubtitleGeometryService {
       throw new TypeError("native geometry client is required");
     this.client = options.client;
     this.geometryProvider = options.geometryProvider || new SubtitleGeometryProvider();
+    this.playerCompatibility = options.playerCompatibility
+      ? Object.freeze({ ...options.playerCompatibility })
+      : null;
     this.serial = 0;
+  }
+
+  #assertPlayerCompatibility(snapshotInput) {
+    if (!this.playerCompatibility) return;
+    const player = snapshotInput.player;
+    const mismatches = Object.entries(this.playerCompatibility)
+      .filter(([name, expected]) => String(player?.[name] || "") !== String(expected))
+      .map(([name, expected]) => ({
+        name,
+        expected: String(expected),
+        observed: String(player?.[name] || "unobserved"),
+      }));
+    if (!mismatches.length) return;
+    const error = new Error(
+      "native subtitle geometry requires the validated stock-mpv renderer tuple",
+    );
+    error.code = "NATIVE_GEOMETRY_PLAYER_INCOMPATIBLE";
+    error.expected = { ...this.playerCompatibility };
+    error.observed = player ? { ...player } : null;
+    error.mismatches = mismatches;
+    throw error;
   }
 
   async apply(snapshotInput) {
     if (!snapshotInput || !Array.isArray(snapshotInput.tracks))
       throw new TypeError("subtitle geometry snapshot input is required");
+    this.#assertPlayerCompatibility(snapshotInput);
     const requests = [];
     for (const track of snapshotInput.tracks) {
       if (!track.selected || !track.events.some((event) => event.units.length))
@@ -803,6 +1017,7 @@ class NativeSubtitleGeometryService {
 
 module.exports = {
   NativeSubtitleGeometryService,
+  VALIDATED_PLAYER_CAPABILITY,
   nativeDisplayIndex,
   nativeStrippedDisplayIndex,
   nativeRange,

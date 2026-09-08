@@ -107,7 +107,9 @@ class HoshiWorker extends EventEmitter {
     this.configFingerprint = "";
     this.nativeControllerSupported =
       options.nativeControllerSupported ?? process.platform === "darwin";
-    this.controllerPollMs = Math.max(16, Number(options.controllerPollMs) || 50);
+    // Match iinatan's display-frame native controller polling cadence while
+    // still allowing a slower bounded cadence for constrained environments.
+    this.controllerPollMs = Math.max(16, Number(options.controllerPollMs) || 16);
     this.controllerRequested = false;
     this.nativeControllerAvailable = false;
     this.controllerCapability = null;
@@ -115,6 +117,11 @@ class HoshiWorker extends EventEmitter {
     this.controllerPollInFlight = false;
     this.controllerLastSequence = -1;
     this.controllerDisconnected = false;
+    this.controllerStatePath = path.isAbsolute(
+      String(options.controllerStatePath || ""),
+    )
+      ? path.resolve(String(options.controllerStatePath))
+      : "";
   }
 
   async configure({
@@ -327,13 +334,20 @@ class HoshiWorker extends EventEmitter {
       return;
     this.controllerPollInFlight = true;
     try {
-      const statePath = path.join(this.root, "state", "controller.json");
-      let value;
-      try {
-        value = JSON.parse(
-          await readFileBounded(statePath, MAX_WORKER_STATE_BYTES, "utf8"),
-        );
-      } catch (_) {
+      const statePaths = [
+        ...(this.controllerStatePath ? [this.controllerStatePath] : []),
+        path.join(this.root, "state", "controller.json"),
+      ];
+      let value = null;
+      for (const statePath of statePaths) {
+        try {
+          value = JSON.parse(
+            await readFileBounded(statePath, MAX_WORKER_STATE_BYTES, "utf8"),
+          );
+          break;
+        } catch (_) {}
+      }
+      if (!value) {
         this.#emitDisconnectedController();
         return;
       }
@@ -350,7 +364,11 @@ class HoshiWorker extends EventEmitter {
         this.#emitDisconnectedController();
         return;
       }
-      if (snapshot.sequence === this.controllerLastSequence) return;
+      // The native HID helper may keep an analog axis at the same value for
+      // several polls. Forward the current snapshot at the worker cadence
+      // instead of waiting for the helper's file sequence to change; the
+      // renderer needs those steady samples to integrate proportional stick
+      // scrolling without 250 ms jumps.
       this.controllerLastSequence = snapshot.sequence;
       if (snapshot.connected || !this.controllerDisconnected)
         this.emit("controller-state", snapshot);

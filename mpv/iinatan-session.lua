@@ -2,31 +2,161 @@
 --
 -- It does not render subtitles or create an OSD. It only publishes the
 -- explicit process/window/IPC relationship that the Electron companion needs
--- in order to attach without title matching. Start mpv with an
--- input-ipc-server path as well as this script.
+-- in order to attach without title matching. When no endpoint or session
+-- directory is supplied, it creates a private macOS/Linux/Windows endpoint
+-- and descriptor location itself.
 
 local mp = require "mp"
 local utils = require "mp.utils"
+local options_reader = require "mp.options"
+
+local options = {
+    ipc_endpoint = "",
+    native_shim = "",
+    session_dir = "",
+    session_id = "",
+    auto_start_companion = "yes",
+    companion_app = "",
+}
+options_reader.read_options(options, "iinatan-session")
 
 local function environment_value(name)
     if utils.getenv then return utils.getenv(name) end
     return os.getenv(name)
 end
 
+local function debug_log(message)
+    if environment_value("IINATAN_E2E_DEBUG") == "1" then
+        mp.msg.info("[iinatan-session] " .. tostring(message))
+    end
+end
+
+local function join_path(...)
+    local result = select(1, ...)
+    for index = 2, select("#", ...) do
+        result = utils.join_path(result, select(index, ...))
+    end
+    return result
+end
+
+local function regular_file(path)
+    if not path or path == "" then return false end
+    local file = io.open(path, "rb")
+    if not file then return false end
+    file:close()
+    return true
+end
+
+local function first_nonempty(...)
+    for index = 1, select("#", ...) do
+        local value = select(index, ...)
+        if value and value ~= "" then return value end
+    end
+    return ""
+end
+
+local function script_file_directory()
+    if not debug or not debug.getinfo then return "" end
+    local source = debug.getinfo(1, "S").source or ""
+    if source:sub(1, 1) ~= "@" then return "" end
+    source = source:sub(2)
+    return source:match("^(.*)[/\\\\][^/\\\\]*$") or ""
+end
+
+local function adjacent_native_shim()
+    local directories = {}
+    if mp.get_script_directory then
+        local directory = mp.get_script_directory() or ""
+        if directory ~= "" then directories[#directories + 1] = directory end
+    end
+    local scriptDirectory = script_file_directory()
+    if scriptDirectory ~= "" then directories[#directories + 1] = scriptDirectory end
+    local home = environment_value("HOME") or ""
+    if home ~= "" then
+        directories[#directories + 1] = join_path(home, ".config", "mpv", "scripts")
+        directories[#directories + 1] = join_path(
+            home, "Library", "Application Support", "mpv", "scripts"
+        )
+    end
+    local candidates = {}
+    for _, directory in ipairs(directories) do
+        candidates[#candidates + 1] = join_path(directory, "iinatan-mpv-window-shim.so")
+        candidates[#candidates + 1] = join_path(directory, "..", "bin", "iinatan-mpv-window-shim.so")
+        candidates[#candidates + 1] = join_path(directory, "..", "build", "native", "iinatan-mpv-window-shim.so")
+    end
+    for _, candidate in ipairs(candidates) do
+        if regular_file(candidate) then
+            debug_log("native shim candidate selected: " .. candidate)
+            return candidate
+        end
+    end
+    debug_log("native shim candidates unavailable")
+    return ""
+end
+
 local function load_native_shim()
-    local shim = mp.get_opt("iinatan-native-shim") or environment_value("IINATAN_NATIVE_SHIM")
-    if not shim or shim == "" then return end
+    local explicit_shim = first_nonempty(
+        mp.get_opt("iinatan-native-shim"),
+        environment_value("IINATAN_NATIVE_SHIM"),
+        options.native_shim
+    )
+    local shim = explicit_shim
+    local explicit = explicit_shim ~= ""
+    debug_log("platform=" .. tostring(mp.get_property("platform")) .. "; explicitShim=" .. tostring(explicit))
+    if not explicit and (mp.get_property("platform") or "") == "darwin" then
+        shim = adjacent_native_shim()
+    end
+    if not shim or shim == "" then
+        debug_log("native shim not loaded")
+        return
+    end
     local ok, error_message = pcall(mp.commandv, "load-script", shim)
+    debug_log("native shim load requested: " .. shim .. "; ok=" .. tostring(ok))
     if not ok then
         mp.msg.warn("iinatan native window shim could not be loaded: " .. tostring(error_message))
     end
 end
 
 local pid = utils.getpid()
-local session_id = mp.get_opt("iinatan-session-id") or ("mpv-" .. tostring(pid) .. "-" .. tostring(math.floor(mp.get_time() * 1000)))
-local session_dir = mp.get_opt("iinatan-session-dir") or environment_value("IINATAN_SESSION_DIR")
+local configured_session_id = mp.get_opt("iinatan-session-id") or options.session_id
+local session_id = configured_session_id ~= "" and configured_session_id or ("mpv-" .. tostring(pid) .. "-" .. tostring(math.floor(mp.get_time() * 1000)))
+local configured_session_dir = mp.get_opt("iinatan-session-dir") or environment_value("IINATAN_SESSION_DIR") or options.session_dir or ""
+local configured_ipc_endpoint = mp.get_opt("iinatan-ipc-endpoint") or environment_value("IINATAN_IPC_ENDPOINT") or options.ipc_endpoint or ""
+local platform = mp.get_property("platform") or ""
+
+local function default_session_dir()
+    local home = environment_value("HOME") or ""
+    if platform == "win32" or platform == "windows" then
+        home = environment_value("USERPROFILE") or home
+    end
+    if home == "" then return "" end
+    if platform == "darwin" then
+        return join_path(home, "Library", "Application Support", "iinatan for mpv", "sessions")
+    end
+    if platform == "win32" or platform == "windows" then
+        local appdata = environment_value("APPDATA") or join_path(home, "AppData", "Roaming")
+        return join_path(appdata, "iinatan for mpv", "sessions")
+    end
+    local config = environment_value("XDG_CONFIG_HOME") or join_path(home, ".config")
+    return join_path(config, "iinatan for mpv", "sessions")
+end
+
+local session_dir = configured_session_dir ~= "" and configured_session_dir or default_session_dir()
 local descriptor_path = nil
 local observed_window_id = nil
+local ipc_endpoint = configured_ipc_endpoint
+local owns_ipc_endpoint = false
+if ipc_endpoint == "" then ipc_endpoint = mp.get_property("input-ipc-server") or "" end
+if ipc_endpoint == "" and session_dir ~= "" then
+    ipc_endpoint = utils.join_path(session_dir, tostring(pid) .. ".sock")
+    local ok, error_message = pcall(mp.set_property, "input-ipc-server", ipc_endpoint)
+    if not ok then
+        mp.msg.warn("iinatan could not configure mpv JSON IPC: " .. tostring(error_message))
+        ipc_endpoint = ""
+    else
+        owns_ipc_endpoint = true
+    end
+end
 
 local function file_url(path)
     local normalized = path:gsub("\\\\", "/")
@@ -56,10 +186,7 @@ local function ensure_session_directory()
 end
 
 local function write_descriptor(window_id)
-    local ipc = mp.get_opt("iinatan-ipc-endpoint") or ""
-    if ipc == "" then
-        ipc = mp.get_property("input-ipc-server") or ""
-    end
+    local ipc = ipc_endpoint
     if not session_dir or session_dir == "" or ipc == "" then return end
     if not ensure_session_directory() then return end
     window_id = window_id or observed_window_id
@@ -92,8 +219,48 @@ local function write_descriptor(window_id)
     end
 end
 
+local function companion_start_enabled()
+    local value = environment_value("IINATAN_AUTO_START_COMPANION")
+    if value and value ~= "" then
+        return not value:match("^[Nn][Oo]$") and value ~= "0" and not value:match("^[Oo][Ff][Ff]$")
+    end
+    value = mp.get_opt("iinatan-session-auto-start") or options.auto_start_companion or "yes"
+    return value ~= "no" and value ~= "0" and value ~= "false" and value ~= "off"
+end
+
+local function start_companion_if_needed()
+    -- The application-managed launcher supplies both values and already owns
+    -- the companion. Direct mpv launches have neither, so bootstrap the
+    -- private IPC/session contract and start the menu-bar companion here.
+    if configured_session_dir ~= "" or configured_ipc_endpoint ~= "" then return end
+    if not companion_start_enabled() or platform ~= "darwin" then return end
+    local companion = mp.get_opt("iinatan-companion") or environment_value("IINATAN_COMPANION_APP") or options.companion_app or "iinatan for mpv"
+    if companion == "" then companion = "iinatan for mpv" end
+    local arguments = { "open", "-g", "-a", companion }
+    local status_path = environment_value("IINATAN_E2E_AUTOSTART_STATUS_FILE") or ""
+    if status_path ~= "" then
+        arguments[#arguments + 1] = "--args"
+        arguments[#arguments + 1] = "--e2e-status-file=" .. status_path
+    end
+    local user_data_dir = environment_value("IINATAN_E2E_AUTOSTART_USER_DATA_DIR") or ""
+    if user_data_dir ~= "" then
+        arguments[#arguments + 1] = "--user-data-dir=" .. user_data_dir
+    end
+    if environment_value("IINATAN_E2E_AUTOSTART_OPEN_SETTINGS") == "1" then
+        arguments[#arguments + 1] = "--settings"
+    end
+    if environment_value("IINATAN_E2E_AUTOSTART_NATIVE_GEOMETRY") == "1" then
+        arguments[#arguments + 1] = "--enable-patched-native-geometry"
+    end
+    local result = utils.subprocess({ args = arguments, cancellable = false })
+    if not result or result.status ~= 0 then
+        mp.msg.warn("iinatan companion could not be started: " .. tostring(result and result.stderr or "open failed"))
+    end
+end
+
 local function remove_descriptor()
     if descriptor_path then pcall(os.remove, descriptor_path) end
+    if owns_ipc_endpoint and ipc_endpoint ~= "" then pcall(os.remove, ipc_endpoint) end
 end
 
 mp.register_event("start-file", function() write_descriptor() end)
@@ -105,3 +272,4 @@ mp.observe_property("window-id", "string", function(_, value)
 end)
 load_native_shim()
 write_descriptor()
+start_companion_if_needed()

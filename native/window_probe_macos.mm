@@ -4,6 +4,7 @@
 #import <CoreGraphics/CoreGraphics.h>
 
 #include <sstream>
+#include <unistd.h>
 
 namespace iinatan::native {
 
@@ -54,24 +55,53 @@ std::string activate_window(int pid, const std::string& requested_window_id) {
   }
   NSRunningApplication* application = [NSRunningApplication runningApplicationWithProcessIdentifier:static_cast<pid_t>(pid)];
   if (!application) return R"({"ok":false,"reason":"process-not-found","backend":"macos"})";
-  // Cooperative activation is the supported path on macOS 14 and later. The
-  // legacy option set remains the fallback for older systems; do not use the
+  // Cooperative activation is the supported path on macOS 14 and later. When
+  // the caller supplied an identity-checked window number, ask AppKit to
+  // bring that process's windows forward as well; this matters when two
+  // independent mpv processes are open at the same time. Do not use the
   // deprecated "ignore other apps" flag as a global focus escape hatch.
+  const NSApplicationActivationOptions activation_options =
+      requested_window_id.empty() ? 0 : NSApplicationActivateAllWindows;
+  NSRunningApplication* source_application = NSRunningApplication.currentApplication;
+  const pid_t parent_pid = getppid();
+  if (parent_pid > 0 && parent_pid != pid) {
+    NSRunningApplication* parent_application =
+        [NSRunningApplication runningApplicationWithProcessIdentifier:parent_pid];
+    if (parent_application) source_application = parent_application;
+  }
   BOOL activated_from_application = NO;
   BOOL activated_direct = NO;
   if (@available(macOS 14.0, *)) {
     activated_from_application =
-        [application activateFromApplication:NSRunningApplication.currentApplication
-                                      options:0];
+        [application activateFromApplication:source_application
+                                      options:activation_options];
     if (!activated_from_application)
-      activated_direct = [application activateWithOptions:0];
+      activated_direct = [application activateWithOptions:activation_options];
   } else {
-    activated_direct = [application activateWithOptions:0];
+    activated_direct = [application activateWithOptions:activation_options];
+  }
+  auto wait_for_foreground = [&]() {
+    const NSDate* deadline = [NSDate dateWithTimeIntervalSinceNow:2.0];
+    while ([deadline timeIntervalSinceNow] > 0) {
+      if (NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier == pid)
+        return true;
+      NSDate* next = [NSDate dateWithTimeIntervalSinceNow:0.05];
+      [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:next];
+    }
+    return NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier == pid;
+  };
+  bool foreground = wait_for_foreground();
+  if (!foreground && !activated_direct) {
+    // A cooperative request can be accepted without actually transferring
+    // foreground ownership. Only then use the ordinary direct activation
+    // request that was already the fallback for a rejected cooperative call.
+    activated_direct = [application activateWithOptions:activation_options];
+    foreground = wait_for_foreground();
   }
   const BOOL activated = activated_from_application || activated_direct;
   const pid_t foreground_pid = NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier;
   const bool display_asleep = CGDisplayIsAsleep(CGMainDisplayID()) != 0;
-  const bool foreground = foreground_pid == pid;
+  foreground = foreground || foreground_pid == pid;
   std::ostringstream stream;
   stream << R"({"ok":)" << (activated ? "true" : "false")
          << R"(,"backend":"macos","activated":)" << (activated ? "true" : "false")
@@ -80,6 +110,8 @@ std::string activate_window(int pid, const std::string& requested_window_id) {
          << R"(,"activationFromApplication":)"
          << (activated_from_application ? "true" : "false")
          << R"(,"activationDirect":)" << (activated_direct ? "true" : "false")
+         << R"(,"activationSourcePid":)"
+         << (source_application ? source_application.processIdentifier : 0)
          << R"(,"foregroundVerified":)" << (foreground ? "true" : "false")
          << R"(,"isForeground":)" << (foreground ? "true" : "false")
          << R"(,"targetActive":)" << (application.active ? "true" : "false")
@@ -114,7 +146,10 @@ std::string probe_window(int pid, const std::string& requested_window_id) {
       if (!bounds || !CGRectMakeWithDictionaryRepresentation(bounds, &frame)) continue;
       int64_t layer = 0;
       number_value(window, kCGWindowLayer, layer);
-      if (layer != 0) continue;
+      // An identity-checked AppKit window may be floating/always-on-top and
+      // therefore have a non-zero CoreGraphics layer. Keep the unqualified
+      // scan conservative, but do not discard an explicitly requested window.
+      if (layer != 0 && requested_window_id.empty()) continue;
       std::ostringstream stream;
       stream << R"({"ok":true,"backend":"macos","windowId":)" << window_number
              << R"(,"content":{"x":)" << json_number(frame.origin.x)

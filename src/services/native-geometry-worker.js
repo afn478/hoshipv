@@ -57,6 +57,14 @@ class NativeGeometryWorker {
           fs.rm(filePath, { force: true }).catch(() => {});
           if (error) {
             error.stderr = stderr;
+            const details = [
+              error.code !== undefined ? `code=${error.code}` : "",
+              error.signal ? `signal=${error.signal}` : "",
+              error.killed ? "killed=true" : "",
+              stderr ? `stderr=${String(stderr).trim()}` : "",
+            ].filter(Boolean);
+            if (details.length)
+              error.message = `${error.message.trim()} (${details.join(", ")})`;
             reject(error);
             return;
           }

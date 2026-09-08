@@ -69,6 +69,30 @@ function contentBoundsAreAuthoritative(windowGeometry) {
   return true;
 }
 
+function parseNativeRects(value, width, height) {
+  if (!Array.isArray(value) || !value.length) return null;
+  const rects = value.map((item) => ({
+    x: Number(item?.x),
+    y: Number(item?.y),
+    width: Number(item?.w ?? item?.width),
+    height: Number(item?.h ?? item?.height),
+  }));
+  if (
+    rects.some(
+      (item) =>
+        ![item.x, item.y, item.width, item.height].every(Number.isFinite) ||
+        item.x < 0 ||
+        item.y < 0 ||
+        item.width <= 0 ||
+        item.height <= 0 ||
+        item.x + item.width > width ||
+        item.y + item.height > height,
+    )
+  )
+    return null;
+  return rects;
+}
+
 function bitmapRectKey(rects) {
   return rects
     .map((rect) =>
@@ -216,6 +240,7 @@ class SubtitleGeometryProvider {
       mediaGeneration: input.mediaGeneration,
       geometryGeneration: input.geometryGeneration,
       timeMs: input.timeMs,
+      player: input.player ? { ...input.player } : null,
       content,
       osd: { width: osd.width, height: osd.height },
       desktopScale: Number(windowGeometry.desktopScale || 1),
@@ -272,33 +297,27 @@ class SubtitleGeometryProvider {
     const byPosition = new Map();
     for (const unit of response.units) {
       const position = Number(unit?.position);
+      const rects = parseNativeRects(
+        unit?.rects,
+        snapshotInput.osd.width,
+        snapshotInput.osd.height,
+      );
+      const envelopeRects =
+        unit?.envelopeRects === undefined
+          ? null
+          : parseNativeRects(
+              unit.envelopeRects,
+              snapshotInput.osd.width,
+              snapshotInput.osd.height,
+            );
       if (
         !Number.isInteger(position) ||
         byPosition.has(position) ||
-        !Array.isArray(unit?.rects) ||
-        unit.rects.length === 0
+        !rects ||
+        (unit?.envelopeRects !== undefined && !envelopeRects)
       )
         return null;
-      const rects = unit.rects.map((value) => ({
-        x: Number(value?.x),
-        y: Number(value?.y),
-        width: Number(value?.w ?? value?.width),
-        height: Number(value?.h ?? value?.height),
-      }));
-      if (
-        rects.some(
-          (value) =>
-            ![value.x, value.y, value.width, value.height].every(Number.isFinite) ||
-            value.x < 0 ||
-            value.y < 0 ||
-            value.width <= 0 ||
-            value.height <= 0 ||
-            value.x + value.width > snapshotInput.osd.width ||
-            value.y + value.height > snapshotInput.osd.height,
-        )
-      )
-        return null;
-      byPosition.set(position, rects);
+      byPosition.set(position, { rects, envelopeRects });
     }
     if (
       response.units.some(
@@ -315,10 +334,13 @@ class SubtitleGeometryProvider {
       events: track.events.map((event) => ({
         ...event,
         units: event.units.map((unit) => {
-          const rects = byPosition.get(unit.position);
+          const geometry = byPosition.get(unit.position);
           return {
             ...unit,
-            rects: rects || unit.rects,
+            rects: geometry?.rects || unit.rects,
+            ...(geometry?.envelopeRects
+              ? { envelopeRects: geometry.envelopeRects }
+              : {}),
             lookupable: unit.lookupable !== false,
           };
         }),

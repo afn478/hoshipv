@@ -8,6 +8,7 @@ namespace {
 
 void usage() {
   std::cerr << "usage: iinatan-desktop-test --capture PATH\n"
+            << "       iinatan-desktop-test --capture-at PATH X Y\n"
             << "       iinatan-desktop-test --request-post-event\n"
             << "       iinatan-desktop-test --activate PID\n"
             << "       iinatan-desktop-test --activate-shortcut PID MODIFIER KEY\n"
@@ -39,6 +40,16 @@ int main(int argc, char** argv) {
   const std::string command(argv[1]);
   if (command == "--capture" && argc == 3) {
     std::cout << iinatan::native::capture_desktop(argv[2]) << '\n';
+    return 0;
+  }
+  if (command == "--capture-at" && argc == 5) {
+    double x = 0;
+    double y = 0;
+    if (!number(argv[3], x) || !number(argv[4], y)) {
+      usage();
+      return 2;
+    }
+    std::cout << iinatan::native::capture_desktop_at(argv[2], x, y) << '\n';
     return 0;
   }
   if (command == "--request-post-event" && argc == 2) {

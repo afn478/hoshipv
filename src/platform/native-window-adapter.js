@@ -56,14 +56,18 @@ class NativeWindowAdapter {
       options.probeExecutable ||
       candidates.find((value) => fs.existsSync(value)) ||
       candidates[0];
+    this.timeoutMs = Math.max(1, Number(options.timeoutMs) || 1200);
+    this.activateTimeoutMs = Math.max(
+      this.timeoutMs,
+      Number(options.activateTimeoutMs) || 5000,
+    );
     this.probe =
       options.probe ||
-      ((descriptor) =>
-        runProbe(this.probeExecutable, descriptor, options.timeoutMs || 1200));
+      ((descriptor) => runProbe(this.probeExecutable, descriptor, this.timeoutMs));
     this.activate =
       options.activate ||
       ((descriptor) =>
-        runProbe(this.probeExecutable, descriptor, options.timeoutMs || 1200, true));
+        runProbe(this.probeExecutable, descriptor, this.activateTimeoutMs, true));
     this.focusAttempts = Math.max(1, Number(options.focusAttempts) || 5);
     this.focusRetryDelayMs = Math.max(0, Number(options.focusRetryDelayMs) || 100);
     this.last = null;
@@ -167,6 +171,12 @@ class NativeWindowAdapter {
                 value.fullscreenEvidence || "appkit-window-style-mask",
               ),
             }
+          : {}),
+        ...(typeof value.displayAsleep === "boolean"
+          ? { displayAsleep: value.displayAsleep }
+          : {}),
+        ...(typeof value.displayVisible === "boolean"
+          ? { displayVisible: value.displayVisible }
           : {}),
       };
     } catch (_) {
@@ -282,11 +292,27 @@ class NativeWindowAdapter {
 
   async focus(descriptor) {
     if (!descriptor) return { ok: false, reason: "missing-descriptor" };
+    let activationDescriptor = descriptor;
+    if (this.platform === "darwin") {
+      // A player can recreate its native window without changing its PID.
+      // Refresh the sidecar identity even when the session descriptor still
+      // carries the previous CoreGraphics window number; otherwise focus
+      // retries keep targeting a window that no longer exists.
+      const sidecar = await this.#readInProcessGeometry({
+        ...descriptor,
+        windowId: undefined,
+      });
+      if (sidecar?.windowId !== undefined && sidecar?.windowId !== null)
+        activationDescriptor = {
+          ...descriptor,
+          windowId: String(sidecar.windowId),
+        };
+    }
     let lastResult = null;
     let lastError = null;
     for (let attempt = 0; attempt < this.focusAttempts; attempt++) {
       try {
-        lastResult = await this.activate(descriptor);
+        lastResult = await this.activate(activationDescriptor);
         const hasForegroundSignal =
           typeof lastResult?.isForeground === "boolean" ||
           typeof lastResult?.foregroundVerified === "boolean";

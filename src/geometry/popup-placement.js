@@ -59,6 +59,27 @@ function candidateRects(anchor, popupSize, gap) {
   ];
 }
 
+function fitVerticalCandidate(candidate, anchor, bounds, gap) {
+  const minimumUsefulHeight = 96;
+  let availableHeight = null;
+  if (candidate.side === "above") availableHeight = anchor.y - gap - bounds.y;
+  else if (candidate.side === "below")
+    availableHeight = bottom(bounds) - bottom(anchor) - gap;
+  if (
+    availableHeight === null ||
+    availableHeight < minimumUsefulHeight ||
+    candidate.height <= availableHeight
+  )
+    return candidate;
+  const height = availableHeight;
+  return {
+    ...candidate,
+    y: candidate.side === "above" ? anchor.y - gap - height : candidate.y,
+    height,
+    wasResized: true,
+  };
+}
+
 function scoreCandidate(
   candidate,
   bounds,
@@ -66,6 +87,8 @@ function scoreCandidate(
   cursorCorridor,
   previous,
   preferredSide,
+  anchor,
+  popupSize,
 ) {
   const overflow =
     Math.max(0, bounds.x - candidate.x) +
@@ -81,10 +104,17 @@ function scoreCandidate(
     ? Math.hypot(candidate.x - previous.x, candidate.y - previous.y)
     : 0;
   const sideCost = preferredSide && candidate.side !== preferredSide ? 24 : 0;
+  const anchorCost = intersectionArea(candidate, anchor);
+  const resizeCost =
+    (Math.max(0, popupSize.width - candidate.width) +
+      Math.max(0, popupSize.height - candidate.height)) *
+    1000;
   return (
+    anchorCost * 1000000 +
     overflow * 100000 +
     obstacleCost * 100 +
     corridorCost * 3 +
+    resizeCost +
     continuityCost +
     sideCost
   );
@@ -112,10 +142,12 @@ function placePopup(input) {
       )
     : null;
   const candidates = candidateRects(anchor, popupSize, gap).map((candidate) => {
-    const clamped = clampRect(candidate, bounds);
+    const fitted = fitVerticalCandidate(candidate, anchor, bounds, gap);
+    const clamped = clampRect(fitted, bounds);
     return {
       ...clamped,
       side: candidate.side,
+      wasResized: fitted.wasResized === true,
       wasClamped: !containsRect(bounds, candidate),
     };
   });
@@ -128,6 +160,8 @@ function placePopup(input) {
       cursorCorridor,
       input.previous,
       input.preferredSide,
+      anchor,
+      popupSize,
     ),
   }));
   scored.sort(
@@ -142,7 +176,13 @@ function placePopup(input) {
     const previousCandidate = scored.find(
       (item) => item.candidate.side === input.previousSide,
     );
-    if (previousCandidate && previousCandidate.score <= winner.score + hysteresis)
+    const previousCoversAnchor =
+      previousCandidate && intersectionArea(previousCandidate.candidate, anchor) > 0;
+    if (
+      previousCandidate &&
+      !previousCoversAnchor &&
+      previousCandidate.score <= winner.score + hysteresis
+    )
       winner = previousCandidate;
   }
   return Object.freeze({

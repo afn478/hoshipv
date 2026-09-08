@@ -32,6 +32,9 @@ function normalizeUnit(unit, trackId, eventId, index) {
     .filter(Boolean)
     .map((item) => rect(item));
   if (!rects.length) throw new RangeError(`geometry unit ${id} has no rectangles`);
+  const envelopeRects = (Array.isArray(unit.envelopeRects) ? unit.envelopeRects : [])
+    .filter(Boolean)
+    .map((item) => rect(item));
   return {
     id,
     trackId,
@@ -41,6 +44,7 @@ function normalizeUnit(unit, trackId, eventId, index) {
     utf16Range: normalizeRange(unit.utf16Range || [0, 1], `${id}.utf16Range`),
     utf8Range: normalizeRange(unit.utf8Range || [0, 1], `${id}.utf8Range`),
     rects,
+    ...(envelopeRects.length ? { envelopeRects } : {}),
     lookupable: unit.lookupable !== false && !/^\s*$/.test(String(unit.text || "")),
     clipped: !!unit.clipped,
     visualOrder: Number.isInteger(unit.visualOrder) ? unit.visualOrder : index,
@@ -169,14 +173,25 @@ function hitTest(snapshot, desktopPoint) {
 }
 
 function highlightForHit(snapshot, hit) {
-  if (!hit || !hit.unit) return [];
+  return highlightForUnits(snapshot, hit, hit?.unit ? [hit.unit] : []);
+}
+
+function highlightForUnits(snapshot, hit, units) {
+  if (!hit || !Array.isArray(units) || !units.length) return [];
   const mapper = new CoordinateMapper(snapshot);
-  return hit.unit.rects.map((value) => mapper.osdRectToDesktop(value));
+  return units.flatMap(
+    (unit) =>
+      (Array.isArray(unit?.envelopeRects) && unit.envelopeRects.length
+        ? unit.envelopeRects
+        : unit?.rects
+      )?.map((value) => mapper.osdRectToDesktop(value)) || [],
+  );
 }
 
 module.exports = {
   createGeometrySnapshot,
   highlightForHit,
+  highlightForUnits,
   hitTest,
   isSnapshotCurrent,
   snapshotToken,

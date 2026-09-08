@@ -27,11 +27,16 @@ struct ContentGeometry {
   double height = 0;
   bool foreground = false;
   bool fullscreen = false;
+  bool display_asleep = false;
+  bool display_visible = false;
 };
 
 std::string session_directory() {
   const char* value = std::getenv("IINATAN_SESSION_DIR");
-  return value ? std::string(value) : std::string();
+  if (value && value[0] != '\0') return std::string(value);
+  const char* home = std::getenv("HOME");
+  if (!home || home[0] == '\0') return {};
+  return std::string(home) + "/Library/Application Support/iinatan for mpv/sessions";
 }
 
 std::string geometry_path(const std::string& directory, pid_t pid) {
@@ -77,6 +82,8 @@ bool same_geometry(const ContentGeometry& left, const ContentGeometry& right) {
   constexpr double kCoordinateTolerance = 0.01;
   return left.valid == right.valid && left.window_id == right.window_id &&
          left.foreground == right.foreground && left.fullscreen == right.fullscreen &&
+         left.display_asleep == right.display_asleep &&
+         left.display_visible == right.display_visible &&
          std::abs(left.x - right.x) < kCoordinateTolerance &&
          std::abs(left.y - right.y) < kCoordinateTolerance &&
          std::abs(left.width - right.width) < kCoordinateTolerance &&
@@ -128,6 +135,9 @@ bool appkit_geometry(ContentGeometry& result) {
     captured.height = NSHeight(screen_rect);
     captured.foreground = NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier == getpid();
     captured.fullscreen = (window.styleMask & NSWindowStyleMaskFullScreen) != 0;
+    captured.display_asleep = CGDisplayIsAsleep(display) != 0;
+    captured.display_visible = CGDisplayIsOnline(display) != 0 &&
+                               CGDisplayIsActive(display) != 0;
   });
   if (!finite_geometry(captured)) return false;
   result = captured;
@@ -144,7 +154,10 @@ std::string geometry_json(const ContentGeometry& geometry, pid_t pid) {
          << (geometry.foreground ? "true" : "false")
          << R"(,"fullscreenObserved":)"
          << (geometry.fullscreen ? "true" : "false")
-         << R"(,"fullscreenEvidence":"appkit-window-style-mask"})" << '\n';
+         << R"(,"fullscreenEvidence":"appkit-window-style-mask","displayAsleep":)"
+         << (geometry.display_asleep ? "true" : "false")
+         << R"(,"displayVisible":)"
+         << (geometry.display_visible ? "true" : "false") << "}" << '\n';
   return stream.str();
 }
 

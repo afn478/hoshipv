@@ -76,7 +76,12 @@ class MpvJsonIpc extends EventEmitter {
   }
 
   async command(...args) {
-    return this.request("command", args);
+    // JSON IPC commands are already expressed as the top-level command
+    // array. Wrapping `args` in a second `command` entry produces
+    // `["command", ["seek", ...]]`, which mpv rejects as an invalid
+    // parameter. Property requests use `request()` directly; input commands
+    // must preserve their flat shape here.
+    return this.request(...args);
   }
 
   async getProperty(name) {

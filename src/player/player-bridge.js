@@ -7,6 +7,9 @@ const { normalizeDescriptor } = require("./session-descriptor");
 
 const OBSERVED_PROPERTIES = Object.freeze([
   "time-pos",
+  "mpv-version",
+  "libass-version",
+  "ffmpeg-version",
   "pause",
   "path",
   "media-title",
@@ -57,13 +60,48 @@ const OBSERVED_PROPERTIES = Object.freeze([
   "sub-align-y",
   "sub-justify",
   "sub-use-margins",
+  "sub-ass-force-margins",
+  "sub-hinting",
+  "sub-shaper",
   "sub-scale-by-window",
   "sub-scale-with-window",
+  "sub-ass-scale-with-window",
+  "embeddedfonts",
   "sub-pos",
   "secondary-sub-pos",
   "sub-ass-override",
   "secondary-sub-ass-override",
+  "sub-ass",
   "sub-ass-justify",
+  "sub-ass-style-overrides",
+  "sub-ass-styles",
+  "sub-fonts-dir",
+  "sub-ass-use-video-data",
+  "sub-ass-video-aspect-override",
+  "sub-ass-vsfilter-color-compat",
+  "sub-vsfilter-bidi-compat",
+  "sub-scale-signs",
+  "sub-blur",
+  "sub-gauss",
+  "sub-gray",
+  "sub-glyph-limit",
+  "sub-hdr-peak",
+  "sub-ass-prune-delay",
+  "sub-fix-timing",
+  "sub-fix-timing-threshold",
+  "sub-fix-timing-keep",
+  "sub-fps",
+  "sub-stretch-durations",
+  "sub-clear-on-seek",
+  "sub-past-video-end",
+  "sub-forced-events-only",
+  "sub-filter-regex-enable",
+  "sub-filter-regex-plain",
+  "sub-filter-regex",
+  "sub-filter-jsre",
+  "sub-filter-sdh",
+  "sub-filter-sdh-enclosures",
+  "sub-filter-sdh-harder",
   "fullscreen",
   "window-minimized",
   "vo-configured",
@@ -73,6 +111,8 @@ const ALLOWED_COMMANDS = Object.freeze({
   "toggle-pause": ["cycle", "pause"],
   "seek-backward": ["seek", -5, "relative", "exact"],
   "seek-forward": ["seek", 5, "relative", "exact"],
+  "seek-backward-long": ["seek", -60, "relative", "exact"],
+  "seek-forward-long": ["seek", 60, "relative", "exact"],
   "subtitle-previous": ["sub-seek", -1],
   "subtitle-next": ["sub-seek", 1],
   "frame-step-backward": ["frame-back-step"],
@@ -132,13 +172,49 @@ const GEOMETRY_PROPERTIES = new Set([
   "sub-align-y",
   "sub-justify",
   "sub-use-margins",
+  "sub-ass-force-margins",
+  "sub-hinting",
+  "sub-shaper",
   "sub-scale-by-window",
   "sub-scale-with-window",
+  "sub-ass-scale-with-window",
+  "embeddedfonts",
   "sub-pos",
   "secondary-sub-pos",
   "sub-ass-override",
   "secondary-sub-ass-override",
+  "sub-ass",
   "sub-ass-justify",
+  "sub-ass-style-overrides",
+  "sub-ass-styles",
+  "sub-fonts-dir",
+  "sub-ass-use-video-data",
+  "sub-ass-video-aspect-override",
+  "sub-ass-vsfilter-color-compat",
+  "sub-vsfilter-bidi-compat",
+  "sub-scale-signs",
+  "sub-blur",
+  "sub-gauss",
+  "sub-gray",
+  "sub-glyph-limit",
+  "sub-hdr-peak",
+  "sub-ass-prune-delay",
+  "sub-fix-timing",
+  "sub-fix-timing-threshold",
+  "sub-fix-timing-keep",
+  "sub-fps",
+  "sub-stretch-durations",
+  "sub-clear-on-seek",
+  "sub-past-video-end",
+  "sub-forced-events-only",
+  "sub-filter-regex-enable",
+  "sub-filter-regex-plain",
+  "sub-filter-regex",
+  "sub-filter-jsre",
+  "sub-filter-sdh",
+  "sub-filter-sdh-enclosures",
+  "sub-filter-sdh-harder",
+  "window-minimized",
 ]);
 
 function numeric(value, fallback = null) {
@@ -209,6 +285,37 @@ function booleanProperty(properties, name, fallback = false) {
   if (value === undefined || value === null) return fallback;
   if (typeof value === "string") return /^(yes|true|1|on)$/i.test(value);
   return !!value;
+}
+
+function listProperty(properties, name, fallback = []) {
+  const value = properties.get(name);
+  if (value === undefined || value === null) return [...fallback];
+  if (Array.isArray(value)) return value.map((item) => String(item));
+  const text = String(value).trim();
+  return text ? text.split(",").map((item) => item.trim()) : [];
+}
+
+function versionString(value) {
+  const text = String(value ?? "").trim();
+  if (!text) return null;
+  const match = text.match(/\d+(?:\.\d+){1,3}/u);
+  return match ? match[0] : text.slice(0, 80);
+}
+
+function libassVersionString(value) {
+  if (typeof value === "number" && Number.isInteger(value) && value > 0) {
+    // libass encodes its release as hexadecimal decimal digits. For example,
+    // 0x01705000 is libass 0.17.5. Keep the parser tied to the public
+    // LIBASS_VERSION representation rather than treating it as a binary
+    // major/minor/micro integer.
+    const hex = (value >>> 0).toString(16).padStart(8, "0");
+    const major = Number.parseInt(hex.slice(0, 1), 10);
+    const minor = Number.parseInt(hex.slice(1, 3), 10);
+    const micro = Number.parseInt(hex.slice(3, 5), 10);
+    if ([major, minor, micro].every(Number.isFinite))
+      return `${major}.${minor}.${micro}`;
+  }
+  return versionString(value);
 }
 
 class PlayerBridge extends EventEmitter {
@@ -294,6 +401,18 @@ class PlayerBridge extends EventEmitter {
     return this.properties.has(name) ? this.properties.get(name) : fallback;
   }
 
+  playerCapabilities() {
+    const mpvVersion = versionString(this.property("mpv-version"));
+    const libassVersion = libassVersionString(this.property("libass-version"));
+    const ffmpegVersion = versionString(this.property("ffmpeg-version"));
+    return Object.freeze({
+      mpvVersion,
+      libassVersion,
+      ffmpegVersion,
+      versionsObserved: !!(mpvVersion || libassVersion || ffmpegVersion),
+    });
+  }
+
   geometryInput() {
     const dimensions = parseDimensions(
       this.property("osd-dimensions"),
@@ -324,8 +443,8 @@ class PlayerBridge extends EventEmitter {
       bold: booleanProperty(this.properties, "sub-bold"),
       italic: booleanProperty(this.properties, "sub-italic"),
       spacing: numberProperty(this.properties, "sub-spacing", 0),
-      forceMargins: false,
-      embeddedFonts: true,
+      forceMargins: booleanProperty(this.properties, "sub-ass-force-margins"),
+      embeddedFonts: booleanProperty(this.properties, "embeddedfonts", true),
       useStorageSize: true,
       overrideMode: String(this.property("sub-ass-override", "yes") || "yes"),
       defaultFamily: String(this.property("sub-font", "sans-serif") || "sans-serif"),
@@ -342,9 +461,63 @@ class PlayerBridge extends EventEmitter {
       ),
       scaleWithWindow: booleanProperty(this.properties, "sub-scale-with-window", true),
       scaleByWindow: booleanProperty(this.properties, "sub-scale-by-window", true),
+      assScaleWithWindow: booleanProperty(
+        this.properties,
+        "sub-ass-scale-with-window",
+        false,
+      ),
+      assEnabled: booleanProperty(this.properties, "sub-ass", true),
       assJustify: booleanProperty(this.properties, "sub-ass-justify"),
-      hinting: "none",
-      shaper: "complex",
+      justify: String(this.property("sub-justify", "auto") || "auto"),
+      styleOverrides: this.property("sub-ass-style-overrides", []),
+      stylesPath: String(this.property("sub-ass-styles", "") || ""),
+      fontsDirectory: String(this.property("sub-fonts-dir", "") || ""),
+      useVideoData: String(this.property("sub-ass-use-video-data", "all") || "all"),
+      videoAspectOverride: numberProperty(
+        this.properties,
+        "sub-ass-video-aspect-override",
+        0,
+      ),
+      vsfilterColorCompat: String(
+        this.property("sub-ass-vsfilter-color-compat", "basic") || "basic",
+      ),
+      vsfilterBidiCompat: booleanProperty(this.properties, "sub-vsfilter-bidi-compat"),
+      scaleSigns: booleanProperty(this.properties, "sub-scale-signs"),
+      blur: numberProperty(this.properties, "sub-blur", 0),
+      gauss: numberProperty(this.properties, "sub-gauss", 0),
+      gray: booleanProperty(this.properties, "sub-gray"),
+      glyphLimit: numberProperty(this.properties, "sub-glyph-limit", 0),
+      hdrPeak: String(this.property("sub-hdr-peak", "sdr") || "sdr"),
+      pruneDelay: numberProperty(this.properties, "sub-ass-prune-delay", -1),
+      fixTiming: booleanProperty(this.properties, "sub-fix-timing"),
+      fixTimingThreshold: numberProperty(
+        this.properties,
+        "sub-fix-timing-threshold",
+        210,
+      ),
+      fixTimingKeep: numberProperty(this.properties, "sub-fix-timing-keep", 400),
+      fps: numberProperty(this.properties, "sub-fps", 0),
+      stretchDurations: booleanProperty(this.properties, "sub-stretch-durations"),
+      clearOnSeek: booleanProperty(this.properties, "sub-clear-on-seek"),
+      pastVideoEnd: booleanProperty(this.properties, "sub-past-video-end"),
+      forcedEventsOnly: booleanProperty(this.properties, "sub-forced-events-only"),
+      filterRegexEnable: booleanProperty(
+        this.properties,
+        "sub-filter-regex-enable",
+        true,
+      ),
+      filterRegexPlain: booleanProperty(this.properties, "sub-filter-regex-plain"),
+      filterRegex: listProperty(this.properties, "sub-filter-regex"),
+      filterJsre: listProperty(this.properties, "sub-filter-jsre"),
+      filterSdh: booleanProperty(this.properties, "sub-filter-sdh"),
+      filterSdhEnclosures: listProperty(this.properties, "sub-filter-sdh-enclosures", [
+        "()",
+        "[]",
+        "（）",
+      ]),
+      filterSdhHarder: booleanProperty(this.properties, "sub-filter-sdh-harder"),
+      hinting: String(this.property("sub-hinting", "none") || "none"),
+      shaper: String(this.property("sub-shaper", "complex") || "complex"),
     };
     const makeSubtitle = (
       role,
@@ -415,6 +588,7 @@ class PlayerBridge extends EventEmitter {
       mediaGeneration: this.mediaGeneration,
       geometryGeneration: this.geometryGeneration,
       timeMs: numeric(this.property("time-pos"), 0) * 1000,
+      player: this.playerCapabilities(),
       osd: { width: dimensions.width, height: dimensions.height },
       osdProperties: dimensions,
       primary: {
@@ -482,5 +656,7 @@ module.exports = {
   ALLOWED_COMMANDS,
   OBSERVED_PROPERTIES,
   PlayerBridge,
+  libassVersionString,
   parseDimensions,
+  versionString,
 };

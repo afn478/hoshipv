@@ -5,6 +5,7 @@
 namespace iinatan::native {
 
 std::string capture_desktop(const std::string& output_path);
+std::string capture_desktop_at(const std::string& output_path, double x, double y);
 std::string request_post_event_access();
 std::string activate_process(int pid);
 std::string move_pointer(double x, double y);

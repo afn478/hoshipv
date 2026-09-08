@@ -75,6 +75,158 @@ CGEventFlags shortcut_flags(const std::string& modifier) {
   return 0;
 }
 
+struct TextKey {
+  CGKeyCode code = UINT16_MAX;
+  CGEventFlags flags = 0;
+};
+
+bool ascii_text_key(UniChar character, TextKey& key) {
+  static constexpr CGKeyCode letters[] = {
+      0, 11, 8, 2, 14, 3, 5, 4, 34, 38, 40, 37, 46,
+      45, 31, 35, 12, 15, 1, 17, 32, 9, 13, 7, 16, 6,
+  };
+  static constexpr CGKeyCode digits[] = {18, 19, 20, 21, 23,
+                                         22, 26, 28, 25, 29};
+  key = {};
+  if (character >= 'a' && character <= 'z') {
+    key.code = letters[character - 'a'];
+    return true;
+  }
+  if (character >= 'A' && character <= 'Z') {
+    key.code = letters[character - 'A'];
+    key.flags = kCGEventFlagMaskShift;
+    return true;
+  }
+  if (character >= '0' && character <= '9') {
+    key.code = digits[character - '0'];
+    return true;
+  }
+  switch (character) {
+    case ' ':
+      key.code = 49;
+      return true;
+    case '-':
+      key.code = 27;
+      return true;
+    case '_':
+      key.code = 27;
+      key.flags = kCGEventFlagMaskShift;
+      return true;
+    case '=':
+      key.code = 24;
+      return true;
+    case '+':
+      key.code = 24;
+      key.flags = kCGEventFlagMaskShift;
+      return true;
+    case '[':
+      key.code = 33;
+      return true;
+    case '{':
+      key.code = 33;
+      key.flags = kCGEventFlagMaskShift;
+      return true;
+    case ']':
+      key.code = 30;
+      return true;
+    case '}':
+      key.code = 30;
+      key.flags = kCGEventFlagMaskShift;
+      return true;
+    case '\\':
+      key.code = 42;
+      return true;
+    case '|':
+      key.code = 42;
+      key.flags = kCGEventFlagMaskShift;
+      return true;
+    case ';':
+      key.code = 41;
+      return true;
+    case ':':
+      key.code = 41;
+      key.flags = kCGEventFlagMaskShift;
+      return true;
+    case '\'':
+      key.code = 39;
+      return true;
+    case '"':
+      key.code = 39;
+      key.flags = kCGEventFlagMaskShift;
+      return true;
+    case ',':
+      key.code = 43;
+      return true;
+    case '<':
+      key.code = 43;
+      key.flags = kCGEventFlagMaskShift;
+      return true;
+    case '.':
+      key.code = 47;
+      return true;
+    case '>':
+      key.code = 47;
+      key.flags = kCGEventFlagMaskShift;
+      return true;
+    case '/':
+      key.code = 44;
+      return true;
+    case '?':
+      key.code = 44;
+      key.flags = kCGEventFlagMaskShift;
+      return true;
+    case '`':
+      key.code = 50;
+      return true;
+    case '~':
+      key.code = 50;
+      key.flags = kCGEventFlagMaskShift;
+      return true;
+    case '!':
+      key.code = 18;
+      key.flags = kCGEventFlagMaskShift;
+      return true;
+    case '@':
+      key.code = 19;
+      key.flags = kCGEventFlagMaskShift;
+      return true;
+    case '#':
+      key.code = 20;
+      key.flags = kCGEventFlagMaskShift;
+      return true;
+    case '$':
+      key.code = 21;
+      key.flags = kCGEventFlagMaskShift;
+      return true;
+    case '%':
+      key.code = 23;
+      key.flags = kCGEventFlagMaskShift;
+      return true;
+    case '^':
+      key.code = 22;
+      key.flags = kCGEventFlagMaskShift;
+      return true;
+    case '&':
+      key.code = 26;
+      key.flags = kCGEventFlagMaskShift;
+      return true;
+    case '*':
+      key.code = 28;
+      key.flags = kCGEventFlagMaskShift;
+      return true;
+    case '(':
+      key.code = 25;
+      key.flags = kCGEventFlagMaskShift;
+      return true;
+    case ')':
+      key.code = 29;
+      key.flags = kCGEventFlagMaskShift;
+      return true;
+    default:
+      return false;
+  }
+}
+
 }  // namespace
 
 std::string request_post_event_access() {
@@ -127,9 +279,22 @@ std::string activate_process(int pid) {
 }
 
 std::string capture_desktop(const std::string& output_path) {
+  return capture_desktop_at(output_path, NAN, NAN);
+}
+
+std::string capture_desktop_at(const std::string& output_path, double x, double y) {
   if (output_path.empty())
     return R"({"ok":false,"reason":"capture-path-empty","backend":"macos"})";
-  const CGDirectDisplayID display = CGMainDisplayID();
+  CGDirectDisplayID display = CGMainDisplayID();
+  if (finite_point(x, y)) {
+    CGDirectDisplayID matching_displays[1] = {};
+    uint32_t matching_count = 0;
+    if (CGGetDisplaysWithPoint(
+            CGPointMake(x, y), 1, matching_displays, &matching_count) == kCGErrorSuccess &&
+        matching_count > 0) {
+      display = matching_displays[0];
+    }
+  }
   const CGRect bounds = CGDisplayBounds(display);
   using CaptureFunction = CGImageRef (*)(
       CGRect, CGWindowListOption, CGWindowID, CGWindowImageOption);
@@ -156,14 +321,22 @@ std::string capture_desktop(const std::string& output_path) {
   if (url) CFRelease(url);
   const size_t width = CGImageGetWidth(image);
   const size_t height = CGImageGetHeight(image);
+  const double scale_x = bounds.size.width > 0
+                             ? static_cast<double>(width) / bounds.size.width
+                             : 1.0;
+  const double scale_y = bounds.size.height > 0
+                             ? static_cast<double>(height) / bounds.size.height
+                             : 1.0;
   CGImageRelease(image);
   if (!finalized)
     return R"({"ok":false,"reason":"capture-write-failed","backend":"macos"})";
 
   std::ostringstream stream;
   stream << R"({"ok":true,"backend":"macos","path":")"
-         << json_escape(output_path) << R"(","width":)" << width << R"(,"height":)"
-         << height << "}"
+         << json_escape(output_path) << R"(","display":)" << display
+         << R"(,"origin":{"x":)" << bounds.origin.x * scale_x
+         << R"(,"y":)" << bounds.origin.y * scale_y << R"(},"scale":)" << scale_x
+         << R"(,"width":)" << width << R"(,"height":)" << height << "}"
          << '\n';
   return stream.str();
 }
@@ -350,20 +523,29 @@ std::string type_text(const std::string& text) {
           CFStringIsSurrogateHighCharacter(characters[index]) &&
           CFStringIsSurrogateLowCharacter(characters[index + 1]))
         count = 2;
-      CGEventRef down = CGEventCreateKeyboardEvent(nullptr, 0, true);
-      CGEventRef up = CGEventCreateKeyboardEvent(nullptr, 0, false);
+      TextKey text_key;
+      const bool has_ascii_key =
+          count == 1 && ascii_text_key(characters[index], text_key);
+      const CGKeyCode code = has_ascii_key ? text_key.code : 0;
+      CGEventRef down = CGEventCreateKeyboardEvent(nullptr, code, true);
+      CGEventRef up = CGEventCreateKeyboardEvent(nullptr, code, false);
       if (!down || !up) {
         if (down) CFRelease(down);
         if (up) CFRelease(up);
         return R"({"ok":false,"reason":"keyboard-event-create-failed","backend":"macos"})";
       }
-      CGEventKeyboardSetUnicodeString(down, count, characters.data() + index);
-      CGEventKeyboardSetUnicodeString(up, count, characters.data() + index);
+      if (has_ascii_key) {
+        CGEventSetFlags(down, text_key.flags);
+        CGEventSetFlags(up, text_key.flags);
+      } else {
+        CGEventKeyboardSetUnicodeString(down, count, characters.data() + index);
+      }
       CGEventPost(kCGHIDEventTap, down);
       CGEventPost(kCGHIDEventTap, up);
       CFRelease(down);
       CFRelease(up);
       index += count;
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     return input_status("type", accessibility_trusted());
   }

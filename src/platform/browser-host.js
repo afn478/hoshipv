@@ -5,11 +5,19 @@ const path = require("node:path");
 const { makeEnvelope, validateHostRequest } = require("../bridge/protocol");
 const { roundNativeBounds } = require("../geometry/coordinate-mapper");
 
+function normalizeControllerSource(source) {
+  const value = String(source || "");
+  if (value === "native-hid" || value === "native-hid+browser-gamepad") return value;
+  return "browser-gamepad";
+}
+
 class BrowserHost extends EventEmitter {
   constructor(options = {}) {
     super();
     if (!options.BrowserWindow) throw new TypeError("BrowserWindow is required");
     this.BrowserWindow = options.BrowserWindow;
+    this.platform = options.platform || process.platform;
+    this.globalShortcut = options.globalShortcut || null;
     this.ipcMain = options.ipcMain || null;
     this.preloadPath =
       options.preloadPath || path.join(process.cwd(), "app", "preload.js");
@@ -25,8 +33,8 @@ class BrowserHost extends EventEmitter {
     this.requestsBound = false;
     this.ipcListener = null;
     this.readySurfaces = new Set();
-    this.controllerSource =
-      options.controllerSource === "native-hid" ? "native-hid" : "browser-gamepad";
+    this.controllerSource = normalizeControllerSource(options.controllerSource);
+    this.popupEscapeRegistered = false;
     this.#bindIpc();
   }
 
@@ -49,7 +57,7 @@ class BrowserHost extends EventEmitter {
   }
 
   setControllerSource(source) {
-    this.controllerSource = source === "native-hid" ? "native-hid" : "browser-gamepad";
+    this.controllerSource = normalizeControllerSource(source);
     this.#sendCapabilities("highlight");
     this.#sendCapabilities("popup");
   }
@@ -79,7 +87,7 @@ class BrowserHost extends EventEmitter {
         this.#sendCapabilities(surface);
         if (surface === "popup" && this.popupVisible) {
           window.setIgnoreMouseEvents(false);
-          window.show();
+          window.showInactive();
           window.focus();
         }
       }
@@ -107,6 +115,10 @@ class BrowserHost extends EventEmitter {
       focusable: surface === "popup",
       fullscreenable: false,
       alwaysOnTop: false,
+      // Electron maps the macOS panel type to NSWindowStyleMaskNonactivatingPanel.
+      // This lets an interactive popup cover a native fullscreen player without
+      // activating the companion application when the panel is shown or clicked.
+      ...(this.platform === "darwin" ? { type: "panel" } : {}),
       webPreferences: {
         preload: this.preloadPath,
         nodeIntegration: false,
@@ -147,6 +159,7 @@ class BrowserHost extends EventEmitter {
         this.highlightWindow = null;
       if (surface === "popup") {
         const wasVisible = this.popupVisible;
+        this.#unregisterPopupEscape();
         if (this.popupWindow === window) this.popupWindow = null;
         this.popupVisible = false;
         if (wasVisible) this.emit("popup-closed");
@@ -158,6 +171,37 @@ class BrowserHost extends EventEmitter {
     window.webContents.on("will-navigate", (event) => event.preventDefault());
     window.webContents.on("will-redirect", (event) => event.preventDefault());
     return window;
+  }
+
+  #registerPopupEscape() {
+    if (
+      this.platform !== "darwin" ||
+      this.popupEscapeRegistered ||
+      typeof this.globalShortcut?.register !== "function"
+    )
+      return;
+    const registered = this.globalShortcut.register("Escape", () => {
+      if (!this.popupVisible) return;
+      this.emit("request", {
+        surface: "popup",
+        window: this.popupWindow,
+        message: makeEnvelope(
+          "popup-action",
+          { action: "escape" },
+          {
+            sessionId: this.sessionId || undefined,
+            geometryGeneration: this.geometryGeneration,
+          },
+        ),
+      });
+    });
+    if (registered === true) this.popupEscapeRegistered = true;
+  }
+
+  #unregisterPopupEscape() {
+    if (!this.popupEscapeRegistered) return;
+    this.globalShortcut?.unregister?.("Escape");
+    this.popupEscapeRegistered = false;
   }
 
   setSessionContext(sessionId, geometryGeneration) {
@@ -197,7 +241,8 @@ class BrowserHost extends EventEmitter {
       try {
         const popupOwnsInput = this.popupVisible && window === this.popupWindow;
         window.setAlwaysOnTop(
-          ownedForeground && (!this.popupVisible || popupOwnsInput),
+          ownedForeground &&
+            (window === this.highlightWindow || !this.popupVisible || popupOwnsInput),
           "floating",
         );
       } catch (error) {
@@ -257,7 +302,7 @@ class BrowserHost extends EventEmitter {
     this.popupVisible = true;
     if (this.highlightWindow && !this.highlightWindow.isDestroyed()) {
       this.highlightWindow.setIgnoreMouseEvents(true);
-      this.highlightWindow.hide();
+      this.highlightWindow.showInactive();
     }
     if (this.contentBounds) this.popupWindow.setBounds(this.contentBounds, false);
     // Keep the full transparent window hidden until the renderer has sent its
@@ -266,11 +311,12 @@ class BrowserHost extends EventEmitter {
     // handlers and capability contract were installed.
     if (this.readySurfaces.has("popup")) {
       this.popupWindow.setIgnoreMouseEvents(false);
-      this.popupWindow.show();
+      this.popupWindow.showInactive();
       this.popupWindow.focus();
     } else {
       this.popupWindow.hide();
     }
+    this.#registerPopupEscape();
     this.#updateStacking();
     this.#raisePopup();
     this.send("popup", "popup-state", { visible: true, ...payload });
@@ -279,6 +325,7 @@ class BrowserHost extends EventEmitter {
   hidePopup({ focusPlayer = true } = {}) {
     if (!this.popupWindow || this.popupWindow.isDestroyed()) return;
     this.popupVisible = false;
+    this.#unregisterPopupEscape();
     this.send("popup", "popup-state", { visible: false });
     this.popupWindow.hide();
     if (this.highlightWindow && !this.highlightWindow.isDestroyed()) {
@@ -327,6 +374,7 @@ class BrowserHost extends EventEmitter {
 
   close() {
     this.closeRequested = true;
+    this.#unregisterPopupEscape();
     if (this.ipcMain && this.ipcListener) {
       this.ipcMain.removeListener("host-request", this.ipcListener);
       this.ipcListener = null;

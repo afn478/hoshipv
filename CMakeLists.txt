@@ -155,7 +155,7 @@ if(IINATAN_BUILD_PORTABLE_HOSHI)
   endif()
   file(SHA256 "${IINATAN_HOSHI_ARCHIVE}" IINATAN_HOSHI_ARCHIVE_SHA256)
   if(NOT IINATAN_HOSHI_ARCHIVE_SHA256 STREQUAL
-     "05c0f105c3e7452f292ffcd1ff23c6f362eb01b856cec31790127fc5e8c4359a")
+    "77292ffd1aa3e2ecc0f99f7c1973040a8261ecf4111bda76a5f8238c139d7326")
     message(FATAL_ERROR "portable HoshiDicts source archive checksum is not the reviewed value")
   endif()
 

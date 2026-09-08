@@ -141,6 +141,10 @@ std::string capture_desktop(const std::string& output_path) {
   return stream.str();
 }
 
+std::string capture_desktop_at(const std::string& output_path, double, double) {
+  return capture_desktop(output_path);
+}
+
 std::string move_pointer(double x, double y) {
   if (!finite_point(x, y))
     return R"({"ok":false,"reason":"invalid-pointer-coordinate","backend":"x11"})";

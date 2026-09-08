@@ -5,6 +5,7 @@ const path = require("node:path");
 const { readFileBounded } = require("../services/bounded-file");
 
 const MAX_DESCRIPTOR_BYTES = 64 * 1024;
+const GEOMETRY_SIDECAR_PATTERN = /^(\d+)\.geometry\.json(?:\.next)?$/u;
 
 function validString(value, max = 512) {
   return typeof value === "string" && value.length > 0 && value.length <= max;
@@ -44,11 +45,26 @@ async function readDescriptor(filePath) {
   return normalizeDescriptor(value);
 }
 
+async function reapStaleGeometrySidecars(directory, names) {
+  await Promise.all(
+    names.map(async (name) => {
+      const match = GEOMETRY_SIDECAR_PATTERN.exec(name);
+      if (!match || isProcessAlive(Number(match[1]))) return;
+      try {
+        await fs.unlink(path.join(directory, name));
+      } catch (error) {
+        if (error.code !== "ENOENT") return;
+      }
+    }),
+  );
+}
+
 async function listDescriptors(directory) {
   const names = await fs.readdir(directory).catch((error) => {
     if (error.code === "ENOENT") return [];
     throw error;
   });
+  await reapStaleGeometrySidecars(directory, names);
   const descriptors = [];
   for (const name of names.filter((item) => item.endsWith(".json")).sort()) {
     try {
@@ -84,6 +100,7 @@ module.exports = {
   isProcessAlive,
   listDescriptors,
   normalizeDescriptor,
+  reapStaleGeometrySidecars,
   readDescriptor,
   sameSession,
 };
