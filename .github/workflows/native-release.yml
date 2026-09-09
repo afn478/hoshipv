@@ -261,7 +261,7 @@ jobs:
           - os: windows-2025
             platform: win32
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -270,7 +270,94 @@ jobs:
       - run: npm ci
       - name: Install X11 development headers
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install --yes libx11-dev libxtst-dev
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential cmake ninja-build p7zip-full \
+            libfontconfig1-dev libexpat1-dev libx11-dev libxtst-dev
+      - name: Install Windows portable geometry toolchain
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install mingw ninja 7zip -y --no-progress
+      - name: Build portable geometry dependencies (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          IINATAN_NATIVE_JOBS: "2"
+          IINATAN_CMAKE_GENERATOR: Ninja
+          IINATAN_FONTCONFIG_ROOT: /
+          IINATAN_EXPAT_ROOT: /
+        run: ./scripts/build-native-geometry.sh linux-x86_64
+      - name: Build portable geometry dependencies (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          IINATAN_NATIVE_JOBS: "2"
+          IINATAN_CMAKE_GENERATOR: Ninja
+        run: ./scripts/build-native-geometry.sh windows-x86_64
+      - name: Build Windows libass compatibility dependencies
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          IINATAN_NATIVE_BUILD_ROOT: build/native-geometry-windows-compat
+          IINATAN_NATIVE_JOBS: "2"
+          IINATAN_CMAKE_GENERATOR: Ninja
+          IINATAN_LIBASS_PROFILE: windows-mpv-0.41.0-libass-0.17.4-external-subrip
+        run: ./scripts/build-native-geometry.sh windows-x86_64
+      - name: Configure portable geometry helper (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          PKG_CONFIG_PATH: build/native-geometry-linux-x86_64/stage/lib/pkgconfig
+        run: |
+          cmake -S . -B build/native-geometry-linux-x86_64-cmake -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DIINATAN_BUILD_DESKTOP_TEST=OFF \
+            -DIINATAN_BUILD_PORTABLE_HOSHI=OFF \
+            -DIINATAN_BUILD_PORTABLE_GEOMETRY=ON \
+            -DIINATAN_NATIVE_GEOMETRY_STAGE=build/native-geometry-linux-x86_64/stage \
+            -DCMAKE_PREFIX_PATH=build/native-geometry-linux-x86_64/stage \
+            -DPKG_CONFIG_EXECUTABLE=build/native-geometry-linux-x86_64/tools/bin/pkgconf
+          cmake --build build/native-geometry-linux-x86_64-cmake --config Release --target iinatan-native-geometry
+      - name: Configure portable geometry helper (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          cmake -S . -B build/native-geometry-windows-x86_64-cmake -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DIINATAN_BUILD_DESKTOP_TEST=OFF \
+            -DIINATAN_BUILD_PORTABLE_HOSHI=OFF \
+            -DIINATAN_BUILD_PORTABLE_GEOMETRY=ON \
+            -DIINATAN_NATIVE_GEOMETRY_STAGE=build/native-geometry-windows-x86_64/stage \
+            -DCMAKE_PREFIX_PATH=build/native-geometry-windows-x86_64/stage
+          cmake --build build/native-geometry-windows-x86_64-cmake --config Release --target iinatan-native-geometry
+      - name: Configure Windows libass compatibility helper
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          cmake -S . -B build/native-geometry-windows-compat-cmake -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DIINATAN_BUILD_DESKTOP_TEST=OFF \
+            -DIINATAN_BUILD_PORTABLE_HOSHI=OFF \
+            -DIINATAN_BUILD_PORTABLE_GEOMETRY=ON \
+            -DIINATAN_ASS_GEOMETRY_PATCH=libass-0.17.4-iinatan-unit-ids-v2 \
+            -DIINATAN_NATIVE_GEOMETRY_STAGE=build/native-geometry-windows-compat/stage \
+            -DCMAKE_PREFIX_PATH=build/native-geometry-windows-compat/stage
+          cmake --build build/native-geometry-windows-compat-cmake --config Release --target iinatan-native-geometry
+      - name: Exercise portable geometry helper (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          IINATAN_NATIVE_GEOMETRY: build/native-geometry-linux-x86_64-cmake/Release/iinatan-native-geometry
+          IINATAN_NATIVE_GEOMETRY_REQUIRED: "1"
+        run: node scripts/e2e/native-geometry-smoke.js
+      - name: Exercise portable geometry helper (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          IINATAN_NATIVE_GEOMETRY: build/native-geometry-windows-x86_64-cmake/Release/iinatan-native-geometry.exe
+          IINATAN_NATIVE_GEOMETRY_REQUIRED: "1"
+        run: node scripts/e2e/native-geometry-smoke.js
       - name: Configure native helper (Unix)
         if: runner.os != 'Windows'
         run: cmake --preset release
@@ -280,6 +367,8 @@ jobs:
       - name: Build native helper
         run: cmake --build build/native --config Release
       - run: npm run package
+        env:
+          IINATAN_NATIVE_GEOMETRY_COMPAT: ${{ matrix.platform == 'win32' && 'build/native-geometry-windows-compat-cmake/Release/iinatan-native-geometry.exe' || '' }}
       - name: Validate directory package
         env:
           IINATAN_PACKAGE_PLATFORM: ${{ matrix.platform }}

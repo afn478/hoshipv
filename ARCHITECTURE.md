@@ -1,9 +1,9 @@
 # iinatan for stock mpv
 
 This repository is the successor implementation for ordinary desktop mpv. The
-reference IINA plugin remains at `/Users/rahulb/Documents/iinatan`; it is an
-input and behavior reference, not a runtime dependency and is not modified by
-this project.
+reference IINA plugin remains in a separate checkout; it is an input and
+behavior reference, not a runtime dependency and is not modified by this
+project.
 
 ## Architecture decision
 
@@ -43,12 +43,13 @@ host-neutral and are the future CEF reuse boundary.
   cross-process pointers or pixels.
 - `SubtitleGeometryProvider` — separate subtitle track/event/unit geometry.
   The current fallback is intentionally marked approximate and is disabled for
-  ordinary lookup. `NativeSubtitleGeometryService` uses the bundled macOS
-  helper by default in the packaged companion when the validated mpv/libass/
-  FFmpeg tuple and AppKit content sidecar are present; source-development
-  launches require `--enable-patched-native-geometry`. Unsupported tuples and
-  renderer modes still fail closed, and the independent stock-mpv
-  glyph-equivalence gate remains separate.
+  ordinary lookup. `NativeSubtitleGeometryService` uses the bundled platform
+  helper by default in packaged companions when the validated mpv/libass/
+  FFmpeg tuple is present; macOS also requires its identity-checked AppKit
+  content sidecar. Source-development launches require
+  `--enable-patched-native-geometry`. Unsupported tuples and renderer modes
+  still fail closed, and the independent stock-mpv glyph-equivalence gate
+  remains separate.
 - `CoordinateMapper` — the only transform implementation between OSD, desktop,
   physical, and browser CSS spaces.
 - `InteractionController` — focus, ownership, cancellation, capture, and
@@ -58,9 +59,9 @@ host-neutral and are the future CEF reuse boundary.
 - `HoshiWorker` / `DictionaryService` — HoshiDicts process boundary;
   dictionary rendering consumes normalized structured data rather than raw
   executable HTML. The validated macOS arm64 helper is bundled with its
-  corresponding-source archive; Windows/Linux packages build a portable
-  dictionary-only helper from the same archive, while platform geometry and
-  OCR capabilities remain separate gates.
+  corresponding-source archive; Windows/Linux packages build separate
+  portable dictionary and instrumented geometry helpers from the same archive,
+  while OCR and controller capabilities remain separate gates.
 - `DictionaryCatalog`, `AudioSourceService`, and `AnkiConnectClient` — managed
   dictionary/profile references and explicitly bounded external services.
 - `SettingsStore` — atomic, backed-up settings and migration boundary.
@@ -75,15 +76,16 @@ split by display backend; native Wayland is not silently described as X11.
 
 The repository contains the Phase A host/geometry/input vertical slice and
 tests, plus the completed signed macOS arm64 native-desktop slice. The native
-geometry client boundary has a validated protocol integration and a bundled
-macOS helper artifact; the stock-mpv content sidecar has passed its real-window
-identity smoke; and the portable Windows/Linux dictionary worker builds and
-passes its import/lookup smoke. The remaining geometry gate is universal
-stock-mpv glyph equivalence, not the absence of a macOS runtime path: the
-packaged macOS companion enables the bounded helper by default when its tuple
-and content-sidecar checks pass, while source-development launches opt in with
-`--enable-patched-native-geometry`. Platform-native Windows/Linux geometry and
-desktop evidence remain unverified. See `docs/native-geometry.md`,
+geometry client boundary has a validated protocol integration and bundled
+platform helper builds; the stock-mpv content sidecar has passed its real-window
+identity smoke; and the portable Windows/Linux dictionary and geometry workers
+pass their package and fixture checks. Windows also has local Win32
+native-desktop evidence for stock-mpv windowed/fullscreen composition, native
+selection and keyboard input, multi-session ownership, and resize/lifecycle
+recovery, while its exact subtitle geometry remains gated by the installed
+stock renderer tuple. The remaining geometry gate is universal stock-mpv glyph
+equivalence. Linux native desktop evidence remains unverified. See
+`docs/native-geometry.md`,
 `docs/platform-capability-matrix.md`, and `docs/feature-matrix.json`;
 “implemented” there never means native desktop verified unless the evidence
 column says so.

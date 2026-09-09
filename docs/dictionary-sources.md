@@ -42,3 +42,7 @@ scrolls inside the popup.
 
 Grammar and other dictionary content remains structured data rather than an
 HTML compatibility layer; unsupported tags are discarded at normalization.
+Dictionary links that do not resolve to an allowed external HTTPS destination
+are rendered as their visible text. They therefore use the same nested lookup
+path as surrounding popup text, while external HTTPS links remain ordinary
+external-link actions.

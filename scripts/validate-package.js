@@ -18,6 +18,15 @@ const HOSHIDICTS_REVISION = "a28d82eb0f169b8ceff79e8c99ffe0b96709ab27";
 const LIBASS_VERSION = "0.17.5";
 const FFMPEG_VERSION = "9.0.1";
 const LIBASS_PATCH = "libass-0.17.5-iinatan-unit-ids-v2";
+const GEOMETRY_ARCHITECTURE = "x86-64";
+
+function displayPath(filePath) {
+  return path.relative(root, filePath) || ".";
+}
+
+function diagnosticText(error) {
+  return String(error?.stack || error?.message || error).replaceAll(root, "<repo>");
+}
 
 function targetPlatform() {
   const value = String(process.env.IINATAN_PACKAGE_PLATFORM || process.platform);
@@ -77,6 +86,28 @@ function packageLayout(platform) {
             path.join(
               resources,
               "bin",
+              platform === "win32"
+                ? "iinatan-native-geometry.exe"
+                : "iinatan-native-geometry",
+            ),
+            "instrumented native geometry helper",
+          ],
+          ...(platform === "win32"
+            ? [
+                [
+                  path.join(
+                    resources,
+                    "bin",
+                    "iinatan-native-geometry-libass-0.17.4.exe",
+                  ),
+                  "Windows libass 0.17.4 compatibility geometry helper",
+                ],
+              ]
+            : []),
+          [
+            path.join(
+              resources,
+              "bin",
               platform === "win32" ? "iina-hoshi-dicts.exe" : "iina-hoshi-dicts",
             ),
             "portable HoshiDicts helper",
@@ -130,9 +161,11 @@ async function main() {
     if (
       label === "HoshiDicts helper" ||
       label === "portable HoshiDicts helper" ||
+      label === "instrumented native geometry helper" ||
       label === "bundled ffmpeg helper"
     )
-      assert.ok(stat.mode & 0o111, `${label} is not executable`);
+      if (platform !== "win32")
+        assert.ok(stat.mode & 0o111, `${label} is not executable`);
   }
   const sourceArchive = layout.externalResources.find(([, label]) =>
     label.toLowerCase().includes("source archive"),
@@ -179,6 +212,57 @@ async function main() {
     assert.equal(version.controller?.source, "native-hid");
     assert.ok(version.controller?.products?.includes("gamepad"));
   } else {
+    const geometryHelper = layout.externalResources.find(
+      ([, label]) => label === "instrumented native geometry helper",
+    )?.[0];
+    assert.ok(
+      geometryHelper,
+      `${platform} package is missing the instrumented native geometry helper`,
+    );
+    const geometryVersion = runVersion(
+      geometryHelper,
+      "packaged native geometry helper",
+    );
+    assert.equal(geometryVersion.worker, false);
+    assert.equal(geometryVersion.assGeometry?.available, true);
+    assert.equal(geometryVersion.assGeometry?.libass, LIBASS_VERSION);
+    assert.equal(geometryVersion.assGeometry?.ffmpeg, FFMPEG_VERSION);
+    assert.equal(geometryVersion.assGeometry?.patch, LIBASS_PATCH);
+    assert.equal(geometryVersion.assGeometry?.envelopeRects, true);
+    assert.equal(geometryVersion.assGeometry?.architecture, GEOMETRY_ARCHITECTURE);
+    assert.equal(
+      geometryVersion.assGeometry?.fontProvider,
+      platform === "win32" ? "directwrite" : "fontconfig",
+    );
+
+    if (platform === "win32") {
+      const compatibilityHelper = layout.externalResources.find(
+        ([, label]) => label === "Windows libass 0.17.4 compatibility geometry helper",
+      )?.[0];
+      assert.ok(
+        compatibilityHelper,
+        "Windows package is missing the libass 0.17.4 compatibility helper",
+      );
+      const compatibilityVersion = runVersion(
+        compatibilityHelper,
+        "Windows libass 0.17.4 compatibility geometry helper",
+      );
+      assert.equal(compatibilityVersion.worker, false);
+      assert.equal(compatibilityVersion.assGeometry?.available, true);
+      assert.equal(compatibilityVersion.assGeometry?.libass, "0.17.4");
+      assert.equal(compatibilityVersion.assGeometry?.ffmpeg, "9.0.1");
+      assert.equal(
+        compatibilityVersion.assGeometry?.patch,
+        "libass-0.17.4-iinatan-unit-ids-v2",
+      );
+      assert.equal(compatibilityVersion.assGeometry?.envelopeRects, true);
+      assert.equal(
+        compatibilityVersion.assGeometry?.architecture,
+        GEOMETRY_ARCHITECTURE,
+      );
+      assert.equal(compatibilityVersion.assGeometry?.fontProvider, "directwrite");
+    }
+
     const helper = layout.externalResources.find(
       ([, label]) => label === "portable HoshiDicts helper",
     )?.[0];
@@ -188,9 +272,17 @@ async function main() {
     assert.equal(version.hoshidictsRevision, HOSHIDICTS_REVISION);
     assert.equal(version.worker, true);
     assert.equal(version.assGeometry?.available, false);
+    if (platform === "win32") {
+      assert.equal(version.controller?.protocol, 1);
+      assert.equal(version.controller?.source, "native-hid");
+      assert.equal(version.controller?.enabled, true);
+      assert.ok(version.controller?.products?.includes("gamepad"));
+    }
   }
 
-  const files = await listPackage(layout.asarPath);
+  const files = (await listPackage(layout.asarPath)).map((entry) =>
+    entry.replaceAll("\\", "/"),
+  );
   const requiredEntries = [
     "/app/main.js",
     "/app/preload.js",
@@ -257,7 +349,7 @@ async function main() {
     JSON.stringify(
       {
         ok: true,
-        package: layout.appPath,
+        package: displayPath(layout.appPath),
         platform,
         arch: process.arch,
         asarEntries: files.length,
@@ -275,6 +367,6 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error(`PACKAGE VALIDATION FAILED: ${error.stack || error.message}`);
+  console.error(`PACKAGE VALIDATION FAILED: ${diagnosticText(error)}`);
   process.exitCode = 1;
 });

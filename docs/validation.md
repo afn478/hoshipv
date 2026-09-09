@@ -11,11 +11,11 @@ Evidence is reported separately for:
 - unverified: no authoritative test has run;
 - blocked: a concrete platform or dependency gate prevents the test.
 
-For the current implementation pass, macOS arm64 is the active validation
-slice. Linux and Windows native-desktop execution is intentionally deferred
-until this workspace is moved to native Linux and Windows hosts; their matrix
-rows remain explicitly unverified rather than being inferred from macOS or CI
-source coverage.
+For the current implementation pass, macOS arm64 and Windows x86-64 have
+native desktop evidence in this workspace. Linux native-desktop execution
+remains deferred until a native Linux host or a successful hosted job provides
+authoritative results; it remains explicitly unverified rather than being
+inferred from macOS or Windows coverage.
 
 The initial commands are:
 
@@ -86,28 +86,172 @@ signature and an attached DualSense through that generic HID path; physical
 controller focus, hotplug, and device-compatibility acceptance remain separate
 evidence gates.
 
-The macOS multi-instance native smoke is:
+On Windows, the same command uses the rebuilt portable HoshiDicts helper:
+
+```sh
+IINATAN_NATIVE_CONTROLLER_REQUIRED=1 \
+npm run test:native:controller
+```
+
+The Windows smoke passed with the bundled WinMM joystick adapter, reporting the
+connected DualSense as a native-HID snapshot with the complete canonical button
+contract; the adapter now normalizes axes from each device's declared WinMM
+range rather than assuming a fixed `0..65535` range. The separate Chromium fallback smoke remains activation-sensitive
+because an already-connected controller may stay hidden from
+`navigator.getGamepads()` until the focused page receives a button or axis
+event.
+
+The macOS and Windows multi-instance native smoke is:
 
 ```sh
 IINATAN_E2E=1 npm run test:native:multi
 ```
 
 It launches two ordinary stock-mpv windows using the supplied MARRIAGETOXIN
-media and the optional AppKit content sidecar, then starts one normal Electron
-host against the shared session directory. The host must attach two distinct
-PID/session/window identities with exact AppKit content bounds. The smoke
-changes `volume` independently through both live JSON-IPC endpoints, requests
-foreground ownership for each player in turn through trusted native move/click
-input, closes one player and waits for its controller to disappear and its
-descriptor to become non-live, then starts a replacement and checks that the
-surviving and replacement sessions remain isolated. This extends the headless
-identity test into the real macOS window/host lifecycle; it remains separate
-from the stock-mpv per-glyph equivalence oracle.
+media and starts one normal Electron host against the shared session directory.
+The host must attach two distinct PID/session/window identities with exact
+content bounds. macOS uses the AppKit content sidecar; Windows uses the Win32
+client-area probe and DIP conversion. The smoke changes `volume` independently
+through both live JSON-IPC endpoints, requests foreground ownership for each
+player in turn through trusted native move/click input, closes one player and
+waits for its controller to disappear and its descriptor to become non-live,
+then starts a replacement and checks that the surviving and replacement
+sessions remain isolated. This extends the headless identity test into the
+real window/host lifecycle; it remains separate from the stock-mpv per-glyph
+equivalence oracle.
 The latest 2026-09-08 rerun passed the initial two-session attachment,
 independent volumes `17`/`63`, trusted foreground clicks on both windows,
 removal of the closed session, replacement attachment, replacement volumes
 `29`/`77`, and surviving/replacement isolation. Evidence is in
 `/tmp/iinatan-native-multi-current/result.json`.
+
+The Windows x86-64 rerun on 2026-09-08 passed the same sequence against stock
+mpv `0.41.0`: both sessions reported exact `client-area` content bounds at
+`640x360`, `SendInput` foreground clicks selected each player in turn, the
+independent volumes were `17`/`63`, and the replacement values were `29`/`77`.
+Its subtitle source remained the explicit plain-text approximation because the
+stock-mpv glyph oracle and patched ASS geometry backend are not claimed on
+Windows.
+
+The Windows combined desktop harness also passed the supplied MARRIAGETOXIN
+fullscreen replay on 2026-09-08. mpv reported fullscreen at `1920x1080`, the
+popup remained composited above the fullscreen player through the Windows
+`screen-saver` topmost level, the changed-pixel popup region was
+`126193/126360` (`0.998678`), native hover replacement and selection produced
+`wit`, and Escape, outside dismissal, pause ownership, and mpv liveness all
+passed. This is native composition/input evidence with approximate subtitle
+geometry; it does not promote exact stock-mpv per-glyph equivalence.
+
+The same Windows replay was run against the supplied external Japanese track
+(`ja.hi.srt`, subtitle id `15`) in both windowed `1280x720` and fullscreen
+`1920x1080` modes. The cue `人のぬくもりを / モットーに` remained lookupable;
+native hover moved between adjacent Japanese units, native selection returned
+`のぬくもり`, Tab and Shift+Tab moved focus through the popup, and the popup
+capture changed `99.71%` of its measured region in fullscreen. Both runs
+reported exact Win32 client bounds but deliberately retained
+`plain-text-approximation`/`exact:false`, since ordinary stock mpv does not
+publish its per-grapheme libass layout.
+
+On 2026-09-09, the same packaged Windows replay used the plugin's own
+recommended-dictionary download/import path for live Jitendex. The packaged
+Hoshi worker reported one enabled dictionary; the Japanese popup opened from
+the real external subtitle, native selection returned a Jitendex headword,
+popup scrolling reached offset `1483`, Tab/Shift+Tab focus transitions passed,
+and fullscreen combined capture, Escape dismissal, outside dismissal, pause
+ownership, and mpv liveness all passed. This remains approximate subtitle
+geometry because the installed stock-mpv renderer tuple is incompatible with
+the primary libass `0.17.5` helper. The explicit `--allow-approximate-geometry`
+handoff is restricted to this diagnostic E2E mode; unsupported production
+inputs still fail closed.
+
+The packaged Windows replay was rerun on 2026-09-09 with the locked
+`windows-mpv-0.41.0-libass-0.17.4-external-subrip` compatibility profile. The
+real external Japanese SubRip track selected the instrumented native libass
+source with `exact:true`, remained exact through the `1920x1080` fullscreen
+transition, and completed the native hover, popup capture, selection, Escape,
+outside dismissal, and mpv-liveness checks. The popup capture changed
+`99.7611%` of its measured region. Both transparent surfaces reported applied
+and verified Windows transition suppression. The profile is limited to
+external SubRip input without codec-private ASS extradata; embedded-media ASS
+and other unmatched renderer tuples remain fail-closed. Companion processes
+excluding mpv and the desktop test driver peaked at approximately `610.5 MiB`
+working set and `512.8 MiB` private memory across 11 processes.
+
+The full Windows feature-parity replay completed on 2026-09-09 using the same
+packaged app, the recommended `jitendex-ja-en` download/import path, the real
+packaged Hoshi worker, and the `windows-mpv-0.41.0-libass-0.17.4-external-subrip`
+profile. It passed fullscreen combined capture at `1920x1080`, live Japanese
+lookup, native selection, keyboard focus traversal, popup scrolling to offset
+`1572`, selector-based custom CSS (`rgb(236, 253, 245)` background,
+`rgb(13, 148, 136)` border, `1px` border width), five audio candidates, and
+loopback Anki `findNotes`/`addNote` actions. It also positioned a temporary
+unrelated Windows app over the player, verified foreground recovery through a
+real exposed player coordinate, restored the test-induced pause toggle, and
+confirmed that the popup remained transitionless with no thick frame. The
+temporary app and all mpv, Electron, Hoshi, geometry-helper, and desktop-driver
+processes were cleaned up. Evidence is in
+`build/e2e-evidence-windows-feature-current/run-28644-1788941753528/`.
+The companion/helper memory sample peaked at approximately `481.1 MiB`
+working set and `361.0 MiB` private memory across seven processes, excluding
+mpv and the desktop test driver. This promotes the supported external-SubRip
+Windows slice; arbitrary stock glyph equivalence, the signed Windows installer,
+and Linux native GUI execution remain open gates.
+
+On 2026-09-09, `npm run package` also produced the Windows NSIS installer and
+ZIP artifact. `npm run test:installer:windows` installed the NSIS artifact into
+a generated test directory, ran `validate:package` against the installed
+resources and ASAR, verified that the uninstaller removed the application
+files, and verified that a sentinel outside the install directory survived.
+The installed executable then passed the same fullscreen Japanese
+external-SubRip/native-controller replay: exact compatibility-profile
+selection, semantic-region input, popup capture, lookup selection, scrolling,
+audio-menu open/close, dismissal, pause ownership, and process cleanup all
+passed. The popup changed `99.8736%` of its measured region. A quick filtered
+sample during that replay measured `69.8 MiB` peak working set and `40.3 MiB`
+peak private memory across four plugin/helper processes; it is an indicative
+active-process sample rather than the broader feature-parity memory benchmark.
+The generated Windows installer currently reports `NotSigned` under
+Authenticode, so this is an installable preview artifact and the production
+Windows signing/SmartScreen gate remains open.
+
+The dedicated Windows nested-popup replay completed on 2026-09-09 with the
+same exact external-SubRip profile and fullscreen stock-mpv window. The
+deterministic cross-reference replay received a depth-one result and captured a
+`0.9983` changed-pixel fraction. The live Hoshi replay then clicked an ordinary
+Japanese text range in the Jitendex body, received the depth-one child result,
+captured `0.9997` changed pixels in the nested-panel region, preserved the
+player's paused state, and closed the child with native Escape. Both popup
+surfaces reported verified transition suppression. The live target is exposed
+through renderer-measured semantic region telemetry, so dictionary entries do
+not need to contain a cross-reference element for nested text lookup.
+The active packaged replay sampled `467.2 MiB` peak working set and `348.4 MiB`
+peak private memory across six companion/helper processes, excluding mpv,
+desktop input drivers, and console hosts.
+
+The Windows embedded-ASS compatibility slice was then validated against the
+same supplied MKV with stock mpv `0.41.0`, libass `0.17.4`, DirectWrite, and
+24 Matroska font attachments. The independent pixel smoke reported fill IoU
+`0.9990138067061144`, visible-envelope IoU `1.0`, and nonzero coverage for all
+30 visible graphemes and seven word probes. Both source and automatically
+selected packaged replays reported
+`windows-mpv-0.41.0-libass-0.17.4-embedded-ass` with `exact:true`; fullscreen,
+native selection, focus traversal including a valid one-control Shift+Tab
+wrap, Escape/outside dismissal, pause ownership, and mpv liveness passed. This
+profile requires an embedded ASS source with codec-private ASS extradata and
+the matched renderer tuple. Mixed tracks, unmatched options, and arbitrary
+stock-mpv glyph equivalence remain fail-closed or unverified.
+
+The Windows resize transition now restores mpv's observed effective scale
+when the configured scale is automatic. The English supplied-media run passed
+the resize/recovery check and three native attach/lookup/dismiss cycles. Popup
+surfaces also disable Chromium transitions, set the Windows DWM transition
+attribute, and keep the transparent popup surface resident at zero opacity
+while it is logically hidden. The popup is made opaque only after its first
+painted frame, so opening it does not invoke a native hide/show animation.
+The focused packaged Japanese fullscreen replay passed native selection,
+keyboard focus, Escape and outside dismissal, with both surface transition
+states reported `applied:true` and `verified:true`; evidence is under
+`build/e2e-evidence-windows-popup/run-20344-1788940649057/`.
 
 The real browser-document integration smoke is:
 
@@ -123,8 +267,8 @@ Wayland behavior, compositor stacking, or native pointer injection.
 
 It runs the shipped overlay document in the pinned Electron/Chromium engine,
 with the sandboxed preload and actual renderer event handlers. It exercises a
-  large structured dictionary entry, cross-reference rendering, nested child
-  lookups, selection reporting, audio source menus, controller commands, keyboard/wheel/outside-
+large structured dictionary entry, cross-reference rendering, nested child
+lookups, selection reporting, audio source menus, controller commands, keyboard/wheel/outside-
 pointer messages, highlight rendering, accessibility semantics, stale-
 generation rejection, right-click/context-menu pass-through, focus retention,
 content security policy, and unsafe custom-CSS rejection. Nested coverage
@@ -139,6 +283,23 @@ popup reflow path in the real Chromium document. The current run also
 dispatches a renderer blur and verifies that the browser fallback publishes a
 forced neutral controller state, closing the lifecycle edge where a held input
 could otherwise survive a surface focus change.
+
+The native desktop replay derives popup input from renderer-published semantic
+regions. It converts the measured panel, text-selection, headword, nested,
+audio-source-menu, and Anki rectangles through the live browser scale, checks
+each injected point against both the native popup window and its panel, and
+then sends the Win32 input. This replaces fixed offsets from the popup
+placement, so the E2E coordinates follow the reference popup's actual DOM
+layout after scaling, scrolling, fullscreen changes, and font reflow.
+
+The packaged Windows fullscreen replay also passed the live Japanese fixture
+with the bundled WinMM controller contract and a connected native controller
+state. It moved between adjacent subtitle units without a pointer, selected a
+dictionary entry, scrolled the measured popup, opened and closed the audio
+menu, dismissed the popup, preserved mpv pause ownership, and completed the
+no-popup seek path. The popup capture changed `99.848%` of its measured
+region. The one-cue fixture records subtitle seek as unsupported; multi-cue
+fixtures keep the strict next/previous seek assertion.
 
 The real settings-document integration smoke is:
 
@@ -242,6 +403,17 @@ a copy/remove install-layout sandbox that preserves a sentinel settings file
 and dictionary. On macOS it also checks the bundled HoshiDicts helper and
 corresponding-source archive. It is not evidence for a signed/notarized
 installer or native GUI behavior.
+
+After `npm run package` on Windows, run the real installer lifecycle smoke:
+
+```sh
+npm run test:installer:windows
+```
+
+It installs the NSIS artifact, validates the installed helper resources, runs
+the uninstaller, and checks that generated user-data outside the application
+directory is preserved. The smoke uses Windows `Start-Process` for the GUI
+installer lifecycle and does not add a runtime dependency to the shipped app.
 
 The current macOS arm64 package run additionally produced and verified
 `dist/iinatan for mpv-0.1.0-arm64-mac.zip` and
@@ -661,6 +833,32 @@ activation and observes the foreground HWND, then verifies movement and
 resize. This is a native Win32 window-boundary result only; it does not claim
 stock-mpv overlay, subtitle geometry, or popup input evidence.
 
+The Windows native-controller smoke is:
+
+```sh
+IINATAN_NATIVE_CONTROLLER_REQUIRED=1 npm run test:native:controller
+```
+
+It validates the portable helper's native-HID capability and the complete
+canonical button/trigger schema, then samples the connected DualSense through
+the bundled WinMM joystick adapter. The worker integration variant also passed
+with controller polling enabled and a connected native state.
+
+The Windows browser-gamepad fallback smoke is:
+
+```sh
+npm run test:native:gamepad
+```
+
+It loads the shipped passive overlay with the real preload and records the
+controller state emitted by Chromium's Gamepad API. A device connected before
+the page loads can remain hidden from `navigator.getGamepads()` until a button
+or axis is actuated in the focused page, so the default smoke reports that
+observation without failing. `IINATAN_NATIVE_GAMEPAD_REQUIRED=1` makes that
+absence a failure when physical activation is part of the run. See [MDN's
+Gamepad API activation guidance](https://developer.mozilla.org/en-US/docs/Web/API/Gamepad_API/Using_the_Gamepad_API)
+and [`Navigator.getGamepads()`](https://developer.mozilla.org/en-US/docs/Web/API/Navigator/getGamepads).
+
 An earlier macOS activation-only retry on this host was denied before native
 input: the helper reported `activated:false`, `requestAccepted:false`,
 `foregroundVerified:false`, `displayAsleep:true`, and foreground PID `408`
@@ -860,6 +1058,21 @@ evidence, not stock-mpv subtitle attachment or combined mpv/overlay evidence.
 The CI definitions are required, but their hosted-runner results remain
 unverified until those jobs execute successfully.
 
+The local Windows x86-64 run on 2026-09-09 passed `test:native:windows`, the
+bundled native geometry smoke, `test:native:selection`, and the real stock-mpv
+multi-session ownership smoke. The Windows helper reported DirectWrite,
+libass `0.17.5`, FFmpeg `9.0.1`, three primary fixture units, six secondary
+strip units, and seven Unicode units. The multi-session run kept two stock-mpv
+sessions isolated, replaced one after shutdown, and verified native focus for
+the replacement. The stock-mpv recovery smoke also forced one player to exit,
+ignored its stale descriptor, recovered IPC through a replacement player, and
+left no mpv process behind. The standalone native window smoke passed in both
+windowed and fullscreen modes, including descriptor-based player identity and
+foreground activation. Windows cleanup targets the actual player PID recorded
+by the session descriptor because the `mpv` command can create a separate
+launcher process. These results are local Windows evidence; they do not
+promote the hosted Linux jobs.
+
 The workflow also defines required stock-mpv/Electron combined-desktop jobs for
 Linux X11 and Windows. They install a real stock mpv, launch the normal
 transparent companion surfaces, inject native pointer/keyboard input, capture
@@ -933,9 +1146,11 @@ npm run test:native-geometry
 
 It sends a deterministic three-word ASS request through the native worker
 boundary and verifies the returned unit positions, positive rectangles, and
-diagnostics. This proves the packaged macOS helper and JavaScript protocol
-interoperate. It does not compare those rectangles with pixels from ordinary
-stock mpv, so it cannot promote exact stock-mpv lookup support.
+diagnostics. On Windows the local run selected the DirectWrite helper and
+returned three primary units, six secondary-strip units, and seven Unicode
+units. This proves the packaged helper and JavaScript protocol interoperate; it
+does not by itself compare those rectangles with pixels from ordinary stock
+mpv, so it cannot promote exact stock-mpv lookup support.
 
 The independent stock-mpv pixel oracle is:
 
@@ -997,6 +1212,18 @@ The final post-package-rebuild rerun on 2026-09-08 exited successfully across
 the complete selected fixture set, including the simultaneous primary and
 secondary-track cases; the optional alpha-isolated per-glyph diagnostic is
 recorded separately below.
+
+The Windows x86-64 rerun on 2026-09-09 used the locked libass 0.17.4
+compatibility helper against stock mpv `0.41.0-dev` and passed all 21 selected
+and simultaneous fixture cases, including the seven isolated per-glyph probes.
+The isolated probes each had IoU `1.0`; the minimum independent identity-group
+IoU was `0.894230769230769` for unique color spans and `0.916466346153846` for
+inline color spans. Windows DirectWrite primary-colour cores are allowed a
+diagnostic edge tolerance of three pixels while the group IoU, fill-bounds,
+visible-envelope, and isolated-glyph checks remain enforced. This broadens
+Windows evidence across mixed scripts, missing-font fallback, positions,
+transforms, karaoke, two-track events, and unit identity; it still does not
+promote arbitrary stock-mpv renderer tuples to exact support.
 
 The simple external SubRip native request mirrors stock mpv's text-to-ASS
 conversion for ordinary `.srt`/`.subrip` cues. It is bounded to the observed
@@ -1067,6 +1294,15 @@ character-plane registration and whole-subtitle envelope alignment; the
 selected alpha-isolated per-glyph fixture also passed all seven visible-fill
 comparisons. Decorative outline/shadow assignment for arbitrary ASS remains
 outside the full stock-mpv equivalence gate.
+
+The Windows x86-64 real-media Japanese SubRip oracle also passed on
+2026-09-09. At the `18.157–20.451` second cue, the independent stock-mpv
+capture measured `240x100` visible subtitle bounds; the DirectWrite helper
+predicted a `240x101` visible envelope with IoU `0.9900990099009901` and
+nonzero captured-pixel coverage for every grapheme in both lines. The fill-box
+IoU was `0.9341666666666667`. This is direct Windows stock-mpv pixel evidence
+for the tested subtitle and tuple; it does not promote unsupported renderer
+tuples or every fullscreen configuration to exact runtime support.
 
 After the envelope field was propagated into the runtime snapshot, the refreshed
 signed directory package passed a deterministic packaged macOS replay with
@@ -1565,7 +1801,7 @@ trust checks were true. Evidence, including the desktop recording, is in
 
 The follow-up signed macOS feature-parity replay also configured a disposable
 profile with selector-based custom CSS before launching Electron. The native
-popup reported `customCssApplied:true`, the remapped `#popup-panel` computed
+popup reported `customCssApplied:true`, the reference popup's computed
 background `rgb(236, 253, 245)`, border color `rgb(13, 148, 136)`, and border
 width `6px`; the same run retained the audio, Anki, selection, scroll, focus,
 dismissal, pause, and mpv-liveness results. Its 12-second desktop recording
@@ -1766,8 +2002,9 @@ preserved pause ownership, passed Escape and outside-panel dismissal, and left
 mpv alive. Its desktop recording is
 `/tmp/iinatan-e2e-macos-keyboard-recorded-demo/run-20512-1788787004223/desktop-interaction.mov`;
 the structured result and still captures are in the same directory. This is
-macOS native keyboard/focus evidence; Linux and Windows validation are deferred
-to native hosts.
+macOS native keyboard/focus evidence. Windows popup keyboard/focus coverage
+remains unverified; its native pointer, selection, stacking, and foreground
+ownership boundaries are covered by the Windows desktop runs above.
 
 The geometry comparison utility is intentionally independent of the subtitle
 provider:

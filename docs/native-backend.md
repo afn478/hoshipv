@@ -79,26 +79,28 @@ selected alpha-isolated per-glyph fixture also passed all seven visible-fill
 comparisons; the envelope still does not assign decorative pixels to
 individual units, so universal exact stock-mpv equivalence remains open.
 
-When the host enables the exact native geometry path (the packaged macOS host
-does this by default; development launches use the explicit flag), `PlayerBridge` observes
-mpv's `mpv-version`, `libass-version`, and `ffmpeg-version` properties. The
-service fails closed unless they match the validated tuple `0.41.0` / `0.17.5`
-/ `9.0.1`; a different or unobserved tuple is reported as a bounded native
-geometry diagnostic instead of being treated as exact evidence.
+When the host enables the exact native geometry path (packaged companions select
+their platform helper by default; development launches use the explicit flag),
+`PlayerBridge` observes mpv's `mpv-version`, `libass-version`, and
+`ffmpeg-version` properties. The service fails closed unless they match the
+validated tuple `0.41.0` / `0.17.5` / `9.0.1`; a different or unobserved tuple is
+reported as a bounded native geometry diagnostic instead of being treated as
+exact evidence.
 
-When controller support is enabled on macOS, the helper publishes a bounded
-`state/controller.json` snapshot for HID gamepads selected through the same
-generic usage-page and device-scoring path as IINA. Standard gamepads use their
-declared stick, trigger, button, and hat usages; DualSense keeps its vendor
-specific axis layout and analog L2/R2 thresholds. The snapshot includes the
-complete configured button contract, including Square. The Electron main
-process gives a connected native snapshot priority and keeps the browser
-Gamepad API available as a fallback for controllers the native HID path cannot
-select. Both sources route through the same binding and focus state machine,
-while the native source, stale-state, disconnect-recovery, and hot-plug polling
-behavior are covered by unit tests and the native helper smoke. Physical
-button actuation, focus, and device-compatibility acceptance remain separate
-native-desktop gates.
+When controller support is enabled, the helper publishes a bounded
+`state/controller.json` snapshot. The macOS helper uses its native HID
+collection and device-scoring path; the Windows portable helper uses the
+system WinMM joystick facade over the HID game-controller collection. Standard
+gamepads expose their declared stick, trigger, button, and hat controls; axis
+values are normalized from each device's reported WinMM minima/maxima with a
+bounded deadzone. The snapshot includes the complete configured button
+contract, including Square. The Electron main process gives a connected native snapshot priority
+and keeps the browser Gamepad API available as a fallback for controllers the
+native path cannot select. Both sources route through the same binding and
+focus state machine, while native stale-state, disconnect-recovery, and
+hot-plug polling behavior are covered by unit tests and the native helper
+smoke. Physical button actuation, focus, hot-plug, and device-compatibility
+acceptance remain separate native-desktop gates.
 
 ## Stock-mpv content bounds
 
@@ -208,6 +210,30 @@ The selected alpha-isolated fixture passed all seven visible-fill comparisons,
 but outline and shadow pixels cannot be assigned to adjacent units without
 risking identity overlap, so the universal exactness gate remains open.
 
+## Portable native helpers
+
+The Windows x86-64 and Linux x86-64 packages contain two separate native
+workers. `iinatan-native-geometry` is the private, instrumented libass helper;
+`iina-hoshi-dicts` remains the dictionary/import worker. Both are built from
+the corresponding-source archive, but the geometry helper links the pinned
+FFmpeg, FreeType, FriBidi, HarfBuzz, libunibreak, zlib, and patched libass
+stack recorded in `native/native-geometry-dependencies.lock.json`.
+
+The geometry helper uses DirectWrite on Windows and Fontconfig on Linux. Its
+`version` response attests protocol 1, the libass/FFmpeg tuple, architecture,
+font provider, and instrumentation patch. The host performs this capability
+handshake before accepting geometry requests. Static linking keeps the helper
+independent of a separately installed MinGW or C++ runtime; the Linux build
+uses the platform's Fontconfig/Expat provider libraries. This helper renders
+for geometry in its own process and does not replace or inject into the user's
+mpv renderer.
+
+The original and instrumented render timings reported by the helper validate
+the helper's own render path. They do not prove that a separately built stock
+mpv has identical font discovery, renderer options, or rasterization. The
+independent stock-mpv pixel oracle remains the release evidence for those
+comparisons.
+
 ## Portable dictionary worker
 
 Windows x86-64 and Linux x86-64 use a separate portable target built from the
@@ -218,9 +244,12 @@ MSVC builds select the static CRT so the packaged helper does not add a Visual
 C++ runtime installation prerequisite.
 The worker supports dictionary import, managed lookup, and the existing queue
 protocol. Its `version` and `ready` responses attest the same HoshiDicts
-revision recorded in the native lock. It explicitly reports ASS geometry,
-CoreText font metrics, OCR, and controller capabilities as unavailable; those
-platform-specific capabilities are not inferred from a dictionary-only binary.
+revision recorded in the native lock. It reports ASS geometry, CoreText font
+metrics, and OCR as unavailable. On Windows it also reports the bundled
+WinMM-backed native controller capability; Linux keeps the browser Gamepad API
+fallback because the portable worker has no native controller adapter there.
+Those platform-specific capabilities are negotiated explicitly and are not
+inferred from a dictionary-only binary.
 
 Validate the portable boundary with:
 

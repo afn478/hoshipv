@@ -19,8 +19,10 @@
     "test:settings:native": "node scripts/e2e/settings-native-window-smoke.js",
     "test:native:x11": "node scripts/e2e/x11-window-probe-smoke.js",
     "test:native:windows": "node scripts/e2e/windows-window-probe-smoke.js",
+    "test:installer:windows": "node scripts/e2e/windows-installer-smoke.js",
     "test:native:selection": "node scripts/e2e/native-selection-smoke.js",
     "test:native:controller": "node scripts/e2e/native-controller-smoke.js",
+    "test:native:gamepad": "node scripts/run-electron.js scripts/e2e/windows-gamepad-smoke.js",
     "test:native:autostart": "node scripts/e2e/native-autostart-smoke.js",
     "test:native:multi": "node scripts/e2e/native-multi-session-smoke.js",
     "test:native:languages": "node scripts/e2e/native-language-matrix.js",
@@ -125,6 +127,14 @@
           "to": "bin/ffmpeg.exe"
         },
         {
+          "from": "build/package-resources/iinatan-native-geometry.exe",
+          "to": "bin/iinatan-native-geometry.exe"
+        },
+        {
+          "from": "build/package-resources/iinatan-native-geometry-libass-0.17.4.exe",
+          "to": "bin/iinatan-native-geometry-libass-0.17.4.exe"
+        },
+        {
           "from": "build/package-resources/iina-hoshi-dicts.exe",
           "to": "bin/iina-hoshi-dicts.exe"
         },
@@ -152,6 +162,10 @@
         {
           "from": "build/runtime-tools/ffmpeg.exe",
           "to": "bin/ffmpeg.exe"
+        },
+        {
+          "from": "build/package-resources/iinatan-native-geometry",
+          "to": "bin/iinatan-native-geometry"
         },
         {
           "from": "build/package-resources/iina-hoshi-dicts",

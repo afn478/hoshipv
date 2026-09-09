@@ -43,6 +43,11 @@ const required = [
   "native/window_probe_windows.manifest",
   "native/window_probe_windows.rc",
   "native/portable_hoshi_main.cpp",
+  "native/portable_geometry_main.cpp",
+  "native/portable_geometry_media_demux.cpp",
+  "native/native-geometry-dependencies.lock.json",
+  "native/patches/libass-0.17.4-iinatan-geometry-v2.patch",
+  "scripts/build-native-geometry.sh",
   "scripts/prepare-runtime-tools.js",
   "scripts/prepare-native-package.js",
   "scripts/e2e/portable-hoshi-smoke.js",
@@ -56,6 +61,7 @@ const required = [
   "scripts/e2e/x11-window-probe-smoke.js",
   "scripts/e2e/windows-window-probe-main.js",
   "scripts/e2e/windows-window-probe-smoke.js",
+  "scripts/e2e/windows-installer-smoke.js",
   "scripts/e2e/stock-mpv-real-media-ass-smoke.js",
   "scripts/e2e/stock-mpv-glyph-equivalence-diagnostic.js",
 ];
@@ -91,11 +97,25 @@ for (const [platform, extension] of [
     ) ||
     !hasExtraResource(
       platform,
+      `build/package-resources/iinatan-native-geometry${extension}`,
+      `bin/iinatan-native-geometry${extension}`,
+    ) ||
+    !hasExtraResource(
+      platform,
       "vendor/iina-hoshi-dicts-native-source.tar.gz",
       "vendor/iina-hoshi-dicts-native-source.tar.gz",
     )
   )
     throw new Error(`${platform} package is missing the portable HoshiDicts resources`);
+  if (
+    platform === "win" &&
+    !hasExtraResource(
+      platform,
+      "build/package-resources/iinatan-native-geometry-libass-0.17.4.exe",
+      "bin/iinatan-native-geometry-libass-0.17.4.exe",
+    )
+  )
+    throw new Error("win package is missing the libass 0.17.4 compatibility helper");
 }
 if (
   !hasExtraResource("mac", "bin/iina-hoshi-dicts", "bin/iina-hoshi-dicts") ||

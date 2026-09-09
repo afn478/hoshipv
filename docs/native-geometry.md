@@ -1,18 +1,28 @@
-# Optional native subtitle geometry
+# Private native subtitle geometry
 
-The runtime starts with a deterministic, explicitly approximate subtitle
-geometry provider and refuses ordinary lookup when `source.exact` is false.
-The packaged macOS companion enables the validated HoshiDicts ASS backend by
-default, together with the optional stock-mpv content-boundary C-plugin. The
-backend remains tuple-gated and fail-closed; source development launches can
-explicitly opt in with:
+The runtime keeps a deterministic approximate provider as a diagnostic fallback
+and refuses ordinary lookup when `source.exact` is false. Release packages
+contain a separate private, instrumented libass helper for each supported
+architecture: macOS arm64 uses the HoshiDicts helper, while Windows x86-64 and
+Linux x86-64 use `iinatan-native-geometry`. The user's stock mpv continues to
+render the visible subtitles; the helper reconstructs layout in its own
+process and supplies lookup rectangles.
+
+The packaged helper is selected automatically. At startup the companion runs
+the helper's `version` command and requires protocol 1 plus an available ASS
+geometry capability before it can be used. Dictionary, OCR, controller, and
+geometry capabilities are reported separately, so a working dictionary worker
+cannot satisfy the geometry requirement. The backend remains tuple-gated and
+fail-closed; source development launches can explicitly opt in with:
 
 ```sh
 npm run start -- --enable-patched-native-geometry
 ```
 
 Pass `--disable-patched-native-geometry` or set
-`IINATAN_DISABLE_NATIVE_GEOMETRY=1` to disable the packaged macOS default.
+`IINATAN_DISABLE_NATIVE_GEOMETRY=1` to disable automatic helper selection. An
+explicit `--native-geometry-executable=...` or `IINATAN_NATIVE_GEOMETRY` value
+remains available for diagnostics.
 
 Other platforms or a replacement geometry helper can use:
 
@@ -25,12 +35,39 @@ npm run start -- \
 The request directory is created with owner-only permissions and each request
 is written atomically and removed after the helper exits. An explicitly
 configured executable is not downloaded, started through a shell, or inferred
-from the reference IINA repository. Windows/Linux packages now include the
-portable dictionary worker, but they do not yet include an equivalent exact
-subtitle-geometry helper. The geometry executable remains a separate capability
-on non-macOS platforms; the packaged macOS artifact intentionally bundles and
-selects its validated helper without changing the user's mpv executable or
-renderer.
+from the reference IINA repository. The platform helpers share the same C++
+geometry core, request protocol, libass instrumentation patches, and pinned
+dependency set recorded in `native/native-geometry-dependencies.lock.json`.
+
+To reproduce the Windows or Linux dependency stage, run
+`scripts/build-native-geometry.sh windows-x86_64` or
+`scripts/build-native-geometry.sh linux-x86_64`, then configure CMake with
+`IINATAN_BUILD_PORTABLE_GEOMETRY=ON` and
+`IINATAN_NATIVE_GEOMETRY_STAGE` pointing at that stage. Linux uses Fontconfig;
+Windows uses DirectWrite. The resulting helper is copied by
+`npm run prepare:native-package` and is validated by `npm run validate:package`.
+
+Windows also ships a narrow compatibility helper for the installed stock mpv
+build when its renderer reports libass `0.17.4`. Build its dependency stage
+with the locked profile and pass the matching patch identity to CMake:
+
+```sh
+IINATAN_LIBASS_PROFILE=windows-mpv-0.41.0-libass-0.17.4-external-subrip \
+IINATAN_NATIVE_BUILD_ROOT=build/native-geometry-windows-compat \
+scripts/build-native-geometry.sh windows-x86_64
+cmake -S . -B build/native-geometry-windows-compat-cmake -G Ninja \
+  -DIINATAN_BUILD_PORTABLE_GEOMETRY=ON \
+  -DIINATAN_NATIVE_GEOMETRY_STAGE=build/native-geometry-windows-compat/stage \
+  -DIINATAN_ASS_GEOMETRY_PATCH=libass-0.17.4-iinatan-unit-ids-v2
+cmake --build build/native-geometry-windows-compat-cmake --config Release \
+  --target iinatan-native-geometry
+```
+
+That profile is exact only for external SubRip tracks without codec-private
+ASS extradata. The player’s FFmpeg development revision is not treated as a
+renderer match for this input scope; embedded-media ASS remains fail-closed.
+The source URL and checksum are recorded in
+`native/native-geometry-dependencies.lock.json`.
 
 ## Data flow
 
@@ -245,6 +282,16 @@ alpha-isolated per-glyph fixture also passed all seven visible-fill
 comparisons, but decorative outline/shadow pixels are not assigned to
 adjacent units, so arbitrary exact ASS raster equivalence remains open.
 Unsupported renderer modes remain fail-closed.
+
+On Windows, the measured supplied-media result is now also a production
+profile. With stock mpv `0.41.0`/libass `0.17.4`, DirectWrite, and embedded ASS
+codec-private data, the runtime selects
+`windows-mpv-0.41.0-libass-0.17.4-embedded-ass` and publishes
+`source.exact:true`. The source and packaged fullscreen replays validated the
+same selection, native interaction, focus traversal, dismissal, pause
+ownership, and player liveness. The profile is restricted to that input class;
+mixed track combinations, unsupported renderer options, and arbitrary
+stock-mpv decorative glyph equivalence remain outside the claim.
 
 The shipped runtime contract keeps fill rectangles for hit testing. The new
 envelope field is deliberately additive: the runtime uses it for visual

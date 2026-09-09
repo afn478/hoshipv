@@ -10,16 +10,17 @@ The repository is currently in Phase A. It contains the host protocol, native
 window probe boundary, session-aware mpv IPC, coordinate contract, placement and
 input state machine, secure demo popup, settings inventory, and unit/integration
 tests. The validated HoshiDicts worker is bundled for macOS arm64 with a
-corresponding-source archive, and Windows/Linux packages build a portable
-dictionary-only worker from that same archive; user dictionaries still require
-import. Language
+corresponding-source archive, and Windows/Linux packages build separate
+portable dictionary and instrumented libass geometry workers from that archive;
+user dictionaries still require import. Language
 candidate, bounded recommended dictionary downloads, audio-source, and
 AnkiConnect service boundaries require their
-respective configuration. The native ASS/libass client boundary ships that
-helper on macOS. The packaged macOS companion enables the bounded,
-tuple-gated backend by default; source development launches can opt in with
+respective configuration. The native ASS/libass client boundary ships a
+private geometry helper for macOS arm64, Windows x86-64, and Linux x86-64. The
+packaged companion selects it automatically and negotiates its capability at
+startup; source development launches can opt in with
 `--enable-patched-native-geometry`, and `--disable-patched-native-geometry` or
-`IINATAN_DISABLE_NATIVE_GEOMETRY=1` disables the packaged default. Unsupported
+`IINATAN_DISABLE_NATIVE_GEOMETRY=1` disables automatic selection. Unsupported
 renderer modes and player tuples still fail closed, while the full stock-mpv
 glyph-equivalence oracle remains open.
 The same signed macOS helper exposes Apple Vision OCR for selected bitmap
@@ -55,6 +56,7 @@ npm run test:settings
 npm run test:native:x11
 npm run test:native:windows
 npm run test:native:selection
+npm run test:native:gamepad
 npm run test:native:controller
 IINATAN_E2E_AUTOSTART_REQUIRED=1 IINATAN_E2E_AUTOSTART_RESTART=1 \
 npm run test:native:autostart
@@ -89,14 +91,15 @@ evidence, not native desktop composition or input proof.
 PID/session/IPC identities, changes a property through each bridge, and checks
 that the values do not cross session boundaries before both descriptors are
 removed.
-`test:native:multi` is the macOS graphical counterpart. With `IINATAN_E2E=1`
-it launches two real stock-mpv windows using the supplied MARRIAGETOXIN media,
-attaches the normal Electron process to both through their explicit session
-descriptors and AppKit content sidecars, switches foreground ownership between
-the two windows, removes one player, and attaches a replacement. It also
-changes independent mpv properties through both live IPC sessions. This is
-macOS multi-instance ownership evidence; it does not promote stock-mpv
-per-glyph equivalence or Linux/Windows support.
+`test:native:multi` is the graphical multi-instance smoke for macOS and Windows.
+With `IINATAN_E2E=1` it launches two real stock-mpv windows using the supplied
+MARRIAGETOXIN media, attaches the normal Electron process to both through their
+explicit session descriptors, switches foreground ownership between the two
+windows, removes one player, and attaches a replacement. macOS uses its AppKit
+content sidecar; Windows uses the Win32 client-area probe and DIP conversion.
+It also changes independent mpv properties through both live IPC sessions.
+This is multi-instance ownership evidence; it does not promote stock-mpv
+per-glyph equivalence or Linux support.
 `test:mpv:recovery` force-terminates a stock mpv process, verifies that its
 stale descriptor is ignored, starts a replacement in the same descriptor
 directory, and reconnects through the replacement's real IPC endpoint.
@@ -158,6 +161,17 @@ they report an explicit skip unless their `*_REQUIRED` variable is set.
 desktop input helper and a real transparent Electron popup. It performs a
 native drag and verifies browser text selection; it does not substitute for
 stock-mpv subtitle attachment or combined mpv/overlay evidence.
+`test:native:controller` validates the bundled native controller contract on
+Windows and the signed HID helper contract on macOS. On Windows it also samples
+the connected WinMM joystick state, so the application does not depend on
+Chromium receiving a manual activation event before controller input becomes
+visible.
+`test:native:gamepad` remains the Windows Chromium Gamepad API fallback smoke. It
+checks that the shipped passive surface publishes browser-controller state;
+Chromium may keep an already-connected device out of `getGamepads()` until a
+button or axis is actuated in the focused page. Set
+`IINATAN_NATIVE_GAMEPAD_REQUIRED=1` when physical activation is available and
+the test must fail if no connected browser gamepad is observed.
 `test:anki` starts an ephemeral loopback AnkiConnect mock and exercises deck/model
 discovery, duplicate lookup/open, media storage, and note creation without
 contacting or modifying the user's real Anki collection.
@@ -188,14 +202,21 @@ are separate `npm outdated --json` and `npm audit --audit-level=moderate` gates.
 `validate:package` checks the generated platform directory package, its asar
 and native resources, and a copy/remove sandbox that preserves user settings
 and dictionaries. On macOS it also checks the bundled full HoshiDicts helper
-and source archive; Windows/Linux package validation checks the portable
-dictionary helper. It does not claim signed-installer, notarization, or native
-GUI evidence.
+and source archive; Windows/Linux package validation checks both the portable
+dictionary and instrumented geometry helpers. It does not claim
+signed-installer, notarization, or native GUI evidence.
+On Windows, `npm run package` also creates the NSIS installer and ZIP artifact;
+`npm run test:installer:windows` installs the NSIS artifact, validates the
+installed resources, and exercises uninstallation without removing the
+generated user-data sentinel. The current Windows artifact is an unsigned
+installable preview until production code-signing credentials are available.
 `test:e2e` is the stricter combined desktop harness; run it with
 `IINATAN_E2E=1` after `npm run build:native` in an isolated graphical session.
-The signed macOS path can claim exact instrumented geometry; Linux X11 and
-Windows CI paths currently use explicit approximate-geometry mode until their
-portable workers gain a geometry backend. For renderer diagnosis,
+The signed macOS path and the packaged Windows/Linux helpers can report
+instrumented geometry only for their validated input tuple; independent
+stock-mpv glyph equivalence remains open. The Windows window, stacking,
+native-input, selection, and combined-capture boundaries are tested
+independently. Linux X11 remains a separate validation target. For renderer diagnosis,
 `IINATAN_E2E_GPU_CONTEXT=macvk` (or `displayvk`) passes an explicit mpv context; treat
 permission/renderer failures as blockers rather than support evidence.
 The macOS test helper reports Accessibility and CoreGraphics post-event access
@@ -269,9 +290,10 @@ outside-panel dismissal, pause ownership, and mpv liveness. Evidence is under
 `/tmp/iinatan-hover-fix-evidence4/run-18321-1788810223636/`.
 Cross-reference text is included in the deterministic dictionary fixture. The
 browser-document smoke verifies nested child navigation, bounded depth,
-cancellation, and deepest-first Escape; native desktop evidence still labels
-that child-result path separately because the native harness does not inject
-dictionary results into a live nested popup.
+cancellation, and deepest-first Escape. Windows native desktop evidence now
+also covers deterministic cross-reference input and a live Hoshi lookup from
+ordinary Japanese text in the popup body; the native target comes from
+renderer-measured semantic regions rather than fixed popup coordinates.
 Set `IINATAN_E2E_RESIZE_TRANSITION=1` with the native interaction matrix to
 exercise a live stock-mpv `window-scale` transition. The signed macOS run
 followed exact `640x360` to `480x270` content geometry and back, including the
@@ -338,7 +360,7 @@ run kept the popup visible and focused at all 12 transit samples and completed
 native selection, Escape, and outside-panel dismissal; evidence is preserved
 under `/tmp/iinatan-e2e-evidence-smooth-fixed/run-71669-1788729618818/`.
 Set `IINATAN_E2E_FEATURE_PARITY=1` with the native interaction matrix on macOS
-to click the renderer-measured audio and Anki action rectangles. This opt-in
+or Windows to click the renderer-measured audio and Anki action rectangles. This opt-in
 replay uses live Hoshi lookup, resolves the audio menu through the configured
 sources, and sends the Anki note to an ephemeral loopback mock; it never opens
 or modifies the user's Anki collection. Action rectangles are derived from the
@@ -350,14 +372,13 @@ Escape fallback used when the transparent overlay reports focus while mpv
 remains frontmost. Evidence is in
 `/tmp/iinatan-e2e-macos-feature-parity-current-live/run-40085-1788798176485/`.
 That replay also applied a disposable profile's selector-based custom CSS and
-confirmed the live popup's computed background and border after `#popup` was
-remapped to `#popup-panel`.
-The native controller contract smoke separately validates the signed
-DualSense HID schema and browser-gamepad fallback arbitration; a connected
-controller is still required to claim physical focus, hotplug, and
-device-compatibility support. This remains an opt-in test matrix because
-rebuilding the native helper requires re-signing and re-adding that exact
-bundle to macOS Accessibility.
+confirmed the live reference popup's computed background and border, including
+the nested-popup selector scope.
+The native controller contract smoke validates the signed DualSense HID schema
+on macOS and the bundled WinMM-backed controller reader on Windows. A
+connected controller is still required to claim physical focus, hotplug, and
+device-compatibility support; the Windows smoke now observes the connected
+device without requiring Chromium's manual Gamepad API activation.
 The Settings window now exposes the same no-popup, popup, and audio-menu
 bindings through a first-class per-control editor with independent context
 reset buttons; the raw JSON fields remain available only under the advanced
@@ -450,8 +471,10 @@ predicted grapheme rectangles. Set `IINATAN_STOCK_PIXEL_REAL_REQUIRED=1` and
 comparison, not runtime bitmap transport.
 The companion `test:stock-pixels:media:ass` smoke demuxes a real embedded ASS
 stream and its attached fonts, checks stock-pixel coverage for word units, and
-records the bounded envelope comparison; it does not claim exact glyph
-equivalence while that comparison remains below the release gate.
+records the bounded envelope comparison. On the validated Windows stock-mpv
+tuple, the same input selects the locked embedded-ASS profile for exact native
+geometry; arbitrary fonts, advanced effects, mixed tracks, and decorative
+outline/shadow ownership remain separate gates.
 
 The optional demo needs Electron installed from the pinned development
 dependency:
@@ -544,6 +567,6 @@ covers the ffmpeg subprocess boundary.
 
 ## Reference and scope
 
-The working IINA implementation at `/Users/rahulb/Documents/iinatan` is kept
-intact and is used for settings, dictionary, Anki, audio, controller, and popup
-behavior inventory. It is not changed by this repository.
+The working IINA implementation is kept in a separate reference checkout and
+is used for settings, dictionary, Anki, audio, controller, and popup behavior
+inventory. It is not changed by this repository.
