@@ -509,6 +509,8 @@ class ApplicationController extends EventEmitter {
     this.popupSessionId = null;
     this.popupSelectionText = "";
     this.popupFocusTarget = "";
+    this.popupFocusRevision = 0;
+    this.nestedPopupResult = null;
     this.lastAudioResult = null;
     this.lastAudioCandidates = [];
     this.lastAnkiResult = null;
@@ -1685,6 +1687,7 @@ class ApplicationController extends EventEmitter {
     this.controllerEntryIndex = -1;
     this.popupSelectionText = "";
     this.popupFocusTarget = "";
+    this.nestedPopupResult = null;
     this.browserHost.showPopup(this.#popupPayload(result, snapshot));
     // Controller-driven close/reopen sequences can overlap the browser host's
     // passive-input handoff. Reassert the popup's whole-window hit testing
@@ -1993,7 +1996,20 @@ class ApplicationController extends EventEmitter {
             );
         } else if (payload.action === "focus-changed" && surface === "popup") {
           this.popupFocusTarget = String(payload.target || "").slice(0, 160);
+          this.popupFocusRevision += 1;
           this.emit("popup-focus", this.popupFocusTarget);
+        } else if (payload.action === "nested-result" && surface === "popup") {
+          this.nestedPopupResult = Object.freeze({
+            depth: Number.isInteger(payload.depth) ? payload.depth : 0,
+            ok: payload.ok === true,
+            lookupString: String(payload.lookupString || "").slice(0, 4096),
+            error: String(payload.error || "").slice(0, 500),
+            text: String(payload.text || "").slice(0, 4096),
+          });
+          this.emit("nested-result", this.nestedPopupResult);
+        } else if (payload.action === "nested-closed" && surface === "popup") {
+          this.nestedPopupResult = null;
+          this.emit("nested-closed");
         } else if (payload.action === "close-popup") {
           await this.closePopup("escape");
         }
@@ -2252,6 +2268,8 @@ class ApplicationController extends EventEmitter {
     this.controllerEntryIndex = -1;
     this.popupSelectionText = "";
     this.popupFocusTarget = "";
+    this.popupFocusRevision = 0;
+    this.nestedPopupResult = null;
   }
 
   async #releasePause(reason, generation = this.snapshot?.geometryGeneration) {
@@ -2766,6 +2784,7 @@ class ApplicationController extends EventEmitter {
     this.popupRegions = Object.freeze({});
     this.popupStyle = Object.freeze({});
     this.popupScroll = Object.freeze({ left: 0, top: 0 });
+    this.nestedPopupResult = null;
     this.windowUnavailable = false;
     this.nativeGeometryErrorKey = null;
     this.nativeGeometryError = null;

@@ -152,6 +152,7 @@ function nonLemmaLemmaCandidates(response, alreadyTried, limit) {
 
 function sampleResult(request) {
   const expression = String(request.text || "").trim();
+  const crossReference = request.language === "ja" ? "関連語" : "related reference";
   return {
     lookupString: expression,
     matched: expression,
@@ -179,7 +180,8 @@ function sampleResult(request) {
               },
               {
                 type: "cross-reference",
-                text: "related reference",
+                text: crossReference,
+                lookup: crossReference,
               },
             ],
           },

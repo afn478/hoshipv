@@ -6,9 +6,13 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 
-function absolutePath(value, label) {
+function pathModuleFor(platform) {
+  return platform === "win32" ? path.win32 : path.posix;
+}
+
+function absolutePath(value, label, pathModule = path) {
   const result = String(value || "");
-  if (!result || !path.isAbsolute(result))
+  if (!result || !pathModule.isAbsolute(result))
     throw new Error(`${label} must be an absolute path`);
   return result;
 }
@@ -19,8 +23,9 @@ function launchToken() {
 
 function ipcEndpointFor({ platform = process.platform, temporaryDirectory, token }) {
   if (platform === "win32") return `\\\\.\\pipe\\iinatan-${token}`;
-  return path.join(
-    absolutePath(temporaryDirectory, "temporary directory"),
+  const pathModule = pathModuleFor(platform);
+  return pathModule.join(
+    absolutePath(temporaryDirectory, "temporary directory", pathModule),
     `i-${token}.sock`,
   );
 }
@@ -29,13 +34,19 @@ function createMpvLaunchPlan(options = {}) {
   const platform = String(options.platform || process.platform);
   if (!["darwin", "linux", "win32"].includes(platform))
     throw new Error(`unsupported mpv launcher platform: ${platform}`);
-  const resourceRoot = absolutePath(options.resourceRoot, "resource root");
-  const sessionDirectory = absolutePath(options.sessionDirectory, "session directory");
+  const pathModule = pathModuleFor(platform);
+  const resourceRoot = absolutePath(options.resourceRoot, "resource root", pathModule);
+  const sessionDirectory = absolutePath(
+    options.sessionDirectory,
+    "session directory",
+    pathModule,
+  );
   const temporaryDirectory = absolutePath(
     options.temporaryDirectory || os.tmpdir(),
     "temporary directory",
+    pathModule,
   );
-  const mediaPath = absolutePath(options.mediaPath, "media path");
+  const mediaPath = absolutePath(options.mediaPath, "media path", pathModule);
   const token = String(options.token || launchToken());
   if (!/^[A-Za-z0-9._-]{1,160}$/.test(token))
     throw new Error("invalid mpv launcher token");
@@ -43,9 +54,9 @@ function createMpvLaunchPlan(options = {}) {
     options.executable || (platform === "win32" ? "mpv.exe" : "mpv"),
   );
   if (!executable) throw new Error("mpv executable is required");
-  const sessionScript = path.join(resourceRoot, "mpv", "iinatan-session.lua");
+  const sessionScript = pathModule.join(resourceRoot, "mpv", "iinatan-session.lua");
   const nativeShimPath = options.nativeShimPath
-    ? absolutePath(options.nativeShimPath, "native shim path")
+    ? absolutePath(options.nativeShimPath, "native shim path", pathModule)
     : null;
   const ipcEndpoint = ipcEndpointFor({
     platform,
@@ -99,14 +110,15 @@ async function removeMatchingDescriptor(filePath, pid, ipcEndpoint) {
 }
 
 async function cleanupLaunchArtifacts(plan, pid) {
+  const pathModule = pathModuleFor(plan.platform);
   if (Number.isInteger(pid) && pid > 0) {
     await removeMatchingDescriptor(
-      path.join(plan.sessionDirectory, `${pid}.json`),
+      pathModule.join(plan.sessionDirectory, `${pid}.json`),
       pid,
       plan.ipcEndpoint,
     );
     await removeMatchingDescriptor(
-      path.join(plan.sessionDirectory, `${pid}.geometry.json`),
+      pathModule.join(plan.sessionDirectory, `${pid}.geometry.json`),
       pid,
       plan.ipcEndpoint,
     );
@@ -117,11 +129,15 @@ async function cleanupLaunchArtifacts(plan, pid) {
 
 async function launchMpv(options = {}) {
   const plan = createMpvLaunchPlan(options);
+  const pathModule = pathModuleFor(plan.platform);
   await requireRegularFile(plan.mediaPath, "selected media");
   await requireRegularFile(plan.sessionScript, "bundled mpv session script");
   await fs.mkdir(plan.sessionDirectory, { recursive: true, mode: 0o700 });
   if (plan.platform !== "win32")
-    await fs.mkdir(path.dirname(plan.ipcEndpoint), { recursive: true, mode: 0o700 });
+    await fs.mkdir(pathModule.dirname(plan.ipcEndpoint), {
+      recursive: true,
+      mode: 0o700,
+    });
 
   const environment = {
     ...process.env,

@@ -13,6 +13,7 @@ const HOST_REQUEST_TYPES = new Set([
   "popup-scroll",
   "popup-size",
   "popup-style",
+  "popup-painted",
   "dismiss-popup",
   "player-command",
   "external-link",
@@ -59,6 +60,8 @@ const POPUP_REGION_NAMES = new Set([
   "action-audio-close",
   "action-anki-add",
   "action-anki-open",
+  "nested-panel",
+  "nested-reference",
 ]);
 
 function isPlainObject(value) {

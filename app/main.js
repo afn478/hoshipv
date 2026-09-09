@@ -1,6 +1,7 @@
 "use strict";
 
 const fs = require("node:fs/promises");
+const fsSync = require("node:fs");
 const path = require("node:path");
 const {
   app,
@@ -34,6 +35,11 @@ const {
   BUTTONS: CONTROLLER_BUTTONS,
   DEFAULTS: CONTROLLER_DEFAULTS,
 } = require("../src/interaction/controller-bindings");
+
+function nativeControllerSupportedOnPlatform() {
+  return ["darwin", "win32"].includes(process.platform);
+}
+
 const { AnkiConnectClient } = require("../src/services/anki-connect");
 const { normalizeTemplates } = require("../src/services/anki-card");
 const { NativeGeometryClient } = require("../src/services/native-geometry-client");
@@ -51,6 +57,8 @@ const { defaultSessionDirectory } = require("../src/player/session-directory");
 const {
   NativeSubtitleGeometryService,
   VALIDATED_PLAYER_CAPABILITY,
+  WINDOWS_LIBASS_0174_EMBEDDED_ASS_PROFILE,
+  WINDOWS_LIBASS_0174_SUBRIP_PROFILE,
 } = require("../src/geometry/native-subtitle-geometry-service");
 const {
   SubtitleGeometryProvider,
@@ -72,6 +80,10 @@ function argumentValue(name) {
 
 function hasArgument(name) {
   return process.argv.includes(name);
+}
+
+function demoDictionaryEnabled() {
+  return hasArgument("--demo") || process.env.IINATAN_E2E_DEMO_DICTIONARY === "1";
 }
 
 function createAnkiClient(preferences) {
@@ -212,7 +224,7 @@ function settingsDiagnostics(runtime, controllers) {
     dictionary: {
       backend: runtime.worker
         ? "hoshidicts"
-        : hasArgument("--demo")
+        : demoDictionaryEnabled()
           ? "demo"
           : "unavailable",
       installed: catalogEntries.length,
@@ -329,7 +341,8 @@ async function applyRuntimePreferences(
     (nextFingerprint !== beforeFingerprint ||
       runtime.worker.sleepMs !== workerSleepMs ||
       runtime.worker.controllerRequested !==
-        (process.platform === "darwin" && preferences.controllerEnabled === true));
+        (nativeControllerSupportedOnPlatform() &&
+          preferences.controllerEnabled === true));
   if (runtime.worker && workerConfigurationChanged) {
     const paths = runtime.catalog.activePaths();
     if (paths.length) {
@@ -403,6 +416,10 @@ async function registerAppProtocol() {
       "overlay.html",
       "overlay.css",
       "renderer.js",
+      "highlight-renderer.js",
+      "host-overlay-adapter.js",
+      "iina-popup-renderer.js",
+      "mpv-popup-integration.js",
       "settings.html",
       "settings.css",
       "settings-renderer.js",
@@ -473,15 +490,31 @@ async function createDictionaryRuntime() {
   const document = settingsStore.current();
   const profile = document.profiles[document.activeProfileId];
   const preferences = normalizePreferences(profile?.preferences || {});
-  const executable =
+  const hoshiName =
+    process.platform === "win32" ? "iina-hoshi-dicts.exe" : "iina-hoshi-dicts";
+  const explicitExecutable =
     argumentValue("--hoshi-executable") ||
-    path.join(
-      resourceRoot(),
-      "bin",
-      process.platform === "win32" ? "iina-hoshi-dicts.exe" : "iina-hoshi-dicts",
-    );
+    String(process.env.IINATAN_HOSHI || "").trim();
+  const executableCandidates = explicitExecutable
+    ? [path.resolve(explicitExecutable)]
+    : [
+        path.join(resourceRoot(), "bin", hoshiName),
+        ...(app.isPackaged
+          ? []
+          : [path.join(resourceRoot(), "build", "package-resources", hoshiName)]),
+      ];
+  let executable = executableCandidates[0];
+  if (!explicitExecutable) {
+    for (const candidate of executableCandidates) {
+      try {
+        await fs.access(candidate);
+        executable = candidate;
+        break;
+      } catch (_) {}
+    }
+  }
   let worker = null;
-  if (!hasArgument("--demo")) {
+  if (!demoDictionaryEnabled()) {
     try {
       await fs.access(executable);
       worker = new HoshiWorker({
@@ -490,7 +523,7 @@ async function createDictionaryRuntime() {
         timeoutMs: preferences.backendTimeoutMs,
         pollMs: preferences.directIpcPollMs,
         sleepMs: preferences.workerIdleSleepMs,
-        nativeControllerSupported: process.platform === "darwin",
+        nativeControllerSupported: nativeControllerSupportedOnPlatform(),
         controllerStatePath: process.env.IINATAN_E2E_CONTROLLER_STATE_FILE || "",
       });
       const dictionaryPaths = catalog.activePaths();
@@ -520,7 +553,7 @@ async function createDictionaryRuntime() {
         timeoutMs: preferences.lookupTimeoutMs,
       })
     : new DictionaryService({
-        demo: hasArgument("--demo"),
+        demo: demoDictionaryEnabled(),
         timeoutMs: preferences.lookupTimeoutMs,
       });
   const anki = createAnkiClient(preferences);
@@ -539,34 +572,154 @@ async function createDictionaryRuntime() {
 }
 
 async function createNativeGeometryRuntime(geometryProvider) {
-  const explicitExecutable = argumentValue("--native-geometry-executable");
-  const packagedMacosDefault =
-    process.platform === "darwin" &&
-    app.isPackaged &&
-    process.env.IINATAN_DISABLE_NATIVE_GEOMETRY !== "1" &&
-    !hasArgument("--disable-patched-native-geometry");
-  const bundledPatchedExecutable =
-    process.platform === "darwin" &&
-    (hasArgument("--enable-patched-native-geometry") || packagedMacosDefault)
+  const explicitExecutable =
+    argumentValue("--native-geometry-executable") ||
+    String(process.env.IINATAN_NATIVE_GEOMETRY || "").trim();
+  const nativeGeometryDisabled =
+    process.env.IINATAN_DISABLE_NATIVE_GEOMETRY === "1" ||
+    hasArgument("--disable-patched-native-geometry");
+  const helperName =
+    process.platform === "win32"
+      ? "iinatan-native-geometry.exe"
+      : "iinatan-native-geometry";
+  const compatibilityHelperName =
+    process.platform === "win32" ? "iinatan-native-geometry-libass-0.17.4.exe" : "";
+  const developmentHelperName =
+    process.platform === "darwin" ? "iina-hoshi-dicts" : helperName;
+  const sourceRoot = path.join(__dirname, "..");
+  const packagedHelper =
+    process.platform === "darwin"
       ? path.join(resourceRoot(), "bin", "iina-hoshi-dicts")
-      : "";
-  const executable = explicitExecutable || bundledPatchedExecutable;
-  if (!executable) return null;
-  try {
-    await fs.access(executable);
-    const root =
-      argumentValue("--native-geometry-root") ||
-      path.join(app.getPath("userData"), "native-geometry");
-    const worker = new NativeGeometryWorker({ executable, root });
-    return new NativeSubtitleGeometryService({
-      client: new NativeGeometryClient(worker),
-      geometryProvider,
-      playerCompatibility: VALIDATED_PLAYER_CAPABILITY,
-    });
-  } catch (error) {
-    console.warn("[iinatan] native subtitle geometry unavailable", error.message);
-    return null;
+      : path.join(resourceRoot(), "bin", helperName);
+  const packagedCompatibilityHelper = compatibilityHelperName
+    ? path.join(resourceRoot(), "bin", compatibilityHelperName)
+    : "";
+  const developmentHelpers = [
+    path.join(sourceRoot, "build", "native", developmentHelperName),
+    path.join(sourceRoot, "build", "native", "Release", developmentHelperName),
+    path.join(
+      sourceRoot,
+      "build",
+      `native-geometry-${process.platform === "win32" ? "windows" : "linux"}-x86_64`,
+      developmentHelperName,
+    ),
+    path.join(
+      sourceRoot,
+      "build",
+      `native-geometry-${process.platform === "win32" ? "windows" : "linux"}-x86_64`,
+      "Release",
+      developmentHelperName,
+    ),
+    path.join(
+      sourceRoot,
+      "build",
+      "native-geometry-windows-cmake",
+      "Release",
+      developmentHelperName,
+    ),
+    path.join(
+      sourceRoot,
+      "build",
+      "native-geometry-linux-cmake",
+      "Release",
+      developmentHelperName,
+    ),
+    path.join(sourceRoot, "build", "package-resources", developmentHelperName),
+  ];
+  const developmentCompatibilityHelpers = compatibilityHelperName
+    ? [
+        path.join(
+          sourceRoot,
+          "build",
+          "native-geometry-windows-compat-cmake2",
+          "Release",
+          compatibilityHelperName,
+        ),
+        path.join(
+          sourceRoot,
+          "build",
+          "native-geometry-windows-compat-cmake",
+          "Release",
+          compatibilityHelperName,
+        ),
+        path.join(sourceRoot, "build", "package-resources", compatibilityHelperName),
+      ]
+    : [];
+  const candidates = explicitExecutable
+    ? [path.resolve(explicitExecutable)]
+    : nativeGeometryDisabled
+      ? []
+      : app.isPackaged
+        ? [packagedHelper, packagedCompatibilityHelper].filter(Boolean)
+        : hasArgument("--enable-patched-native-geometry")
+          ? [
+              packagedHelper,
+              packagedCompatibilityHelper,
+              ...developmentHelpers,
+              ...developmentCompatibilityHelpers,
+            ].filter(Boolean)
+          : [];
+  const uniqueCandidates = [...new Set(candidates)];
+  if (!uniqueCandidates.length) return null;
+  const root =
+    argumentValue("--native-geometry-root") ||
+    path.join(app.getPath("userData"), "native-geometry");
+  const profiles = [];
+  for (const executable of uniqueCandidates) {
+    try {
+      await fs.access(executable);
+      const worker = new NativeGeometryWorker({ executable, root });
+      const client = new NativeGeometryClient(worker);
+      const version = await client.negotiate();
+      const assGeometry = version.assGeometry || {};
+      const expectedFontProvider =
+        process.platform === "win32"
+          ? "directwrite"
+          : process.platform === "darwin"
+            ? "coretext"
+            : "fontconfig";
+      const expectedArchitecture = process.platform === "darwin" ? "arm64" : "x86-64";
+      const common =
+        assGeometry.available === true &&
+        assGeometry.protocol === 1 &&
+        assGeometry.envelopeRects === true &&
+        assGeometry.architecture === expectedArchitecture &&
+        assGeometry.fontProvider === expectedFontProvider;
+      if (!common) continue;
+      if (
+        assGeometry.libass === VALIDATED_PLAYER_CAPABILITY.libassVersion &&
+        assGeometry.ffmpeg === VALIDATED_PLAYER_CAPABILITY.ffmpegVersion &&
+        assGeometry.patch === "libass-0.17.5-iinatan-unit-ids-v2"
+      ) {
+        profiles.push({
+          id: "mpv-0.41.0-libass-0.17.5",
+          client,
+          playerCompatibility: VALIDATED_PLAYER_CAPABILITY,
+          inputScope: "all-supported",
+        });
+      } else if (
+        process.platform === "win32" &&
+        assGeometry.libass === "0.17.4" &&
+        assGeometry.patch === "libass-0.17.4-iinatan-unit-ids-v2"
+      ) {
+        profiles.push({
+          ...WINDOWS_LIBASS_0174_SUBRIP_PROFILE,
+          client,
+        });
+        profiles.push({
+          ...WINDOWS_LIBASS_0174_EMBEDDED_ASS_PROFILE,
+          client,
+        });
+      }
+    } catch (error) {
+      console.warn(
+        "[iinatan] native subtitle geometry helper unavailable",
+        String(error?.message || error),
+      );
+    }
   }
+  if (!profiles.length) return null;
+  return new NativeSubtitleGeometryService({ profiles, geometryProvider });
 }
 
 async function createBitmapOcrRuntime(preferences) {
@@ -591,6 +744,7 @@ async function createBitmapOcrRuntime(preferences) {
 
 async function main() {
   app.setName("iinatan for mpv");
+  if (process.env.IINATAN_E2E_DISABLE_GPU === "1") app.disableHardwareAcceleration();
   if (!app.requestSingleInstanceLock()) {
     app.quit();
     return;
@@ -636,10 +790,12 @@ async function main() {
   let settingsControlRegions = null;
   let settingsDialog = null;
 
-  function windowStatus(window) {
+  function windowStatus(window, visibleOverride) {
     if (!window || window.isDestroyed()) return null;
+    const nativeVisible = typeof window.isVisible === "function" && window.isVisible();
     return {
-      visible: typeof window.isVisible === "function" && window.isVisible(),
+      visible: visibleOverride === undefined ? nativeVisible : visibleOverride,
+      nativeVisible,
       focused: typeof window.isFocused === "function" && window.isFocused(),
       alwaysOnTop: typeof window.isAlwaysOnTop === "function" && window.isAlwaysOnTop(),
       bounds: typeof window.getBounds === "function" ? window.getBounds() : null,
@@ -696,7 +852,7 @@ async function main() {
       dictionary: {
         backend: runtime.worker
           ? "hoshidicts"
-          : hasArgument("--demo")
+          : demoDictionaryEnabled()
             ? "demo"
             : "unavailable",
         fingerprint: runtime.dictionaryFingerprint || null,
@@ -744,6 +900,8 @@ async function main() {
         popupScroll: controller.popupScroll || null,
         popupSelectionText: controller.popupSelectionText || "",
         popupFocusTarget: controller.popupFocusTarget || "",
+        popupFocusRevision: controller.popupFocusRevision || 0,
+        nestedPopupResult: controller.nestedPopupResult || null,
         controllerEntryIndex: Number.isInteger(controller.controllerEntryIndex)
           ? controller.controllerEntryIndex
           : -1,
@@ -785,10 +943,14 @@ async function main() {
         ankiResult: controller.lastAnkiResult || null,
         lastPopupCloseReason: controller.lastPopupCloseReason || null,
         surfaceReadiness: controller.browserHost?.surfaceReadiness?.() || null,
+        windowTransitions: controller.browserHost?.windowTransitionState?.() || null,
         popupPlacement: controller.popupPlacement || null,
         focusPlayer: controller.focusPlayerResult || null,
         highlightWindow: windowStatus(controller.browserHost?.highlightWindow),
-        popupWindow: windowStatus(controller.browserHost?.popupWindow),
+        popupWindow: windowStatus(
+          controller.browserHost?.popupWindow,
+          controller.browserHost?.popupVisible === true,
+        ),
       })),
     };
   }
@@ -806,16 +968,52 @@ async function main() {
           `${JSON.stringify({ ...e2eStatus(), reason: String(reason || "update") })}\n`,
           { mode: 0o600 },
         );
-        await fs.rename(temporary, e2eStatusPath);
-      });
+        if (process.platform !== "win32") {
+          await fs.rename(temporary, e2eStatusPath);
+          return;
+        }
+        let lastError = null;
+        for (let attempt = 0; attempt < 8; attempt++) {
+          try {
+            // Windows does not replace an existing destination with rename.
+            // The status writer is serialized, so removing this process's
+            // previous snapshot is safe; readers already tolerate a brief
+            // missing file while the replacement is written.
+            await fs.rm(e2eStatusPath, { force: true });
+            await fs.rename(temporary, e2eStatusPath);
+            return;
+          } catch (error) {
+            lastError = error;
+            if (!["EPERM", "EEXIST", "EBUSY", "ENOTEMPTY"].includes(error?.code))
+              throw error;
+            await new Promise((resolve) => setTimeout(resolve, 25));
+          }
+        }
+        throw lastError || new Error("could not replace E2E status file");
+      })
+      .finally(() =>
+        fs.rm(`${e2eStatusPath}.${process.pid}.next`, { force: true }).catch(() => {}),
+      );
     return e2eStatusSerial;
   }
 
   function createController() {
+    const windowProbeName =
+      process.platform === "win32"
+        ? "iinatan-window-probe.exe"
+        : "iinatan-window-probe";
+    const windowTransitionProbe =
+      String(process.env.IINATAN_WINDOW_PROBE || "").trim() ||
+      [
+        path.join(resourceRoot(), "bin", windowProbeName),
+        path.join(resourceRoot(), "build", "native", windowProbeName),
+        path.join(resourceRoot(), "build", "native", "Release", windowProbeName),
+      ].find((candidate) => fsSync.existsSync(candidate));
     const browserHost = new BrowserHost({
       BrowserWindow,
       globalShortcut,
       ipcMain,
+      windowTransitionProbe,
       preloadPath: path.join(__dirname, "preload.js"),
       overlayUrl: "iinatan://app/overlay.html",
       controllerSource: runtime.worker?.nativeControllerAvailable
@@ -823,6 +1021,8 @@ async function main() {
         : "browser-gamepad",
     });
     const nativeWindow = new NativeWindowAdapter({
+      probeExecutable:
+        String(process.env.IINATAN_WINDOW_PROBE || "").trim() || undefined,
       resourceRoot: resourceRoot(),
       sessionDirectory: runtimeDir,
       screen,
@@ -857,6 +1057,8 @@ async function main() {
     controller.on("popup-scroll", () => publishE2EStatus("popup-scroll"));
     controller.on("popup-selection", () => publishE2EStatus("popup-selection"));
     controller.on("popup-focus", () => publishE2EStatus("popup-focus"));
+    controller.on("nested-result", () => publishE2EStatus("nested-result"));
+    controller.on("nested-closed", () => publishE2EStatus("nested-closed"));
     controller.on("audio-result", () => publishE2EStatus("audio-result"));
     controller.on("anki-result", () => publishE2EStatus("anki-result"));
     controller.on("cursor-diagnostic", () => publishE2EStatus("cursor-diagnostic"));
@@ -864,6 +1066,20 @@ async function main() {
     browserHost.on("stacking-error", (error) =>
       console.warn("[iinatan] companion-window stacking failed", error.message),
     );
+    browserHost.on("window-transition-error", (error) => {
+      console.warn(
+        "[iinatan] companion-window transition suppression failed",
+        error.message,
+      );
+      publishE2EStatus("window-transition-error");
+    });
+    browserHost.on("window-focus-error", (error) => {
+      console.warn(
+        "[iinatan] companion-window foreground activation failed",
+        error.message,
+      );
+      publishE2EStatus("window-focus-error");
+    });
     controller.on("focus-player", () => {
       if (process.platform === "darwin" && typeof app.hide === "function") app.hide();
       nativeWindow

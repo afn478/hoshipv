@@ -461,7 +461,10 @@ function structuredContentNode(value, depth = 0) {
   if (value.style) result.style = safeStructuredStyle(value.style);
   if (value.data) result.data = safeStructuredData(value.data);
   if (value.title) result.title = String(value.title).slice(0, 1000);
-  if (tag === "a") result.href = externalUrl(value.href || value.url);
+  if (tag === "a") {
+    const href = externalUrl(value.href || value.url);
+    if (href) result.href = href;
+  }
   if (tag === "details" && Object.prototype.hasOwnProperty.call(value, "open"))
     result.open = value.open === true;
   if (tag === "img") {

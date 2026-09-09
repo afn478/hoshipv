@@ -14,6 +14,7 @@ const allowedTypes = new Set([
   "popup-scroll",
   "popup-size",
   "popup-style",
+  "popup-painted",
   "dismiss-popup",
   "player-command",
   "external-link",

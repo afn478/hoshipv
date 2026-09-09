@@ -93,7 +93,7 @@ function createFixtureResult() {
               {
                 type: "audio",
                 text: "native audio",
-                url: "https://audio.example/native.mp3",
+                url: "https://audio.example-card/native.mp3",
               },
               {
                 type: "furigana",
@@ -169,6 +169,36 @@ function createFixtureResult() {
                   },
                 ],
               },
+              {
+                type: "structured-content",
+                content: [
+                  {
+                    type: "structured-element",
+                    tag: "p",
+                    content: [
+                      {
+                        type: "structured-element",
+                        tag: "a",
+                        className: "fixture-plain-link",
+                        content: [
+                          {
+                            type: "structured-element",
+                            tag: "ruby",
+                            content: [
+                              { type: "text", text: "\u732b" },
+                              {
+                                type: "structured-element",
+                                tag: "rt",
+                                content: [{ type: "text", text: "\u306d\u3053" }],
+                              },
+                            ],
+                          },
+                        ],
+                      },
+                    ],
+                  },
+                ],
+              },
               ...repeatedGlossaries[0].content,
             ],
           },
@@ -229,6 +259,58 @@ function sendEvent(
 
 async function evaluate(window, expression) {
   return window.webContents.executeJavaScript(expression, true);
+}
+
+async function dispatchMeasuredTarget(window, targetExpression, label) {
+  return evaluate(
+    window,
+    `(() => {
+      const target = ${targetExpression};
+      if (!target) throw new Error(${JSON.stringify(`click target missing: ${label}`)});
+      const walker = document.createTreeWalker(target, NodeFilter.SHOW_TEXT);
+      let node;
+      while (walker.nextNode()) {
+        if (walker.currentNode.textContent?.trim()) {
+          node = walker.currentNode;
+          break;
+        }
+      }
+      const range = document.createRange();
+      if (node) range.selectNodeContents(node);
+      const rect = node
+        ? range.getClientRects()[0] || range.getBoundingClientRect()
+        : target.getBoundingClientRect();
+      if (!rect || rect.width <= 0 || rect.height <= 0)
+        throw new Error(${JSON.stringify(`click target has no visible region: ${label}`)});
+      const event = new MouseEvent('click', {
+        bubbles: true,
+        cancelable: true,
+        clientX: rect.left + Math.max(1, rect.width / 2),
+        clientY: rect.top + Math.max(1, rect.height / 2),
+        view: window,
+      });
+      if (range && node)
+        Object.defineProperty(event, 'lookupRange', { configurable: true, value: range });
+      target.dispatchEvent(event);
+      return { x: rect.left, y: rect.top, width: rect.width, height: rect.height };
+    })()`,
+  );
+}
+
+async function dispatchMeasuredClick(window, selector) {
+  return dispatchMeasuredTarget(
+    window,
+    `document.querySelector(${JSON.stringify(selector)})`,
+    selector,
+  );
+}
+
+async function dispatchMeasuredTextClick(window, text) {
+  return dispatchMeasuredTarget(
+    window,
+    `[...document.querySelectorAll('.xref-link')].find((item) => item.textContent?.includes(${JSON.stringify(text)}))`,
+    `xref-link containing ${text}`,
+  );
 }
 
 async function run() {
@@ -394,8 +476,8 @@ async function run() {
         popupMaxWidth: 640,
         fontScale: 1,
         theme: "light",
-        customCss: "#popup .glossary { color: rgb(1, 2, 3); }",
-        audioSources: ["https://audio.example/{term}.mp3"],
+        customCss: "#popup .dict-section { color: rgb(1, 2, 3); }",
+        audioSources: ["https://audio.example-card/{term}.json"],
         audioAutoPlay: false,
         anki: { enabled: true, configured: true },
         nestedPopupMode: "click",
@@ -407,8 +489,10 @@ async function run() {
     );
     await waitFor(
       async () =>
-        (await evaluate(popup, "!document.getElementById('popup-panel').hidden")) ===
-        true,
+        (await evaluate(
+          popup,
+          "!document.getElementById('popup').classList.contains('hidden')",
+        )) === true,
       "popup rendering",
     );
     await waitFor(
@@ -424,42 +508,48 @@ async function run() {
     const initialState = await evaluate(
       popup,
       `(() => {
-        const panel = document.getElementById('popup-panel');
+        const panel = document.getElementById('popup');
         return {
-          hidden: panel.hidden,
+          hidden: panel.classList.contains('hidden'),
           role: panel.getAttribute('role'),
           label: panel.getAttribute('aria-label'),
           tabIndex: panel.tabIndex,
           popupMinWidth: getComputedStyle(panel).getPropertyValue('--popup-min-width').trim(),
           popupMaxWidth: getComputedStyle(panel).getPropertyValue('--popup-max-width').trim(),
-          headword: document.getElementById('popup-headword').textContent,
+          headword: document.querySelector('.head-title .term').textContent,
           entries: document.querySelectorAll('.entry').length,
-          entryHeadwords: [...document.querySelectorAll('.entry-headword')].map(
+          entryHeadwords: [...document.querySelectorAll('.dict-headword')].map(
             (item) => item.textContent,
           ),
-          entryReadings: [...document.querySelectorAll('.entry-reading')].map(
+          entryReadings: [...document.querySelectorAll('.dict-reading')].map(
             (item) => item.textContent,
           ),
-          pitch: [...document.querySelectorAll('.entry-pitch')].map(
+          pitch: [...document.querySelectorAll('.primary-pitch')].map(
             (item) => item.textContent,
           ),
-          examples: document.querySelectorAll('.example').length,
-          notes: document.querySelectorAll('.note').length,
-          glossaries: document.querySelectorAll('.glossary').length,
+          examples: document.querySelectorAll('.example-card').length,
+          notes: document.querySelectorAll('.note-card').length,
+          glossaries: document.querySelectorAll('.dict-section').length,
           details: document.querySelectorAll('details').length,
           grammarRows: document.querySelectorAll('.grammar-row').length,
-          etymologyOpen: document.querySelector(
-            'details[data-content="details-entry-etymology"]',
+          etymologyOpen: [...document.querySelectorAll('details')].find(
+            (item) => item.querySelector('summary')?.textContent === 'Etymology',
           )?.open,
           tables: document.querySelectorAll('table').length,
-          crossReferences: document.querySelectorAll('.cross-reference').length,
-          nestedActions: document.querySelectorAll('[data-action="nested-lookup"]').length,
-          links: document.querySelectorAll('[data-href]').length,
-          audio: document.querySelectorAll('[data-action="dictionary-audio"]').length,
-          anki: document.querySelectorAll('[data-action="anki-add"]').length,
-          customStyle: !!document.querySelector('style[data-source="user-custom-css"]'),
+          crossReferences: [...document.querySelectorAll('.xref-link:not(.external-source-link)')].filter(
+            (item) => item.textContent?.includes('\u8a00\u8a9e'),
+          ).length,
+          nestedActions: [...document.querySelectorAll('.xref-link:not(.external-source-link)')].filter(
+            (item) => item.textContent?.includes('\u8a00\u8a9e'),
+          ).length,
+          plainLinkTag: document.querySelector('.xref-link:not(.external-source-link)')?.tagName,
+          plainLinkAction: document.querySelector('.xref-link:not(.external-source-link)')?.dataset.action || '',
+          links: document.querySelectorAll('.external-source-link').length,
+          audio: document.querySelectorAll('.audio-button').length,
+          anki: document.querySelectorAll('.anki-primary-button').length,
+          customStyle: !!document.getElementById('iinatan-custom-popup-css'),
           customGlossaryColor: getComputedStyle(
-            document.querySelector('.glossary'),
+            document.querySelector('.dict-section'),
           ).color,
           csp: document.querySelector('meta[http-equiv="Content-Security-Policy"]')?.content || '',
         };
@@ -471,25 +561,25 @@ async function run() {
     assert.equal(initialState.tabIndex, -1);
     assert.equal(initialState.popupMinWidth, "280px");
     assert.equal(initialState.popupMaxWidth, "640px");
-    assert.equal(initialState.headword, "日本語");
+    assert.equal(initialState.headword, "日本語にほんご");
     assert.equal(initialState.entries, 2);
-    assert.deepEqual(initialState.entryHeadwords, ["日本語", "日本"]);
-    assert.deepEqual(initialState.entryReadings, ["にほんご", "にほん"]);
+    assert.deepEqual(initialState.entryHeadwords, ["日本にほん"]);
+    assert.deepEqual(initialState.entryReadings, []);
     assert.equal(initialState.pitch.length, 1);
-    assert.match(initialState.pitch[0], /Fixture pitch/);
-    assert.match(initialState.pitch[0], /positions 2/);
-    assert.match(initialState.pitch[0], /LHH/);
+    assert.match(initialState.pitch[0], /\[2\]/);
     assert.equal(initialState.examples, 1);
     assert.equal(initialState.notes, 1);
-    assert.equal(initialState.glossaries, 13);
-    assert.ok(initialState.details >= 12);
+    assert.equal(initialState.glossaries, 5);
+    assert.ok(initialState.details >= 4);
     assert.equal(initialState.grammarRows, 1);
-    assert.equal(initialState.etymologyOpen, true);
+    assert.equal(initialState.etymologyOpen, false);
     assert.equal(initialState.tables, 1);
     assert.equal(initialState.crossReferences, 1);
     assert.equal(initialState.nestedActions, 1);
+    assert.equal(initialState.plainLinkTag, "SPAN");
+    assert.equal(initialState.plainLinkAction, "");
     assert.equal(initialState.links, 1);
-    assert.equal(initialState.audio, 1);
+    assert.equal(initialState.audio, 2);
     assert.equal(initialState.anki, 2);
     assert.equal(initialState.customStyle, true);
     assert.equal(initialState.customGlossaryColor, "rgb(1, 2, 3)");
@@ -523,9 +613,9 @@ async function run() {
     const visiblePopupBounds = await evaluate(
       popup,
       `(() => {
-        const panel = document.getElementById('popup-panel').getBoundingClientRect();
-        const header = document.getElementById('popup-header').getBoundingClientRect();
-        const content = document.getElementById('popup-content').getBoundingClientRect();
+        const panel = document.getElementById('popup').getBoundingClientRect();
+        const header = document.querySelector('.head').getBoundingClientRect();
+        const content = document.querySelector('#popup .body').getBoundingClientRect();
         return {
           panel: { left: panel.left, top: panel.top, right: panel.right, bottom: panel.bottom },
           content: { left: content.left, top: Math.max(content.top, header.bottom), right: content.right, bottom: Math.min(content.bottom, panel.bottom) },
@@ -554,10 +644,55 @@ async function run() {
       "selection region telemetry must stay inside the visible content viewport",
     );
 
+    const plainLinkNestedRequestBefore = messages.filter(
+      (item) => item.message.type === "nested-lookup",
+    ).length;
+    await dispatchMeasuredTextClick(popup, "\u732b");
+    await waitFor(
+      () =>
+        messages.filter((item) => item.message.type === "nested-lookup").length ===
+        plainLinkNestedRequestBefore + 1,
+      "nested lookup from plain dictionary link text",
+    );
+    const plainLinkNestedRequest = messages
+      .filter((item) => item.message.type === "nested-lookup")
+      .at(-1).message;
+    assert.equal(plainLinkNestedRequest.payload.text, "\u732b");
+    assert.equal(plainLinkNestedRequest.payload.utf16Start, 0);
+    sendEvent(
+      popup,
+      "nested-lookup-result",
+      {
+        requestId: plainLinkNestedRequest.payload.requestId,
+        popupSessionId: "popup-fixture-session",
+        depth: 1,
+        ok: true,
+        result: { lookupString: "\u732b", matched: "\u732b", entries: [] },
+      },
+      initialGeneration,
+      plainLinkNestedRequest.payload.requestId,
+    );
+    await waitFor(
+      async () =>
+        (await evaluate(popup, "document.querySelectorAll('.nested-popup').length")) ===
+        1,
+      "plain dictionary link nested popup rendering",
+    );
+    await evaluate(
+      popup,
+      "document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))",
+    );
+    await waitFor(
+      async () =>
+        (await evaluate(popup, "document.querySelectorAll('.nested-popup').length")) ===
+        0,
+      "plain dictionary link nested popup Escape dismissal",
+    );
+
     const nestedRequestBefore = messages.filter(
       (item) => item.message.type === "nested-lookup",
     ).length;
-    await evaluate(popup, "document.querySelector('.cross-reference').click()");
+    await dispatchMeasuredTextClick(popup, "\u8a00\u8a9e");
     await waitFor(
       () =>
         messages.filter((item) => item.message.type === "nested-lookup").length ===
@@ -621,13 +756,13 @@ async function run() {
     assert.equal(
       await evaluate(
         popup,
-        "document.querySelector('.nested-popup-headword')?.textContent",
+        "document.querySelector('.nested-popup .head-title .term')?.textContent",
       ),
-      "言語",
+      "\u8a00\u8a9e\u3054\u3044",
     );
-    await evaluate(
+    await dispatchMeasuredClick(
       popup,
-      "document.querySelector('.nested-popup .cross-reference').click()",
+      ".nested-popup .xref-link:not(.external-source-link)",
     );
     await waitFor(
       () =>
@@ -661,7 +796,7 @@ async function run() {
     );
     await evaluate(
       popup,
-      "document.querySelectorAll('.nested-popup')[1].dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))",
+      "document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))",
     );
     await waitFor(
       async () =>
@@ -682,7 +817,7 @@ async function run() {
           await evaluate(
             popup,
             `(() => {
-            const panel = document.getElementById('popup-panel');
+            const panel = document.getElementById('popup');
             return [panel.style.left, panel.style.top, panel.style.width, panel.style.maxHeight];
           })()`,
           )
@@ -691,7 +826,7 @@ async function run() {
     );
     assert.equal(
       await evaluate(popup, "document.activeElement?.id"),
-      "popup-panel",
+      "popup",
       "layout-only reflow must preserve popup focus",
     );
 
@@ -703,7 +838,7 @@ async function run() {
     const contextMenuState = await evaluate(
       popup,
       `(() => {
-        const target = document.querySelector('.glossary');
+        const target = document.querySelector('.dict-section');
         const contextMenu = new MouseEvent('contextmenu', {
           bubbles: true,
           cancelable: true,
@@ -733,7 +868,7 @@ async function run() {
     );
     assert.equal(
       await evaluate(popup, "document.activeElement?.id"),
-      "popup-panel",
+      "popup",
       "pointer motion and context-menu input must not remove focus",
     );
 
@@ -744,7 +879,7 @@ async function run() {
     ).length;
     await evaluate(
       popup,
-      `document.querySelector('.glossary').dispatchEvent(new PointerEvent('pointerdown', {
+      `document.querySelector('.dict-section').dispatchEvent(new PointerEvent('pointerdown', {
         bubbles: true,
         cancelable: true,
         button: 0,
@@ -777,6 +912,7 @@ async function run() {
         fontScale: 1,
         theme: "light",
         customCss: "outline: 2px solid rgb(1, 2, 3);",
+        audioSources: ["https://audio.example-card/{term}.json"],
         anki: { enabled: true, configured: true },
         result: fixtureResult,
       },
@@ -784,8 +920,10 @@ async function run() {
     );
     await waitFor(
       async () =>
-        (await evaluate(popup, "!document.getElementById('popup-panel').hidden")) ===
-        true,
+        (await evaluate(
+          popup,
+          "!document.getElementById('popup').classList.contains('hidden')",
+        )) === true,
       "popup restoration after dismissal-cancel test",
     );
 
@@ -793,11 +931,11 @@ async function run() {
       popup,
       `(() => {
         window.__iinatanCaptureEvents = [];
-        const panel = document.getElementById('popup-panel');
+        const panel = document.getElementById('popup');
         const root = document.getElementById('root');
-        panel.setPointerCapture = (pointerId) =>
+        root.setPointerCapture = (pointerId) =>
           window.__iinatanCaptureEvents.push(['set', pointerId]);
-        panel.releasePointerCapture = (pointerId) =>
+        root.releasePointerCapture = (pointerId) =>
           window.__iinatanCaptureEvents.push(['release', pointerId]);
         root.dispatchEvent(new PointerEvent('pointerdown', {
           bubbles: true,
@@ -811,8 +949,10 @@ async function run() {
     sendEvent(popup, "popup-state", { visible: false }, initialGeneration + 1);
     await waitFor(
       async () =>
-        (await evaluate(popup, "document.getElementById('popup-panel').hidden")) ===
-        true,
+        (await evaluate(
+          popup,
+          "document.getElementById('popup').classList.contains('hidden')",
+        )) === true,
       "host-driven popup hide during outside pointer capture",
     );
     assert.deepEqual(
@@ -836,6 +976,7 @@ async function run() {
         popupMaxWidth: 640,
         fontScale: 1,
         theme: "light",
+        audioSources: ["https://audio.example-card/{term}.json"],
         anki: { enabled: true, configured: true },
         result: fixtureResult,
       },
@@ -843,8 +984,10 @@ async function run() {
     );
     await waitFor(
       async () =>
-        (await evaluate(popup, "!document.getElementById('popup-panel').hidden")) ===
-        true,
+        (await evaluate(
+          popup,
+          "!document.getElementById('popup').classList.contains('hidden')",
+        )) === true,
       "popup restoration after host-driven pointer capture cleanup",
     );
 
@@ -856,7 +999,7 @@ async function run() {
     await evaluate(
       popup,
       `(() => {
-        const button = document.querySelector('[data-action="audio-source"]');
+        const button = document.querySelector('.audio-button');
         for (const type of ['pointerdown', 'pointerup'])
           button.dispatchEvent(new PointerEvent(type, {
             bubbles: true,
@@ -897,7 +1040,7 @@ async function run() {
     await evaluate(
       popup,
       `(() => {
-        const text = document.querySelector('.glossary');
+        const text = document.querySelector('.dict-section');
         for (const [type, payload] of [
           ['pointerdown', { button: 0 }],
           ['pointerup', { button: 0 }],
@@ -941,7 +1084,7 @@ async function run() {
     await evaluate(
       popup,
       `(() => {
-        const text = document.querySelector('.glossary');
+        const text = document.querySelector('.dict-section');
         text.dispatchEvent(new PointerEvent('pointerdown', {
           bubbles: true,
           cancelable: true,
@@ -966,7 +1109,10 @@ async function run() {
     sendEvent(popup, "popup-state", { visible: false }, initialGeneration - 1);
     await delay(50);
     assert.equal(
-      await evaluate(popup, "document.getElementById('popup-panel').hidden"),
+      await evaluate(
+        popup,
+        "document.getElementById('popup').classList.contains('hidden')",
+      ),
       false,
       "stale popup state must be ignored",
     );
@@ -974,7 +1120,7 @@ async function run() {
     await evaluate(
       popup,
       `(() => {
-        const root = document.getElementById('popup-content');
+        const root = document.querySelector('#popup .body');
         const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
         let textNode = null;
         while (walker.nextNode()) {
@@ -1007,96 +1153,143 @@ async function run() {
 
     await evaluate(
       popup,
-      "document.querySelector('[data-action=audio-source]').click()",
+      `(() => {
+        window.__iinatanAudioEvents = [];
+        window.Audio = class {
+          constructor(url) {
+            this.src = url;
+            this.paused = true;
+            this.readyState = 4;
+            window.__iinatanAudioEvents.push({ type: 'create', url });
+            window.__iinatanAudio = this;
+          }
+          addEventListener() {}
+          removeEventListener() {}
+          play() {
+            this.paused = false;
+            window.__iinatanAudioEvents.push({ type: 'play' });
+            return Promise.resolve();
+          }
+          pause() {
+            this.paused = true;
+            window.__iinatanAudioEvents.push({ type: 'pause' });
+          }
+          removeAttribute(name) {
+            if (name === 'src') this.src = '';
+            window.__iinatanAudioEvents.push({ type: 'remove-attribute', name });
+          }
+          load() {
+            window.__iinatanAudioEvents.push({ type: 'load' });
+          }
+        };
+        document.querySelector('.audio-button').click();
+      })()`,
     );
     await waitFor(
       () => messages.some((item) => item.message.type === "audio-source"),
-      "audio source message",
+      "reference audio source message",
     );
     const audioRequestId = messages
       .filter((item) => item.message.type === "audio-source")
       .at(-1)?.message.payload.requestId;
     assert.match(audioRequestId || "", /^audio-/);
+    assert.ok(
+      messages.at(-1)?.message.payload.term,
+      "host audio requests must retain the reference term",
+    );
     sendEvent(
       popup,
       "audio-result",
-      { candidates: [{ name: "Stale", url: "https://audio.example/stale.mp3" }] },
-      initialGeneration + 2,
+      { candidates: [{ name: "Stale", url: "https://audio.example-card/stale.mp3" }] },
+      initialGeneration + 1,
       "audio-stale-request",
     );
     await delay(50);
-    assert.equal(
-      await evaluate(popup, "document.querySelectorAll('.audio-candidate').length"),
-      0,
-      "stale audio results must not replace the active request",
-    );
     sendEvent(
       popup,
       "audio-result",
       {
         candidates: [
-          { name: "Primary", url: "https://audio.example/primary.mp3" },
-          { name: "Fallback", url: "https://audio.example/fallback.mp3" },
+          { name: "Primary", url: "https://audio.example-card/primary.mp3" },
+          { name: "Fallback", url: "https://audio.example-card/fallback.mp3" },
         ],
       },
       initialGeneration + 2,
       audioRequestId,
     );
     await waitFor(
+      async () => (await evaluate(popup, "window.__iinatanAudio?.paused")) === false,
+      "reference audio playback",
+    );
+    assert.ok(
+      (await evaluate(popup, "window.__iinatanAudioEvents")).some(
+        (event) => event.type === "play",
+      ),
+      "reference audio control must start playback",
+    );
+    const audioMenuState = await evaluate(
+      popup,
+      `(() => {
+        const button = document.querySelector('.audio-button');
+        const rect = button.getBoundingClientRect();
+        const event = new MouseEvent('contextmenu', {
+          bubbles: true,
+          cancelable: true,
+          button: 2,
+          clientX: rect.left + rect.width / 2,
+          clientY: rect.top + rect.height / 2,
+        });
+        return {
+          dispatched: button.dispatchEvent(event),
+          defaultPrevented: event.defaultPrevented,
+        };
+      })()`,
+    );
+    assert.deepEqual(audioMenuState, { dispatched: false, defaultPrevented: true });
+    await waitFor(
       async () =>
         (await evaluate(
           popup,
-          "document.querySelectorAll('.audio-candidate').length",
+          "document.querySelectorAll('.audio-source-menu-item').length",
         )) === 2,
-      "audio menu rendering",
-    );
-    await evaluate(
-      popup,
-      `window.__iinatanAudioEvents = []; window.Audio = class { constructor(url) { this.src = url; this.paused = false; window.__iinatanAudioEvents.push({ type: 'create', url }); window.__iinatanAudio = this; } play() { this.paused = false; window.__iinatanAudioEvents.push({ type: 'play' }); return Promise.resolve(); } pause() { this.paused = true; window.__iinatanAudioEvents.push({ type: 'pause' }); } removeAttribute(name) { if (name === 'src') this.src = ''; window.__iinatanAudioEvents.push({ type: 'remove-attribute', name }); } load() { window.__iinatanAudioEvents.push({ type: 'load' }); } }; document.querySelector('.audio-candidate').click()`,
-    );
-    assert.equal(
-      await evaluate(popup, "window.__iinatanAudio?.paused"),
-      false,
-      "audio candidate should start playback",
-    );
-    sendEvent(
-      popup,
-      "controller-command",
-      { command: "audio-down" },
-      initialGeneration + 2,
+      "reference audio source menu",
     );
     assert.equal(
       await evaluate(
         popup,
-        "document.querySelector('.audio-candidate[aria-selected=\"true\"]')?.textContent",
+        "document.querySelectorAll('.audio-source-menu-export').length",
       ),
-      "Fallback",
+      2,
+      "reference audio menu must expose Anki controls",
     );
-    sendEvent(
+    assert.deepEqual(
+      await evaluate(
+        popup,
+        "[...document.querySelectorAll('.audio-source-menu-export')].map((item) => item.getAttribute('aria-pressed'))",
+      ),
+      ["false", "false"],
+    );
+    await evaluate(
       popup,
-      "controller-command",
-      { command: "audio-right" },
-      initialGeneration + 2,
+      "document.querySelectorAll('.audio-source-menu-export')[1].click()",
     );
     assert.equal(
       await evaluate(
         popup,
-        "document.querySelector('.audio-anki[aria-pressed=\"true\"]')?.previousElementSibling?.textContent",
+        "document.querySelectorAll('.audio-source-menu-export')[1].getAttribute('aria-pressed')",
       ),
-      "Fallback",
+      "true",
+      "reference audio Anki state must be reflected in the source menu",
     );
     await evaluate(
       popup,
-      "document.querySelector('.audio-anki[aria-pressed=\"true\"]').click()",
+      "document.querySelectorAll('.audio-source-menu-item')[1].click()",
     );
     await waitFor(
-      () => messages.some((item) => item.message.type === "audio-anki-selection"),
-      "audio Anki selection message",
-    );
-    assert.equal(
-      messages.filter((item) => item.message.type === "audio-anki-selection").at(-1)
-        ?.message.payload.url,
-      "https://audio.example/fallback.mp3",
+      async () =>
+        (await evaluate(popup, "!document.querySelector('.audio-source-menu')")) ===
+        true,
+      "reference audio source menu dismissal",
     );
     sendEvent(
       popup,
@@ -1115,19 +1308,7 @@ async function run() {
       },
       initialGeneration + 2,
     );
-    await delay(50);
-    assert.equal(
-      await evaluate(popup, "window.__iinatanAudio?.paused"),
-      true,
-      "popup-state should stop old audio playback",
-    );
-    assert.equal(
-      await evaluate(popup, "window.__iinatanAudio?.src"),
-      "",
-      "popup-state should release the old audio source",
-    );
-
-    await evaluate(popup, "document.querySelector('[data-href]').click()");
+    await evaluate(popup, "document.querySelector('.external-source-link').click()");
     await waitFor(
       () => messages.some((item) => item.message.type === "external-link"),
       "external link message",
@@ -1139,7 +1320,7 @@ async function run() {
     const wheelState = await evaluate(
       popup,
       `(() => {
-        const panel = document.getElementById('popup-panel');
+        const panel = document.getElementById('popup');
         const wheel = new WheelEvent('wheel', {
           bubbles: true,
           cancelable: true,
@@ -1153,8 +1334,8 @@ async function run() {
       })()`,
     );
     assert.deepEqual(wheelState, {
-      dispatched: true,
-      defaultPrevented: false,
+      dispatched: false,
+      defaultPrevented: true,
       scrollable: true,
     });
     await delay(50);
@@ -1173,7 +1354,7 @@ async function run() {
     await evaluate(
       popup,
       `(() => {
-        const panel = document.getElementById('popup-panel');
+        const panel = document.getElementById('popup');
         panel.scrollTop = 180;
         panel.dispatchEvent(new Event('scroll'));
       })()`,
@@ -1192,7 +1373,7 @@ async function run() {
     );
     await evaluate(
       popup,
-      `document.getElementById('popup-panel').dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Escape' }))`,
+      `document.getElementById('popup').dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Escape' }))`,
     );
     await waitFor(
       () =>
@@ -1265,7 +1446,7 @@ async function run() {
         visible: true,
         position: { x: 40, y: 60 },
         result: fixtureResult,
-        customCss: "background-image: url(https://evil.example/x);",
+        customCss: "background-image: url(https://evil.example-card/x);",
       },
       initialGeneration + 2,
     );

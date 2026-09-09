@@ -11,37 +11,41 @@
     <link rel="stylesheet" href="./overlay.css" />
   </head>
   <body>
-    <main id="root" data-surface="highlight">
+    <div id="root" data-surface="highlight">
+      <div id="status" class="hidden"></div>
+      <div id="bitmap-ocr-status" class="hidden" role="status" aria-live="polite"></div>
+      <div id="task" class="hidden" data-clickable="true"></div>
+      <div id="subtitle" class="hidden"></div>
       <div id="highlight-layer" aria-hidden="true"></div>
+      <div
+        id="popup"
+        class="lookup-popup hidden"
+        data-clickable="true"
+        data-popup-depth="0"
+        role="dialog"
+        aria-label="Dictionary lookup"
+        tabindex="-1"
+      ></div>
+      <div id="nested-popup-layer" aria-live="polite"></div>
+      <div
+        id="popup-safety-zone"
+        class="hidden"
+        data-clickable="true"
+        aria-hidden="true"
+      ></div>
+      <div
+        id="popup-row-safety-zone"
+        class="hidden"
+        data-clickable="true"
+        aria-hidden="true"
+      ></div>
       <div id="controller-hold-progress" class="hidden" aria-hidden="true">
         <svg viewBox="0 0 40 40" focusable="false" aria-hidden="true">
           <circle class="controller-hold-track" cx="20" cy="20" r="16"></circle>
           <circle class="controller-hold-fill" cx="20" cy="20" r="16"></circle>
         </svg>
       </div>
-      <section
-        id="popup-panel"
-        role="dialog"
-        aria-label="Dictionary lookup"
-        tabindex="-1"
-        hidden
-      >
-        <header id="popup-header">
-          <div id="popup-headword"></div>
-          <div id="popup-reading"></div>
-          <button
-            id="popup-close"
-            type="button"
-            data-action="close-popup"
-            aria-label="Close lookup"
-          >
-            ×
-          </button>
-        </header>
-        <div id="popup-content"></div>
-      </section>
-      <div id="nested-popup-layer" aria-live="polite"></div>
-    </main>
+    </div>
     <script src="./renderer.js"></script>
   </body>
 </html>
