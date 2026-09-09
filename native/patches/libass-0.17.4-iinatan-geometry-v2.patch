@@ -1,0 +1,406 @@
+diff --git a/libass/ass.h b/libass/ass.h
+index 3ff1598..0e7d8f4 100644
+--- a/libass/ass.h
++++ b/libass/ass.h
+@@ -85,6 +85,21 @@ typedef struct ass_image {
+     // New fields can be added here in new ABI-compatible library releases.
+ } ASS_Image;
+
++typedef struct ass_iinatan_lookup_unit {
++    int read_order;
++    int start;
++    int end;
++    int id;
++} ASS_IinatanLookupUnit;
++
++typedef struct ass_iinatan_lookup_rect {
++    int id;
++    int x;
++    int y;
++    int w;
++    int h;
++} ASS_IinatanLookupRect;
++
+ /*
+  * Hinting type. (see ass_set_hinting below)
+  *
+@@ -848,6 +863,14 @@ void *ass_malloc(size_t size);
+  */
+ void ass_free(void *ptr);
+
++void ass_iinatan_set_lookup_units(ASS_Renderer *renderer,
++                                 const ASS_IinatanLookupUnit *units, int count);
++int ass_iinatan_lookup_units_valid(ASS_Renderer *renderer);
++int ass_iinatan_get_lookup_rects(ASS_Renderer *renderer,
++                                ASS_IinatanLookupRect *rects, int capacity);
++int ass_iinatan_get_lookup_envelope_rects(
++    ASS_Renderer *renderer, ASS_IinatanLookupRect *rects, int capacity);
++
+ #undef ASS_DEPRECATED
+ #undef ASS_DEPRECATED_ENUM
+
+diff --git a/libass/ass_render.c b/libass/ass_render.c
+index 68b11fe..af865f1 100644
+--- a/libass/ass_render.c
++++ b/libass/ass_render.c
+@@ -2134,6 +2134,17 @@ static bool parse_events(RenderContext *state, ASS_Event *event)
+
+         // Clear current GlyphInfo
+         memset(info, 0, sizeof(GlyphInfo));
++        info->lookup_unit = -1;
++        info->lookup_cluster = text_info->length;
++        for (int lookup = 0; lookup < state->renderer->lookup_unit_count; lookup++) {
++            ASS_IinatanLookupUnit *unit = &state->renderer->lookup_units[lookup];
++            if (event->ReadOrder == unit->read_order &&
++                    text_info->length >= unit->start &&
++                    text_info->length < unit->end) {
++                info->lookup_unit = unit->id;
++                break;
++            }
++        }
+
+         // Parse drawing
+         if (drawing_text.str) {
+@@ -2471,6 +2482,69 @@ static double restore_blur(int qblur)
+     return sigma * sigma;
+ }
+
++static void update_lookup_rect(
++    ASS_IinatanLookupRect *rects, int *count, int id,
++    int x0, int y0, int x1, int y1)
++{
++    ASS_IinatanLookupRect *rect = NULL;
++    for (int i = 0; i < *count; i++) {
++        if (rects[i].id == id) {
++            rect = &rects[i];
++            break;
++        }
++    }
++    if (!rect && *count < 256) {
++        rect = &rects[(*count)++];
++        rect->id = id;
++        rect->x = x0;
++        rect->y = y0;
++        rect->w = x1 - x0;
++        rect->h = y1 - y0;
++    } else if (rect) {
++        int right = FFMAX(rect->x + rect->w, x1);
++        int bottom = FFMAX(rect->y + rect->h, y1);
++        rect->x = FFMIN(rect->x, x0);
++        rect->y = FFMIN(rect->y, y0);
++        rect->w = right - rect->x;
++        rect->h = bottom - rect->y;
++    }
++}
++
++static void scan_lookup_bitmap(
++    const Bitmap *bitmap, ASS_Vector position, int offset_x, int offset_y,
++    const RenderContext *state, int *x0, int *y0, int *x1, int *y1)
++{
++    if (!bitmap || !bitmap->buffer)
++        return;
++    for (int y = 0; y < bitmap->h; y++) {
++        for (int x = 0; x < bitmap->w; x++) {
++            if (!bitmap->buffer[(ptrdiff_t) y * bitmap->stride + x])
++                continue;
++            int px = position.x + bitmap->left + x + offset_x;
++            int py = position.y + bitmap->top + y + offset_y;
++            if (px < state->clip_x0 || px >= state->clip_x1 ||
++                    py < state->clip_y0 || py >= state->clip_y1)
++                continue;
++            *x0 = FFMIN(*x0, px);
++            *y0 = FFMIN(*y0, py);
++            *x1 = FFMAX(*x1, px + 1);
++            *y1 = FFMAX(*y1, py + 1);
++        }
++    }
++}
++
++static void merge_lookup_rects(
++    ASS_IinatanLookupRect *target, int *target_count,
++    const ASS_IinatanLookupRect *source, int source_count)
++{
++    for (int i = 0; i < source_count; i++) {
++        const ASS_IinatanLookupRect *rect = &source[i];
++        update_lookup_rect(
++            target, target_count, rect->id, rect->x, rect->y,
++            rect->x + rect->w, rect->y + rect->h);
++    }
++}
++
+ // Convert glyphs to bitmaps, combine them, apply blur, generate shadows.
+ static void render_and_combine_glyphs(RenderContext *state,
+                                       double device_x, double device_y)
+@@ -2570,6 +2644,47 @@ static void render_and_combine_glyphs(RenderContext *state,
+             get_bitmap_glyph(state, info, &current_info->leftmost_x, &pos, &pos_o,
+                              &offset, !current_info->bitmap_count, flags);
+
++            if (info->lookup_unit >= 0) {
++                int fill_x0 = INT_MAX, fill_y0 = INT_MAX;
++                int fill_x1 = INT_MIN, fill_y1 = INT_MIN;
++                scan_lookup_bitmap(
++                    info->bm, pos, 0, 0, state,
++                    &fill_x0, &fill_y0, &fill_x1, &fill_y1);
++                if (fill_x0 < fill_x1 && fill_y0 < fill_y1)
++                    update_lookup_rect(
++                        render_priv->lookup_event_rects,
++                        &render_priv->lookup_event_rect_count,
++                        info->lookup_unit, fill_x0, fill_y0, fill_x1, fill_y1);
++
++                int envelope_x0 = INT_MAX, envelope_y0 = INT_MAX;
++                int envelope_x1 = INT_MIN, envelope_y1 = INT_MIN;
++                scan_lookup_bitmap(
++                    info->bm, pos, 0, 0, state,
++                    &envelope_x0, &envelope_y0, &envelope_x1, &envelope_y1);
++                scan_lookup_bitmap(
++                    info->bm_o, pos_o, 0, 0, state,
++                    &envelope_x0, &envelope_y0, &envelope_x1, &envelope_y1);
++                if ((info->shadow_x || info->shadow_y) &&
++                    _a(info->c[3]) != 0xFF) {
++                    const Bitmap *shadow_bitmap = info->bm_o ? info->bm_o : info->bm;
++                    const ASS_Vector shadow_position = info->bm_o ? pos_o : pos;
++                    const int shadow_x = lround(
++                        info->shadow_x * state->border_scale_x);
++                    const int shadow_y = lround(
++                        info->shadow_y * state->border_scale_y);
++                    scan_lookup_bitmap(
++                        shadow_bitmap, shadow_position, shadow_x, shadow_y,
++                        state, &envelope_x0, &envelope_y0,
++                        &envelope_x1, &envelope_y1);
++                }
++                if (envelope_x0 < envelope_x1 && envelope_y0 < envelope_y1)
++                    update_lookup_rect(
++                        render_priv->lookup_event_envelope_rects,
++                        &render_priv->lookup_event_envelope_rect_count,
++                        info->lookup_unit, envelope_x0, envelope_y0,
++                        envelope_x1, envelope_y1);
++            }
++
+             if (!info->bm && !info->bm_o)
+                 continue;
+
+@@ -2857,6 +2972,16 @@ ass_render_event(RenderContext *state, ASS_Event *event,
+         free_render_context(state);
+         return false;
+     }
++    for (int i = 0; i < text_info->length; i++) {
++        int cluster = text_info->glyphs[i].lookup_cluster;
++        if (cluster < 0 || cluster >= text_info->length ||
++                text_info->glyphs[i].lookup_unit !=
++                    text_info->glyphs[cluster].lookup_unit) {
++            render_priv->lookup_units_valid = false;
++            free_render_context(state);
++            return false;
++        }
++    }
+
+     retrieve_glyphs(state);
+
+@@ -3011,6 +3136,8 @@ ass_render_event(RenderContext *state, ASS_Event *event,
+
+     calculate_rotation_params(state, &bbox, device_x, device_y);
+
++    render_priv->lookup_event_rect_count = 0;
++    render_priv->lookup_event_envelope_rect_count = 0;
+     render_and_combine_glyphs(state, device_x, device_y);
+
+     memset(event_images, 0, sizeof(*event_images));
+@@ -3028,6 +3155,15 @@ ass_render_event(RenderContext *state, ASS_Event *event,
+     event_images->shift_direction = (valign == VALIGN_SUB) ? -1 : 1;
+     event_images->event = event;
+     event_images->imgs = render_text(state);
++    event_images->lookup_rect_count = render_priv->lookup_event_rect_count;
++    memcpy(event_images->lookup_rects, render_priv->lookup_event_rects,
++           event_images->lookup_rect_count * sizeof(ASS_IinatanLookupRect));
++    event_images->lookup_envelope_rect_count =
++        render_priv->lookup_event_envelope_rect_count;
++    memcpy(
++        event_images->lookup_envelope_rects,
++        render_priv->lookup_event_envelope_rects,
++        event_images->lookup_envelope_rect_count * sizeof(ASS_IinatanLookupRect));
+
+     if (state->border_style == 4)
+         add_background(state, event_images);
+@@ -3188,6 +3324,20 @@ shift_event(ASS_Renderer *render_priv, EventImages *ei, int shift)
+         cur = cur->next;
+     }
+     ei->top += shift;
++    for (int i = 0; i < ei->lookup_rect_count; i++) {
++        ASS_IinatanLookupRect *rect = &ei->lookup_rects[i];
++        rect->y += shift;
++        int bottom = FFMIN(rect->y + rect->h, render_priv->height);
++        rect->y = FFMAX(rect->y, 0);
++        rect->h = FFMAX(bottom - rect->y, 0);
++    }
++    for (int i = 0; i < ei->lookup_envelope_rect_count; i++) {
++        ASS_IinatanLookupRect *rect = &ei->lookup_envelope_rects[i];
++        rect->y += shift;
++        int bottom = FFMIN(rect->y + rect->h, render_priv->height);
++        rect->y = FFMAX(rect->y, 0);
++        rect->h = FFMAX(bottom - rect->y, 0);
++    }
+ }
+
+ // dir: 1 - move down
+@@ -3375,6 +3525,9 @@ ASS_Image *ass_render_frame(ASS_Renderer *priv, ASS_Track *track,
+                             long long now, int *detect_change)
+ {
+     // init frame
++    priv->lookup_rect_count = 0;
++    priv->lookup_envelope_rect_count = 0;
++    priv->lookup_units_valid = true;
+     if (!ass_start_frame(priv, track, now)) {
+         if (detect_change)
+             *detect_change = 2;
+@@ -3421,6 +3574,13 @@ ASS_Image *ass_render_frame(ASS_Renderer *priv, ASS_Track *track,
+             tail = &cur->next;
+             cur = cur->next;
+         }
++        merge_lookup_rects(
++            priv->lookup_rects, &priv->lookup_rect_count,
++            priv->eimg[i].lookup_rects, priv->eimg[i].lookup_rect_count);
++        merge_lookup_rects(
++            priv->lookup_envelope_rects, &priv->lookup_envelope_rect_count,
++            priv->eimg[i].lookup_envelope_rects,
++            priv->eimg[i].lookup_envelope_rect_count);
+     }
+     ass_frame_ref(priv->images_root);
+
+@@ -3437,6 +3597,48 @@ ASS_Image *ass_render_frame(ASS_Renderer *priv, ASS_Track *track,
+     return priv->images_root;
+ }
+
++void ass_iinatan_set_lookup_units(ASS_Renderer *renderer,
++                                 const ASS_IinatanLookupUnit *units, int count)
++{
++    if (!renderer)
++        return;
++    renderer->lookup_unit_count = 0;
++    if (!units || count <= 0)
++        return;
++    count = FFMIN(count, 256);
++    memcpy(renderer->lookup_units, units, count * sizeof(*units));
++    renderer->lookup_unit_count = count;
++}
++
++int ass_iinatan_lookup_units_valid(ASS_Renderer *renderer)
++{
++    return renderer && renderer->lookup_units_valid;
++}
++
++int ass_iinatan_get_lookup_rects(ASS_Renderer *renderer,
++                                ASS_IinatanLookupRect *rects, int capacity)
++{
++    if (!renderer)
++        return 0;
++    int count = renderer->lookup_rect_count;
++    if (rects && capacity > 0)
++        memcpy(rects, renderer->lookup_rects,
++               FFMIN(count, capacity) * sizeof(*rects));
++    return count;
++}
++
++int ass_iinatan_get_lookup_envelope_rects(
++    ASS_Renderer *renderer, ASS_IinatanLookupRect *rects, int capacity)
++{
++    if (!renderer)
++        return 0;
++    int count = renderer->lookup_envelope_rect_count;
++    if (rects && capacity > 0)
++        memcpy(rects, renderer->lookup_envelope_rects,
++               FFMIN(count, capacity) * sizeof(*rects));
++    return count;
++}
++
+ /**
+  * \brief Add reference to a frame image list.
+  * \param image_list image list returned by ass_render_frame()
+diff --git a/libass/ass_render.h b/libass/ass_render.h
+index 7a157ab..1975ad1 100644
+--- a/libass/ass_render.h
++++ b/libass/ass_render.h
+@@ -86,6 +86,10 @@ typedef struct {
+     int detect_collisions;
+     int shift_direction;
+     ASS_Event *event;
++    ASS_IinatanLookupRect lookup_rects[256];
++    int lookup_rect_count;
++    ASS_IinatanLookupRect lookup_envelope_rects[256];
++    int lookup_envelope_rect_count;
+ } EventImages;
+
+ typedef enum {
+@@ -173,6 +177,8 @@ typedef struct glyph_info {
+     int fade;
+
+     int shape_run_id;
++    int lookup_unit;
++    int lookup_cluster;
+
+     ASS_Vector shift;
+     Bitmap *bm, *bm_o;
+@@ -340,6 +346,18 @@ struct ass_renderer {
+     BitmapEngine engine;
+
+     ASS_Style user_override_style;
++
++    ASS_IinatanLookupUnit lookup_units[256];
++    int lookup_unit_count;
++    bool lookup_units_valid;
++    ASS_IinatanLookupRect lookup_event_rects[256];
++    int lookup_event_rect_count;
++    ASS_IinatanLookupRect lookup_event_envelope_rects[256];
++    int lookup_event_envelope_rect_count;
++    ASS_IinatanLookupRect lookup_rects[256];
++    int lookup_rect_count;
++    ASS_IinatanLookupRect lookup_envelope_rects[256];
++    int lookup_envelope_rect_count;
+ };
+
+ typedef struct render_priv {
+diff --git a/libass/ass_shaper.c b/libass/ass_shaper.c
+index d733d5d..933ece1 100644
+--- a/libass/ass_shaper.c
++++ b/libass/ass_shaper.c
+@@ -613,13 +613,30 @@ hb_shaper_get_run_language(ASS_Shaper *shaper, hb_script_t script)
+  * \param offset offset into GlyphInfo array
+  */
+ static void
+-shape_harfbuzz_process_run(GlyphInfo *glyphs, hb_buffer_t *buf, int offset)
++shape_harfbuzz_process_run(GlyphInfo *glyphs, hb_buffer_t *buf, int offset,
++                           int limit)
+ {
+     int j;
+     int num_glyphs = hb_buffer_get_length(buf);
+     hb_glyph_info_t *glyph_info = hb_buffer_get_glyph_infos(buf, NULL);
+     hb_glyph_position_t *pos    = hb_buffer_get_glyph_positions(buf, NULL);
+
++    for (j = 0; j < num_glyphs; j++) {
++        int start = glyph_info[j].cluster + offset;
++        int end = limit;
++        for (int k = 0; k < num_glyphs; k++) {
++            int candidate = glyph_info[k].cluster + offset;
++            if (candidate > start && candidate < end)
++                end = candidate;
++        }
++        if (start < 0)
++            start = 0;
++        if (end > limit)
++            end = limit;
++        for (int k = start; k < end; k++)
++            glyphs[k].lookup_cluster = start;
++    }
++
+     for (j = 0; j < num_glyphs; j++) {
+         unsigned idx = glyph_info[j].cluster + offset;
+         GlyphInfo *info = glyphs + idx;
+@@ -715,7 +732,8 @@ static bool shape_harfbuzz(ASS_Shaper *shaper, GlyphInfo *glyphs, size_t len)
+         hb_shape(font, buf, shaper->features, shaper->n_features);
+
+         shape_harfbuzz_process_run(glyphs, buf,
+-                shaper->whole_text_layout ? 0 : offset - lead_context);
++                shaper->whole_text_layout ? 0 : offset - lead_context,
++                shaper->whole_text_layout ? len : i + 1);
+         hb_buffer_reset(buf);
+
+         hb_font_destroy(font);

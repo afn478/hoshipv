@@ -1,0 +1,148 @@
+{
+  "schema": 2,
+  "sourceArchive": {
+    "file": "vendor/iina-hoshi-dicts-native-source.tar.gz",
+    "sha256": "77292ffd1aa3e2ecc0f99f7c1973040a8261ecf4111bda76a5f8238c139d7326"
+  },
+  "geometryCore": {
+    "protocol": 1,
+    "sources": [
+      "src/native/ass_geometry.cpp",
+      "src/native/media_demux.cpp",
+      "src/native/worker_protocol.cpp"
+    ],
+    "instrumentedLibass": "0.17.5",
+    "originalAndInstrumentedValidation": true,
+    "envelopeRectSupport": true
+  },
+  "patches": [
+    {
+      "name": "libass-0.17.5-iinatan-unit-ids-v2",
+      "file": "patches/libass-0.17.5-iinatan-unit-ids.patch",
+      "sha256": "789a43b33de1fe4b9028f968a441199373b7bebfc2da5e958886141f0a3cdd82"
+    },
+    {
+      "name": "libass-0.17.5-iinatan-envelope-v1",
+      "file": "patches/libass-0.17.5-iinatan-envelope-v1.patch",
+      "sha256": "194f2ee42153ba65c3177d9ce4748c9338d5ae09fcc71cf6e633d4fce86d4764"
+    },
+    {
+      "name": "libass-0.17.4-iinatan-geometry-v2",
+      "file": "native/patches/libass-0.17.4-iinatan-geometry-v2.patch",
+      "sha256": "8c9cf3fd192135fa761b0a303a4547991f5a4aec3b4f89bbc7eb419b414e39c1",
+      "scope": "windows external SubRip compatibility profile"
+    }
+  ],
+  "dependencies": [
+    {
+      "name": "pkgconf",
+      "version": "3.0.7",
+      "url": "https://distfiles.ariadne.space/pkgconf/pkgconf-3.0.7.tar.xz",
+      "sha256": "c926ff491cbd9a331a589160811bd97ab1749b4d5198a519338f2cdfabe6940a",
+      "license": "ISC",
+      "buildToolOnly": true
+    },
+    {
+      "name": "zlib",
+      "version": "1.3.2",
+      "url": "https://zlib.net/fossils/zlib-1.3.2.tar.gz",
+      "sha256": "bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16",
+      "license": "Zlib"
+    },
+    {
+      "name": "FreeType",
+      "version": "2.14.3",
+      "url": "https://downloads.sourceforge.net/project/freetype/freetype2/2.14.3/freetype-2.14.3.tar.xz",
+      "sha256": "36bc4f1cc413335368ee656c42afca65c5a3987e8768cc28cf11ba775e785a5f",
+      "license": "FTL OR GPL-2.0-or-later"
+    },
+    {
+      "name": "FriBidi",
+      "version": "1.0.16",
+      "url": "https://github.com/fribidi/fribidi/releases/download/v1.0.16/fribidi-1.0.16.tar.xz",
+      "sha256": "1b1cde5b235d40479e91be2f0e88a309e3214c8ab470ec8a2744d82a5a9ea05c",
+      "license": "LGPL-2.1-or-later"
+    },
+    {
+      "name": "HarfBuzz",
+      "version": "14.4.0",
+      "url": "https://github.com/harfbuzz/harfbuzz/releases/download/14.4.0/harfbuzz-14.4.0.tar.xz",
+      "sha256": "2357ed966c6ced7bfa720b0640c0231065af01158fbea215093ffa15aed44371",
+      "license": "MIT"
+    },
+    {
+      "name": "libunibreak",
+      "version": "7.0",
+      "url": "https://github.com/adah1972/libunibreak/releases/download/libunibreak_7_0/libunibreak-7.0.tar.gz",
+      "sha256": "8c9a6e121736cd0d5c890ae3ae96f3f4010a19aa040f1dbded833a62a87717d3",
+      "license": "Zlib"
+    },
+    {
+      "name": "libass",
+      "version": "0.17.5",
+      "url": "https://github.com/libass/libass/releases/download/0.17.5/libass-0.17.5.tar.xz",
+      "sha256": "2dca25c0e0c837ddf00b52011b3f82cac1e4ddd3ad018227806b0c2288864acc",
+      "license": "ISC"
+    },
+    {
+      "name": "FFmpeg",
+      "version": "9.0.1",
+      "url": "https://ffmpeg.org/releases/ffmpeg-9.0.1.tar.xz",
+      "sha256": "cf38e0e28c7e5605942c4a77755349b0145804a397af37eb1fb4c77cb237f635",
+      "license": "LGPL-2.1-or-later"
+    }
+  ],
+  "platforms": {
+    "darwin-arm64": {
+      "fontProvider": "coretext",
+      "runtimeDependencies": "static helper dependencies and system CoreText/CoreGraphics"
+    },
+    "win32-x86_64": {
+      "fontProvider": "directwrite",
+      "runtimeDependencies": "static helper dependencies and system DirectWrite/Win32 APIs"
+    },
+    "linux-x86_64": {
+      "fontProvider": "fontconfig",
+      "runtimeDependencies": "static helper dependencies and system Fontconfig/Expat libraries"
+    }
+  },
+  "profiles": {
+    "windows-mpv-0.41.0-libass-0.17.4-external-subrip": {
+      "purpose": "Exact geometry for the validated Windows CI/MSVC mpv external SubRip path",
+      "player": {
+        "mpvVersion": "0.41.0",
+        "libassVersion": "0.17.4",
+        "ffmpegVersion": "f853d12",
+        "ffmpegNote": "The player FFmpeg development revision is not used as a renderer match for external SubRip requests; embedded-media ASS remains fail-closed under this profile."
+      },
+      "helper": {
+        "libass": "0.17.4",
+        "ffmpeg": "9.0.1",
+        "fontProvider": "directwrite",
+        "patch": "libass-0.17.4-iinatan-geometry-v2"
+      },
+      "source": {
+        "url": "https://github.com/libass/libass/releases/download/0.17.4/libass-0.17.4.tar.xz",
+        "sha256": "78f1179b838d025e9c26e8fef33f8092f65611444ffa1bfc0cfac6a33511a05"
+      },
+      "inputScope": "external SubRip tracks with no codec-private ASS extradata"
+    }
+  },
+  "linuxProviderBuilderInputs": [
+    {
+      "package": "libfontconfig-dev",
+      "version": "2.15.0-1.1ubuntu2",
+      "sha256": "7948f3037b39d8bc751dc6104ff490c2d2f1b145d2969227ba591ceb917f9f05"
+    },
+    {
+      "package": "libfontconfig1-dev",
+      "version": "2.15.0-1.1ubuntu2",
+      "sha256": "b434dc412db83b282d857b6a160ab93ba08df29f5046e197f0e57ba26aa80b55"
+    },
+    {
+      "package": "libexpat1-dev",
+      "version": "2.6.1-2ubuntu0.4",
+      "sha256": "9bbc065621b807311fb6fc9aee4ca2192c91dabbc323093b412a0f25f512d319"
+    }
+  ]
+}

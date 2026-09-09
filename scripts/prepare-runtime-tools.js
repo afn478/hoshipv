@@ -7,6 +7,14 @@ const root = path.resolve(__dirname, "..");
 const outputDirectory = path.join(root, "build", "runtime-tools");
 const outputPath = path.join(outputDirectory, "ffmpeg.exe");
 
+function displayPath(value) {
+  return path.relative(root, value) || ".";
+}
+
+function diagnosticText(error) {
+  return String(error?.stack || error?.message || error).replaceAll(root, "<repo>");
+}
+
 async function main() {
   let sourcePath;
   try {
@@ -23,8 +31,8 @@ async function main() {
   await fs.chmod(outputPath, 0o755);
   console.log(
     JSON.stringify({
-      source: sourcePath,
-      output: outputPath,
+      source: displayPath(sourcePath),
+      output: displayPath(outputPath),
       bytes: stat.size,
       mode: "bundled-runtime-tool-preparation",
     }),
@@ -32,6 +40,6 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error(`RUNTIME TOOL PREPARATION FAILED: ${error.stack || error.message}`);
+  console.error(`RUNTIME TOOL PREPARATION FAILED: ${diagnosticText(error)}`);
   process.exitCode = 1;
 });

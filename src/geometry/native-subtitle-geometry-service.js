@@ -14,6 +14,22 @@ const VALIDATED_PLAYER_CAPABILITY = Object.freeze({
   libassVersion: "0.17.5",
   ffmpegVersion: "9.0.1",
 });
+const WINDOWS_LIBASS_0174_SUBRIP_PROFILE = Object.freeze({
+  id: "windows-mpv-0.41.0-libass-0.17.4-external-subrip",
+  playerCompatibility: Object.freeze({
+    mpvVersion: "0.41.0",
+    libassVersion: "0.17.4",
+  }),
+  inputScope: "external-subrip",
+});
+const WINDOWS_LIBASS_0174_EMBEDDED_ASS_PROFILE = Object.freeze({
+  id: "windows-mpv-0.41.0-libass-0.17.4-embedded-ass",
+  playerCompatibility: Object.freeze({
+    mpvVersion: "0.41.0",
+    libassVersion: "0.17.4",
+  }),
+  inputScope: "embedded-ass",
+});
 const DEFAULT_STRIP_RENDERER = Object.freeze({
   fontFamily: "sans-serif",
   fontSize: 38,
@@ -333,6 +349,35 @@ function sourceForTrack(track) {
     autoAssStream: source.autoAssStream === true,
     cacheExcerpt: source.cacheExcerpt === true,
   };
+}
+
+function isExternalSubripTrack(track) {
+  const source = sourceForTrack(track);
+  return (
+    source?.external === true &&
+    /\.(?:srt|subrip)$/iu.test(source.path.split(/[?#]/u, 1)[0]) &&
+    !String(track.assExtradata || "")
+  );
+}
+
+function isEmbeddedAssTrack(track) {
+  const source = sourceForTrack(track);
+  return (
+    source?.external === false &&
+    String(track.assFull || "").trim().length > 0 &&
+    String(track.assExtradata || "").trim().length > 0
+  );
+}
+
+function profileSupportsSnapshot(profile, snapshotInput) {
+  const selectedTracks = (snapshotInput.tracks || []).filter(
+    (track) => track.selected && track.events?.some((event) => event.units.length),
+  );
+  if (profile.inputScope === "external-subrip")
+    return selectedTracks.length > 0 && selectedTracks.every(isExternalSubripTrack);
+  if (profile.inputScope === "embedded-ass")
+    return selectedTracks.length > 0 && selectedTracks.every(isEmbeddedAssTrack);
+  return true;
 }
 
 function hasNonEmptyList(value) {
@@ -939,32 +984,95 @@ function trackRequest(snapshotInput, track, serial) {
 
 class NativeSubtitleGeometryService {
   constructor(options = {}) {
-    if (!options.client || typeof options.client.measure !== "function")
+    const profiles = Array.isArray(options.profiles) ? options.profiles : [];
+    if (
+      (!options.client || typeof options.client.measure !== "function") &&
+      !profiles.length
+    )
       throw new TypeError("native geometry client is required");
-    this.client = options.client;
+    if (
+      profiles.some(
+        (profile) => !profile?.client || typeof profile.client.measure !== "function",
+      )
+    )
+      throw new TypeError("native geometry profile client is required");
+    this.client = options.client || profiles[0].client;
     this.geometryProvider = options.geometryProvider || new SubtitleGeometryProvider();
     this.playerCompatibility = options.playerCompatibility
       ? Object.freeze({ ...options.playerCompatibility })
       : null;
+    this.profiles = Object.freeze(
+      profiles.length
+        ? profiles.map((profile) =>
+            Object.freeze({
+              id: String(profile.id || "native-geometry"),
+              client: profile.client,
+              playerCompatibility: Object.freeze({
+                ...(profile.playerCompatibility || {}),
+              }),
+              inputScope: profile.inputScope || "all-supported",
+            }),
+          )
+        : [
+            Object.freeze({
+              id: "native-geometry",
+              client: this.client,
+              playerCompatibility: this.playerCompatibility || {},
+              inputScope: "all-supported",
+            }),
+          ],
+    );
     this.serial = 0;
   }
 
-  #assertPlayerCompatibility(snapshotInput) {
-    if (!this.playerCompatibility) return;
+  #compatibilityMismatches(snapshotInput, profile) {
     const player = snapshotInput.player;
-    const mismatches = Object.entries(this.playerCompatibility)
+    return Object.entries(profile.playerCompatibility)
+      .filter(
+        ([, expected]) =>
+          expected !== null && expected !== undefined && expected !== "",
+      )
       .filter(([name, expected]) => String(player?.[name] || "") !== String(expected))
       .map(([name, expected]) => ({
         name,
         expected: String(expected),
         observed: String(player?.[name] || "unobserved"),
       }));
-    if (!mismatches.length) return;
+  }
+
+  #selectProfile(snapshotInput) {
+    const player = snapshotInput.player;
+    const playerMatches = [];
+    for (const profile of this.profiles) {
+      const mismatches = this.#compatibilityMismatches(snapshotInput, profile);
+      if (!mismatches.length) {
+        playerMatches.push(profile);
+        if (profileSupportsSnapshot(profile, snapshotInput)) return profile;
+      }
+    }
+    if (playerMatches.length) {
+      const error = new Error(
+        "native subtitle geometry input is outside the validated helper profile",
+      );
+      error.code = "NATIVE_GEOMETRY_PROFILE_INPUT_UNSUPPORTED";
+      error.expected = playerMatches.map((profile) => ({
+        id: profile.id,
+        inputScope: profile.inputScope,
+        playerCompatibility: { ...profile.playerCompatibility },
+      }));
+      error.observed = snapshotInput.player ? { ...snapshotInput.player } : null;
+      throw error;
+    }
+    const fallback = this.profiles[0];
+    const mismatches = this.#compatibilityMismatches(snapshotInput, fallback);
     const error = new Error(
       "native subtitle geometry requires the validated stock-mpv renderer tuple",
     );
     error.code = "NATIVE_GEOMETRY_PLAYER_INCOMPATIBLE";
-    error.expected = { ...this.playerCompatibility };
+    error.expected = this.profiles.map((profile) => ({
+      id: profile.id,
+      playerCompatibility: { ...profile.playerCompatibility },
+    }));
     error.observed = player ? { ...player } : null;
     error.mismatches = mismatches;
     throw error;
@@ -973,7 +1081,6 @@ class NativeSubtitleGeometryService {
   async apply(snapshotInput) {
     if (!snapshotInput || !Array.isArray(snapshotInput.tracks))
       throw new TypeError("subtitle geometry snapshot input is required");
-    this.#assertPlayerCompatibility(snapshotInput);
     const requests = [];
     for (const track of snapshotInput.tracks) {
       if (!track.selected || !track.events.some((event) => event.units.length))
@@ -987,9 +1094,11 @@ class NativeSubtitleGeometryService {
       requests.push(request);
     }
     if (!requests.length) return null;
+    const profile = this.#selectProfile(snapshotInput);
 
     const responses = [];
-    for (const request of requests) responses.push(await this.client.measure(request));
+    for (const request of requests)
+      responses.push(await profile.client.measure(request));
     const combined = {
       ok: true,
       protocol: 1,
@@ -997,6 +1106,7 @@ class NativeSubtitleGeometryService {
       rendererHeight: snapshotInput.osd.height,
       units: responses.flatMap((response) => response.units || []),
       diagnostics: {
+        profile: profile.id,
         validationEnabled: responses.every(
           (response) => response.diagnostics?.validationEnabled === true,
         ),
@@ -1018,6 +1128,9 @@ class NativeSubtitleGeometryService {
 module.exports = {
   NativeSubtitleGeometryService,
   VALIDATED_PLAYER_CAPABILITY,
+  WINDOWS_LIBASS_0174_EMBEDDED_ASS_PROFILE,
+  WINDOWS_LIBASS_0174_SUBRIP_PROFILE,
+  isExternalSubripTrack,
   nativeDisplayIndex,
   nativeStrippedDisplayIndex,
   nativeRange,

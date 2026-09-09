@@ -44,6 +44,29 @@ class NativeGeometryWorker {
     this.execFileProcess = options.execFileProcess || execFile;
   }
 
+  async version() {
+    return new Promise((resolve, reject) => {
+      this.execFileProcess(
+        this.executable,
+        ["version"],
+        { timeout: this.timeoutMs, windowsHide: true, maxBuffer: 1024 * 1024 },
+        (error, stdout, stderr) => {
+          if (error) {
+            error.stderr = stderr;
+            reject(error);
+            return;
+          }
+          try {
+            resolve(parseLastJson(stdout));
+          } catch (parseError) {
+            parseError.stderr = stderr;
+            reject(parseError);
+          }
+        },
+      );
+    });
+  }
+
   async lookup(request) {
     const id = requestId(request?.requestId);
     const filePath = path.join(this.root, `${id}.json`);

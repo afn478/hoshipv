@@ -73,6 +73,25 @@ class NativeGeometryClient {
     if (!worker || typeof worker.lookup !== "function")
       throw new TypeError("native geometry worker is required");
     this.worker = worker;
+    this.capabilities = null;
+  }
+
+  async negotiate() {
+    if (typeof this.worker.version !== "function")
+      throw new Error("native geometry helper does not support capability negotiation");
+    const response = await this.worker.version();
+    if (
+      !response ||
+      response.ok !== true ||
+      response.assGeometry?.protocol !== 1 ||
+      response.assGeometry?.available !== true
+    ) {
+      const error = new Error("native geometry capability negotiation failed");
+      error.code = "NATIVE_GEOMETRY_CAPABILITY_MISMATCH";
+      throw error;
+    }
+    this.capabilities = response;
+    return response;
   }
 
   async measure(input) {

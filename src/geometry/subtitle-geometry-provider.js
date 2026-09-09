@@ -31,6 +31,41 @@ function splitAssDialogue(line) {
   };
 }
 
+function assApproximationLayout(raw, layout, osd) {
+  const extradata = String(raw?.extradata || "");
+  if (!extradata.trim()) return layout;
+  const playResX = Number(extradata.match(/^\s*PlayResX\s*:\s*(\d+(?:\.\d+)?)/im)?.[1]);
+  const playResY = Number(extradata.match(/^\s*PlayResY\s*:\s*(\d+(?:\.\d+)?)/im)?.[1]);
+  const styleLine = extradata
+    .split(/\r?\n/)
+    .find((line) => /^\s*Style\s*:/i.test(line));
+  if (!(playResX > 0 && playResY > 0 && styleLine)) return layout;
+  const fields = styleLine.replace(/^\s*Style\s*:\s*/i, "").split(",");
+  const styleFontSize = Number(fields[2]);
+  const scaleX = Number(fields[11]);
+  const spacing = Number(fields[13]);
+  const marginV = Number(fields[21]);
+  const alignment = Number(fields[18]);
+  if (!(styleFontSize > 0)) return layout;
+  const verticalScale = Number(osd.height) / playResY;
+  const horizontalScale = Number(osd.width) / playResX;
+  const fontSize = styleFontSize * verticalScale;
+  const glyphScaleX = scaleX > 0 ? scaleX / 100 : 1;
+  const charWidth =
+    fontSize * 0.4 * glyphScaleX +
+    (Number.isFinite(spacing) ? spacing * horizontalScale : 0);
+  const horizontalAlignment =
+    alignment % 3 === 1 ? "left" : alignment % 3 === 0 ? "right" : "center";
+  return {
+    ...layout,
+    fontSize,
+    charWidth: Math.max(1, charWidth),
+    lineHeight: fontSize,
+    ...(Number.isFinite(marginV) ? { marginY: marginV * verticalScale } : {}),
+    align: horizontalAlignment,
+  };
+}
+
 function eventId(trackId, event, index) {
   return `${trackId}:event:${index}:${event.startMs ?? "na"}:${event.endMs ?? "na"}`;
 }
@@ -206,12 +241,13 @@ class SubtitleGeometryProvider {
       // active subtitle entirely.
       const observedText = raw.assFull || raw.plainText;
       const events = sourceEvents(observedText).map((event, index) => {
+        const trackLayout = assApproximationLayout(raw, layout, osd);
         const geometry = makeEventGeometry(
           id,
           role,
           event,
           index,
-          { osd, ...layout },
+          { osd, ...trackLayout },
           positionOffset,
         );
         positionOffset += geometry.units.length;
