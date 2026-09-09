@@ -6,6 +6,10 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { makeEnvelope, validateHostRequest } = require("../bridge/protocol");
 const { roundNativeBounds } = require("../geometry/coordinate-mapper");
+const {
+  sanitizeDiagnosticAsset,
+  sanitizeDiagnosticMessage,
+} = require("../services/diagnostics");
 
 const WINDOWS_POPUP_FOCUS_HANDOFF_GRACE_MS = 1500;
 
@@ -94,6 +98,12 @@ class BrowserHost extends EventEmitter {
         return;
       }
       const surface = window === this.popupWindow ? "popup" : "highlight";
+      if (
+        message.type === "diagnostic" &&
+        message.payload.code === "surface-bootstrap-failed"
+      ) {
+        this.#handleSurfaceBootstrapFailure(surface, message.payload);
+      }
       if (message.type === "ready") {
         this.readySurfaces.add(surface);
         this.#sendCapabilities(surface);
@@ -132,6 +142,28 @@ class BrowserHost extends EventEmitter {
       });
     };
     this.ipcMain.on("host-request", this.ipcListener);
+  }
+
+  #handleSurfaceBootstrapFailure(surface, payload) {
+    const diagnostic = Object.freeze({
+      surface,
+      code: "surface-bootstrap-failed",
+      script: sanitizeDiagnosticAsset(payload.script),
+      message: sanitizeDiagnosticMessage(
+        payload.message,
+        "renderer asset failed to load",
+      ),
+    });
+    this.readySurfaces.delete(surface);
+    if (surface === "popup") {
+      this.popupPainted = false;
+      if (this.popupVisible) this.hidePopup({ focusPlayer: false });
+      else this.setPassiveInput();
+    } else {
+      this.hideHighlight();
+      this.setPassiveInput();
+    }
+    this.emit("surface-bootstrap-error", diagnostic);
   }
 
   #windowOptions(surface) {

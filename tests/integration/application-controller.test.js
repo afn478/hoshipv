@@ -255,6 +255,50 @@ test("demo controller uses one geometry snapshot for highlight, lookup, popup, a
   }
 });
 
+test("renderer bootstrap failure dismisses the popup and releases owned pause", async () => {
+  const browserHost = new FakeBrowserHost();
+  const controller = new ApplicationController({
+    browserHost,
+    screen: {
+      getCursorScreenPoint: () => ({ x: 590, y: 740 }),
+      getDisplayNearestPoint: () => ({ scaleFactor: 1 }),
+    },
+    dictionary: new DictionaryService({ demo: true }),
+    allowApproximateGeometry: true,
+    config: { lookupLanguage: "ja", pauseWhilePopupVisible: true },
+  });
+  try {
+    await controller.attachDemo();
+    await new Promise((resolve) => setTimeout(resolve, 90));
+    assert.equal(browserHost.popupVisible, true);
+    assert.equal(controller.bridge.property("pause"), true);
+
+    browserHost.emit("request", {
+      surface: "popup",
+      message: {
+        type: "diagnostic",
+        payload: {
+          code: "surface-bootstrap-failed",
+          script: "./iina-popup-renderer.js",
+          message: "renderer asset failed to load",
+        },
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    assert.equal(browserHost.popupVisible, false);
+    assert.equal(controller.bridge.property("pause"), false);
+    assert.deepEqual(controller.surfaceBootstrapError, {
+      surface: "popup",
+      code: "surface-bootstrap-failed",
+      script: "./iina-popup-renderer.js",
+      message: "renderer asset failed to load",
+    });
+  } finally {
+    await controller.detach("renderer-bootstrap-failure-test");
+  }
+});
+
 test("controller lookup and right-stick navigation do not require a pointer hit", async () => {
   const browserHost = new FakeBrowserHost();
   const controller = new ApplicationController({

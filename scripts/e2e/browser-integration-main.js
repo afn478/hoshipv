@@ -547,6 +547,14 @@ async function run() {
           links: document.querySelectorAll('.external-source-link').length,
           audio: document.querySelectorAll('.audio-button').length,
           anki: document.querySelectorAll('.anki-primary-button').length,
+          nativeSubtitleHost: !!document.getElementById('native-subtitle-layer-host'),
+          nativeSubtitleHitBoxes: !!document.getElementById('native-subtitle-hit-boxes'),
+          nativeSubtitleHitLayer:
+            window.__IINATAN_REFERENCE_POPUP__?.state.config
+              .experimentalNativeSubtitleHitLayer === true,
+          nativeSubtitleLookupHighlight:
+            window.__IINATAN_REFERENCE_POPUP__?.state.config
+              .experimentalNativeSubtitleLookupHighlight === true,
           customStyle: !!document.getElementById('iinatan-custom-popup-css'),
           customGlossaryColor: getComputedStyle(
             document.querySelector('.dict-section'),
@@ -581,6 +589,10 @@ async function run() {
     assert.equal(initialState.links, 1);
     assert.equal(initialState.audio, 2);
     assert.equal(initialState.anki, 2);
+    assert.equal(initialState.nativeSubtitleHost, false);
+    assert.equal(initialState.nativeSubtitleHitBoxes, false);
+    assert.equal(initialState.nativeSubtitleHitLayer, false);
+    assert.equal(initialState.nativeSubtitleLookupHighlight, false);
     assert.equal(initialState.customStyle, true);
     assert.equal(initialState.customGlossaryColor, "rgb(1, 2, 3)");
     assert.match(initialState.csp, /default-src 'self'/);

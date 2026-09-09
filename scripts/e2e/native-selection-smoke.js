@@ -213,7 +213,14 @@ async function main() {
   try {
     let ready;
     try {
-      ready = await waitFor(() => readJson(readyPath), "Electron selection probe");
+      ready = await waitFor(async () => {
+        const readyValue = await readJson(readyPath);
+        if (readyValue) return readyValue;
+        const failure = await readJson(resultPath);
+        if (failure?.ok === false)
+          throw new Error(failure.error || "Electron selection probe failed");
+        return null;
+      }, "Electron selection probe");
     } catch (error) {
       const diagnostics = stderr.trim();
       if (diagnostics) error.message += `; Electron stderr: ${diagnostics}`;

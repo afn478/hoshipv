@@ -172,33 +172,12 @@ test("media launch arguments resolve both packaged-file and explicit forms", () 
   assert.equal(requestedMediaPath(["electron", ".", "--settings"]), null);
 });
 
-test("default session directory follows the per-platform companion location", () => {
+test("default session directory stays inside the explicit iinatan data root", () => {
   assert.equal(
-    defaultSessionDirectory({ platform: "darwin", home: "/Users/test", env: {} }),
-    path.join(
-      "/Users/test",
-      "Library",
-      "Application Support",
-      "iinatan for mpv",
-      "sessions",
-    ),
+    defaultSessionDirectory({ dataRoot: "/tmp/iinatan-data" }),
+    path.join("/tmp/iinatan-data", "cache", "sessions"),
   );
-  assert.equal(
-    defaultSessionDirectory({
-      platform: "win32",
-      home: "C:\\Users\\test",
-      env: { APPDATA: "C:\\Users\\test\\AppData\\Roaming" },
-    }),
-    path.join("C:\\Users\\test\\AppData\\Roaming", "iinatan for mpv", "sessions"),
-  );
-  assert.equal(
-    defaultSessionDirectory({
-      platform: "linux",
-      home: "/home/test",
-      env: { XDG_CONFIG_HOME: "/tmp/test-config" },
-    }),
-    path.join("/tmp/test-config", "iinatan for mpv", "sessions"),
-  );
+  assert.throws(() => defaultSessionDirectory(), /absolute/);
 });
 
 test("session discovery reaps dead native geometry sidecars without touching live ones", async () => {
@@ -1648,6 +1627,57 @@ test("BrowserHost negotiates DOM and native-input capabilities after surface rea
       highlight.webContents.sent.at(-1).message.payload.controller.source,
       "native-hid+browser-gamepad",
     );
+  } finally {
+    host.close();
+  }
+});
+
+test("BrowserHost fails a broken renderer surface closed and passive", async () => {
+  FakeBrowserWindow.reset();
+  const ipcMain = new EventEmitter();
+  const host = new BrowserHost({
+    BrowserWindow: FakeBrowserWindow,
+    platform: "win32",
+    ipcMain,
+    preloadPath: "/tmp/iinatan-preload.js",
+    overlayUrl: "iinatan://app/overlay.html",
+  });
+  const failures = [];
+  host.on("surface-bootstrap-error", (diagnostic) => failures.push(diagnostic));
+
+  try {
+    await host.create();
+    const [, popup] = FakeBrowserWindow.instances;
+    host.showPopup({ position: { x: 10, y: 12 }, result: { entries: [] } });
+    ipcMain.emit(
+      "host-request",
+      { sender: popup.webContents },
+      {
+        protocol: 1,
+        type: "diagnostic",
+        payload: {
+          code: "surface-bootstrap-failed",
+          surface: "popup",
+          script: "./iina-popup-renderer.js",
+          message: "renderer asset failed to load",
+        },
+      },
+    );
+    assert.equal(host.popupVisible, false);
+    assert.equal(host.surfaceReadiness().popup, false);
+    assert.deepEqual(popup.ignoreMouse, {
+      ignore: true,
+      options: { forward: true },
+    });
+    assert.equal(popup.opacity, 0);
+    assert.deepEqual(failures, [
+      {
+        surface: "popup",
+        code: "surface-bootstrap-failed",
+        script: "./iina-popup-renderer.js",
+        message: "renderer asset failed to load",
+      },
+    ]);
   } finally {
     host.close();
   }

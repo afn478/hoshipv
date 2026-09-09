@@ -39,6 +39,10 @@ const {
   bitmapOcrLanguages,
   isBitmapSubtitleCodec,
 } = require("../services/native-bitmap-ocr-client");
+const {
+  sanitizeDiagnosticAsset,
+  sanitizeDiagnosticMessage,
+} = require("../services/diagnostics");
 
 const CONTROLLER_HOLD_MS = 650;
 const CONTROLLER_HOLD_TICK_MS = 16;
@@ -515,6 +519,7 @@ class ApplicationController extends EventEmitter {
     this.lastAudioCandidates = [];
     this.lastAnkiResult = null;
     this.lastPopupCloseReason = null;
+    this.surfaceBootstrapError = null;
     this.windowUnavailable = false;
     this.nativeGeometryErrorKey = null;
     this.nativeGeometryError = null;
@@ -2171,6 +2176,25 @@ class ApplicationController extends EventEmitter {
         await this.handleControllerState(payload);
         break;
       }
+      case "diagnostic":
+        if (payload.code === "surface-bootstrap-failed") {
+          this.surfaceBootstrapError = Object.freeze({
+            surface,
+            code: "surface-bootstrap-failed",
+            script: sanitizeDiagnosticAsset(payload.script),
+            message: sanitizeDiagnosticMessage(
+              payload.message,
+              "renderer asset failed to load",
+            ),
+          });
+          this.emit("surface-bootstrap-error", this.surfaceBootstrapError);
+          if (surface === "popup")
+            await this.closePopup("popup-bootstrap-failed", {
+              focusPlayer: false,
+            });
+          else this.browserHost?.setPassiveInput?.();
+        }
+        break;
       case "popup-size":
         this.#handlePopupSize(surface, payload);
         this.emit("popup-size", payload);
@@ -2223,6 +2247,8 @@ class ApplicationController extends EventEmitter {
         }
         break;
       case "ready":
+        if (payload.surface === this.surfaceBootstrapError?.surface)
+          this.surfaceBootstrapError = null;
         this.emit("surface-ready", payload.surface);
         break;
       default:
@@ -2788,6 +2814,7 @@ class ApplicationController extends EventEmitter {
     this.windowUnavailable = false;
     this.nativeGeometryErrorKey = null;
     this.nativeGeometryError = null;
+    this.surfaceBootstrapError = null;
     this.modifierPressed = false;
     this.nativeControllerConnected = false;
   }

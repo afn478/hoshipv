@@ -124,10 +124,10 @@ async function run() {
     for (let attempt = 0; attempt < 40; attempt++) {
       geometry = await popup.webContents.executeJavaScript(
         `(() => {
-          const headword = document.getElementById('popup-headword');
+          const headword = document.querySelector('#popup .head-title .term');
           const bounds = headword.getBoundingClientRect();
           return {
-            visible: !document.getElementById('popup-panel').hidden,
+            visible: !document.getElementById('popup').classList.contains('hidden'),
             text: headword.textContent,
             devicePixelRatio: window.devicePixelRatio,
             target: {

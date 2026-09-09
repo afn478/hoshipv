@@ -8,6 +8,11 @@ function sanitizeDiagnosticMessage(value, fallback = "") {
   return message || fallback;
 }
 
+function sanitizeDiagnosticAsset(value, fallback = "unknown renderer asset") {
+  const asset = String(value || "").trim();
+  return /^\.\/[A-Za-z0-9._/-]+$/.test(asset) ? asset.slice(0, 160) : fallback;
+}
+
 function sanitizeDiagnosticError(error) {
   if (!error) return null;
   const code = String(error.code || "NATIVE_GEOMETRY_UNAVAILABLE")
@@ -26,4 +31,8 @@ function sanitizeDiagnosticError(error) {
   };
 }
 
-module.exports = { sanitizeDiagnosticError, sanitizeDiagnosticMessage };
+module.exports = {
+  sanitizeDiagnosticAsset,
+  sanitizeDiagnosticError,
+  sanitizeDiagnosticMessage,
+};

@@ -1,0 +1,18 @@
+{
+  "sourceSnapshotCommit": "4db4ddcc766fa5f5056a4e4633a9d11978251a6a",
+  "sourceSnapshotMessage": "Port the IINA popup UI into the mpv host",
+  "presentationFiles": [
+    {
+      "path": "app/overlay.html",
+      "sha256": "fa727069f8024c91ba32c9ea24ee180d624f7cbd979c9462b868cda5e26952f3"
+    },
+    {
+      "path": "app/overlay.css",
+      "sha256": "ac3ec3e13016b7247661448aecd0717e53ff4f4327d18d0627d3ed29fdf97f4f"
+    },
+    {
+      "path": "app/iina-popup-renderer.js",
+      "sha256": "e3ac3d91bd72aff884671dae6d73538888221800ececc7ad009707d571f02f93"
+    }
+  ]
+}
