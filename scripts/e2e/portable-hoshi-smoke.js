@@ -11,6 +11,21 @@ const root = path.resolve(__dirname, "../..");
 const execFileAsync = promisify(execFile);
 const HOSHIDICTS_REVISION = "a28d82eb0f169b8ceff79e8c99ffe0b96709ab27";
 
+function delay(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function publicDiagnostic(value) {
+  const text = String(value);
+  const escapedRoot = root.replaceAll("\\", "\\\\");
+  const escapedHome = os.homedir().replaceAll("\\", "\\\\");
+  return text
+    .replaceAll(root, "<repo>")
+    .replaceAll(escapedRoot, "<repo>")
+    .replaceAll(os.homedir(), "<home>")
+    .replaceAll(escapedHome, "<home>");
+}
+
 function crc32(buffer) {
   let value = 0xffffffff;
   for (const byte of buffer) {
@@ -143,11 +158,16 @@ async function readVersion(executable) {
 
 async function main() {
   const executable = await resolveExecutable();
+  const controllerRequired = process.env.IINATAN_PORTABLE_CONTROLLER_REQUIRED === "1";
+  if (controllerRequired && process.platform !== "win32")
+    throw new Error("portable controller smoke requires Windows");
   if (!(await exists(executable))) {
     if (process.env.IINATAN_PORTABLE_HOSHI_REQUIRED === "1")
       throw new Error(`portable HoshiDicts helper is unavailable: ${executable}`);
     console.log(
-      `SKIP: build the portable HoshiDicts helper or set IINATAN_PORTABLE_HOSHI (${executable})`,
+      publicDiagnostic(
+        `SKIP: build the portable HoshiDicts helper or set IINATAN_PORTABLE_HOSHI (${executable})`,
+      ),
     );
     return;
   }
@@ -175,6 +195,7 @@ async function main() {
   );
 
   let worker = null;
+  let controllerState = null;
   try {
     const version = await readVersion(executable);
     worker = new HoshiWorker({
@@ -182,6 +203,9 @@ async function main() {
       root: workerRoot,
       timeoutMs: 30000,
       pollMs: 4,
+    });
+    worker.on("controller-state", (value) => {
+      if (value?.connected === true) controllerState = value;
     });
     const imported = await worker.importDictionary(zipPath, dictionaryRoot);
     const entries = await fs.readdir(dictionaryRoot, { withFileTypes: true });
@@ -197,6 +221,7 @@ async function main() {
       language: "ja",
       dictionaries: [dictionaryPath],
       fingerprint: "portable-fixture",
+      controllerEnabled: controllerRequired,
     });
     const result = await worker.lookup({
       requestId: "portable-smoke-1",
@@ -212,34 +237,54 @@ async function main() {
       throw new Error("portable worker readiness revision does not match its binary");
     if (ready.assGeometry?.available !== false)
       throw new Error("portable worker advertised unsupported geometry");
+    if (controllerRequired) {
+      if (ready.controller?.source !== "native-hid")
+        throw new Error(
+          "portable worker did not advertise the Windows controller backend",
+        );
+      const deadline = Date.now() + 5000;
+      while (!controllerState && Date.now() < deadline) await delay(50);
+      if (!controllerState)
+        throw new Error("portable worker did not publish a connected controller state");
+    }
     console.log(
-      JSON.stringify(
-        {
-          executable,
-          imported: {
-            ok: imported.ok,
-            title: imported.title,
-            termCount: imported.term_count,
+      publicDiagnostic(
+        JSON.stringify(
+          {
+            executable,
+            imported: {
+              ok: imported.ok,
+              title: imported.title,
+              termCount: imported.term_count,
+            },
+            ready: {
+              ok: ready.ok,
+              dictCount: ready.dictCount,
+              hoshidictsRevision: ready.hoshidictsRevision,
+              assGeometry: ready.assGeometry,
+              controller: ready.controller || null,
+            },
+            version: {
+              wrapperVersion: version.wrapperVersion,
+              hoshidictsRevision: version.hoshidictsRevision,
+            },
+            lookup: {
+              resultCount: result.results.length,
+              matched: result.results[0].matched,
+              headword: result.results[0].term?.expression,
+            },
+            controller: controllerState
+              ? {
+                  connected: controllerState.connected,
+                  id: controllerState.id,
+                  axes: controllerState.axes,
+                }
+              : null,
+            mode: "portable-hoshidicts-worker-smoke",
           },
-          ready: {
-            ok: ready.ok,
-            dictCount: ready.dictCount,
-            hoshidictsRevision: ready.hoshidictsRevision,
-            assGeometry: ready.assGeometry,
-          },
-          version: {
-            wrapperVersion: version.wrapperVersion,
-            hoshidictsRevision: version.hoshidictsRevision,
-          },
-          lookup: {
-            resultCount: result.results.length,
-            matched: result.results[0].matched,
-            headword: result.results[0].term?.expression,
-          },
-          mode: "portable-hoshidicts-worker-smoke",
-        },
-        null,
-        2,
+          null,
+          2,
+        ),
       ),
     );
   } finally {
@@ -249,6 +294,8 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error(`PORTABLE HOSHIDICTS SMOKE FAILED: ${error.stack || error.message}`);
+  console.error(
+    `PORTABLE HOSHIDICTS SMOKE FAILED: ${publicDiagnostic(error.stack || error.message)}`,
+  );
   process.exitCode = 1;
 });

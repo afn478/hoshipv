@@ -14,6 +14,9 @@
 #include <vector>
 
 #ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 #else
 #include <signal.h>
@@ -26,6 +29,9 @@
 #include "hoshidicts/lookup.hpp"
 #include "hoshidicts/query.hpp"
 #include "worker_protocol.hpp"
+#ifdef _WIN32
+#include "windows_controller.hpp"
+#endif
 
 namespace fs = std::filesystem;
 
@@ -361,6 +367,15 @@ struct WorkerConfig {
   std::vector<std::string> dictionaries;
 };
 
+std::string controller_capability_json() {
+#ifdef _WIN32
+  return iinatan::windows_controller::capability_json();
+#else
+  return "{\"protocol\":1,\"source\":\"browser-gamepad\",\"enabled\":false,"
+         "\"products\":[\"gamepad\"],\"backend\":\"browser-api\"}";
+#endif
+}
+
 WorkerConfig read_worker_config(const fs::path& path) {
   WorkerConfig config;
   std::ifstream input(path);
@@ -493,12 +508,16 @@ void command_worker(int argc, char** argv) {
   const fs::path root = argv[2];
   int sleep_ms = 2;
   int owner_pid = 0;
+  bool controller_enabled = false;
   for (int index = 3; index < argc; ++index) {
     const std::string argument = argv[index];
     if (argument == "--sleep-ms" && index + 1 < argc)
       sleep_ms = std::max(1, to_int(argv[++index], sleep_ms));
     else if (argument == "--owner-pid" && index + 1 < argc)
       owner_pid = std::max(0, to_int(argv[++index], 0));
+    else if (argument == "--controller-enabled" && index + 1 < argc)
+      controller_enabled = argv[++index] == std::string("true") ||
+                           argv[index] == std::string("1");
   }
   const fs::path queue = root / "queue";
   const fs::path responses = root / "responses";
@@ -525,11 +544,20 @@ void command_worker(int argc, char** argv) {
           std::to_string(config.dictionaries.size()) +
           ",\"hoshidictsRevision\":" +
           json_quote(kHoshidictsRevision) +
+          ",\"controller\":" + controller_capability_json() +
           ",\"assGeometry\":{\"protocol\":1,\"available\":false,\"reason\":\"portable-dictionary-worker\"},\"fontMetrics\":false,\"bitmapOcr\":{\"protocol\":1,\"available\":false}}\n");
 
   const int active_sleep_ms = std::max(1, sleep_ms);
   const int idle_sleep_ms = std::max(active_sleep_ms, 16);
   int current_sleep_ms = active_sleep_ms;
+  if (controller_enabled) {
+#ifdef _WIN32
+    write_file_atomic(
+        state / "controller.json",
+        iinatan::windows_controller::snapshot_json(
+            iinatan::windows_controller::sample()));
+#endif
+  }
   auto owner_check = std::chrono::steady_clock::now() + std::chrono::seconds(1);
   while (!fs::exists(stop)) {
     if (owner_pid > 0 && std::chrono::steady_clock::now() >= owner_check) {
@@ -571,6 +599,13 @@ void command_worker(int argc, char** argv) {
       fs::remove(request_path, error);
       fs::remove(committed_path, error);
     }
+#ifdef _WIN32
+    if (controller_enabled)
+      write_file_atomic(
+          state / "controller.json",
+          iinatan::windows_controller::snapshot_json(
+              iinatan::windows_controller::sample()));
+#endif
     current_sleep_ms = requests.empty()
                            ? std::min(idle_sleep_ms, current_sleep_ms * 2)
                            : active_sleep_ms;
@@ -583,7 +618,18 @@ void command_version() {
       << "{\"ok\":true,\"name\":\"iina-hoshi-dicts\",\"backend\":\"Manhhao/hoshidicts\",\"wrapperVersion\":"
       << json_quote(kWrapperVersion)
       << ",\"hoshidictsRevision\":" << json_quote(kHoshidictsRevision)
-      << ",\"worker\":true,\"serve\":false,\"fontMetrics\":false,\"assGeometry\":{\"protocol\":1,\"available\":false,\"reason\":\"portable-dictionary-worker\"},\"bitmapOcr\":{\"protocol\":1,\"available\":false}}\n";
+      << ",\"worker\":true,\"serve\":false,\"fontMetrics\":false,\"controller\":"
+      << controller_capability_json()
+      << ",\"assGeometry\":{\"protocol\":1,\"available\":false,\"reason\":\"portable-dictionary-worker\"},\"bitmapOcr\":{\"protocol\":1,\"available\":false}}\n";
+}
+
+void command_controller_state() {
+#ifdef _WIN32
+  std::cout << iinatan::windows_controller::snapshot_json(
+      iinatan::windows_controller::sample());
+#else
+  throw std::runtime_error("Windows controller backend is unavailable");
+#endif
 }
 
 }  // namespace
@@ -598,6 +644,7 @@ int main(int argc, char** argv) {
     else if (command == "lookup") command_lookup(argc, argv);
     else if (command == "worker") command_worker(argc, argv);
     else if (command == "version") command_version();
+    else if (command == "controller-state") command_controller_state();
     else throw std::runtime_error("unknown command: " + command);
     return 0;
   } catch (const std::exception& exception) {

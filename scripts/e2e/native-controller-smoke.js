@@ -6,6 +6,10 @@ const { spawnSync } = require("node:child_process");
 
 const root = path.resolve(__dirname, "../..");
 
+function displayPath(filePath) {
+  return path.relative(root, filePath) || ".";
+}
+
 async function exists(filePath) {
   return fs
     .access(filePath)
@@ -54,25 +58,37 @@ function signingSummary(executable) {
 }
 
 async function main() {
-  if (process.platform !== "darwin") {
-    console.log("SKIP: native controller smoke is macOS-only");
+  if (!["darwin", "win32"].includes(process.platform)) {
+    console.log("SKIP: native controller smoke requires macOS or Windows");
     return;
   }
+  const extension = process.platform === "win32" ? ".exe" : "";
   const executable = path.resolve(
-    process.env.IINATAN_HOSHI_HELPER || path.join(root, "bin", "iina-hoshi-dicts"),
+    process.env.IINATAN_HOSHI_HELPER ||
+      (process.platform === "win32"
+        ? path.join(
+            root,
+            "build",
+            "native",
+            "windows-ninja",
+            "iina-hoshi-dicts" + extension,
+          )
+        : path.join(root, "bin", "iina-hoshi-dicts" + extension)),
   );
   const required = process.env.IINATAN_NATIVE_CONTROLLER_REQUIRED === "1";
   if (!(await exists(executable))) {
-    if (required) throw new Error(`native helper is unavailable: ${executable}`);
+    if (required)
+      throw new Error("native helper is unavailable: " + displayPath(executable));
     console.log("SKIP: native HoshiDicts helper is unavailable");
     return;
   }
 
-  const signing = signingSummary(executable);
+  const signing = process.platform === "darwin" ? signingSummary(executable) : null;
   const requireStableSigning =
     process.env.IINATAN_NATIVE_CONTROLLER_REQUIRE_STABLE_SIGNING === "1" ||
     process.env.IINATAN_E2E_REQUIRE_STABLE_SIGNING === "1";
   if (
+    process.platform === "darwin" &&
     requireStableSigning &&
     (!signing.verified ||
       signing.adHoc ||
@@ -129,7 +145,7 @@ async function main() {
     JSON.stringify(
       {
         ok: true,
-        executable,
+        executable: displayPath(executable),
         signing,
         capability,
         state: {
@@ -139,7 +155,7 @@ async function main() {
           axes: state.axes,
         },
         physicalDeviceAcceptance: state.connected ? "observed" : "not-observed",
-        mode: "macos-native-controller-contract-smoke",
+        mode: process.platform + "-native-controller-contract-smoke",
       },
       null,
       2,

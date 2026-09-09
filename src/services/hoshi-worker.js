@@ -106,7 +106,8 @@ class HoshiWorker extends EventEmitter {
     this.active = new Map();
     this.configFingerprint = "";
     this.nativeControllerSupported =
-      options.nativeControllerSupported ?? process.platform === "darwin";
+      options.nativeControllerSupported ??
+      ["darwin", "win32"].includes(process.platform);
     // Match iinatan's display-frame native controller polling cadence while
     // still allowing a slower bounded cadence for constrained environments.
     this.controllerPollMs = Math.max(16, Number(options.controllerPollMs) || 16);
