@@ -6,14 +6,22 @@ const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
-const {
-  listDescriptors,
-  readDescriptor,
-} = require("../../src/player/session-descriptor");
+const { listDescriptors } = require("../../src/player/session-descriptor");
 const { MpvJsonIpc } = require("../../src/player/mpv-ipc");
 const { NativeWindowAdapter } = require("../../src/platform/native-window-adapter");
 
 const root = path.resolve(__dirname, "../..");
+
+function publicDiagnostic(value) {
+  const text = String(value);
+  const escapedRoot = root.replaceAll("\\", "\\\\");
+  const escapedHome = os.homedir().replaceAll("\\", "\\\\");
+  return text
+    .replaceAll(root, "<repo>")
+    .replaceAll(escapedRoot, "<repo>")
+    .replaceAll(os.homedir(), "<home>")
+    .replaceAll(escapedHome, "<home>");
+}
 
 function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -110,7 +118,9 @@ async function main() {
   const requireAutoShim = process.env.IINATAN_NATIVE_SHIM_AUTO_REQUIRED === "1";
   const expectNativeShim = !!nativeShim || requireAutoShim;
   const fullscreen = process.env.IINATAN_NATIVE_WINDOW_FULLSCREEN === "1";
-  const version = spawnSync(executable, ["--version"], { encoding: "utf8" });
+  const version = spawnSync(executable, ["--no-config", "--version"], {
+    encoding: "utf8",
+  });
   if (version.error || version.status !== 0)
     throw new Error(
       `stock mpv is unavailable: ${version.error?.message || version.stderr || "unknown error"}`,
@@ -168,20 +178,17 @@ async function main() {
   let ipc = null;
 
   try {
-    await waitForValue(
-      async () => (await listDescriptors(sessionDirectory)).length === 1,
+    // On Windows, invoking the `mpv` command can create a launcher process
+    // before the actual mpv executable. The session descriptor records the
+    // player PID, so discover it instead of assuming it equals child.pid.
+    const descriptor = await waitForValue(
+      async () => {
+        const descriptors = await listDescriptors(sessionDirectory);
+        return descriptors.length === 1 ? descriptors[0] : null;
+      },
       10000,
       "mpv session descriptor",
     );
-    // The native shim writes a sibling JSON sidecar; select the Lua descriptor
-    // by its PID-named contract instead of relying on directory ordering.
-    const descriptorFile = `${child.pid}.json`;
-    const descriptorPath = path.join(sessionDirectory, descriptorFile);
-    const descriptor = await readDescriptor(descriptorPath);
-    if (descriptor.pid !== child.pid)
-      throw new Error(
-        `descriptor PID ${descriptor.pid} does not match mpv PID ${child.pid}`,
-      );
 
     ipc = new MpvJsonIpc(descriptor.ipcEndpoint, { timeoutMs: 3000 });
     const fullscreenState = await waitForValue(
@@ -199,6 +206,26 @@ async function main() {
       sessionDirectory,
       timeoutMs: 3000,
     });
+    if (process.platform !== "darwin") {
+      // This standalone Node smoke has no Electron screen module. Calibrate
+      // the same physical-to-DIP conversion from the probe's per-window DPI
+      // before asking the adapter for logical placement geometry.
+      const rawWindow = await waitForValue(
+        async () => {
+          const value = await adapter.probe(descriptor);
+          return value?.ok === true && value.content ? value : null;
+        },
+        10000,
+        "stock mpv native window probe",
+      );
+      const desktopScale = Math.max(1, Number(rawWindow.desktopScale) || 1);
+      adapter.screen = {
+        screenToDipPoint: ({ x, y }) => ({
+          x: Number(x) / desktopScale,
+          y: Number(y) / desktopScale,
+        }),
+      };
+    }
     const shimGeometryPath = path.join(
       sessionDirectory,
       `${descriptor.pid}.geometry.json`,
@@ -255,38 +282,40 @@ async function main() {
     }
 
     console.log(
-      JSON.stringify(
-        {
-          mpv: version.stdout.split(/\r?\n/)[0],
-          descriptor: {
-            sessionId: descriptor.sessionId,
-            pid: descriptor.pid,
-            windowId: descriptor.windowId,
+      publicDiagnostic(
+        JSON.stringify(
+          {
+            mpv: version.stdout.split(/\r?\n/)[0],
+            descriptor: {
+              sessionId: descriptor.sessionId,
+              pid: descriptor.pid,
+              windowId: descriptor.windowId,
+            },
+            probe: {
+              executable: probeExecutable,
+              windowId: geometry.windowId,
+              content: geometry.content,
+              contentSource: geometry.contentSource,
+              contentExact: geometry.contentExact,
+              isForeground: geometry.isForeground,
+              displayAsleep: geometry.displayAsleep,
+              displayVisible: geometry.displayVisible,
+              capability: geometry.capability,
+            },
+            shimRequested: expectNativeShim,
+            shimGeometry,
+            activation,
+            fullscreenRequested: fullscreen,
+            fullscreenObserved:
+              typeof geometry.fullscreenObserved === "boolean"
+                ? geometry.fullscreenObserved
+                : fullscreenState.value,
+            fullscreenEvidence: geometry.fullscreenEvidence || "mpv-property-only",
+            mode: "native-stock-mpv-window-probe-only",
           },
-          probe: {
-            executable: probeExecutable,
-            windowId: geometry.windowId,
-            content: geometry.content,
-            contentSource: geometry.contentSource,
-            contentExact: geometry.contentExact,
-            isForeground: geometry.isForeground,
-            displayAsleep: geometry.displayAsleep,
-            displayVisible: geometry.displayVisible,
-            capability: geometry.capability,
-          },
-          shimRequested: expectNativeShim,
-          shimGeometry,
-          activation,
-          fullscreenRequested: fullscreen,
-          fullscreenObserved:
-            typeof geometry.fullscreenObserved === "boolean"
-              ? geometry.fullscreenObserved
-              : fullscreenState.value,
-          fullscreenEvidence: geometry.fullscreenEvidence || "mpv-property-only",
-          mode: "native-stock-mpv-window-probe-only",
-        },
-        null,
-        2,
+          null,
+          2,
+        ),
       ),
     );
   } finally {
@@ -296,12 +325,16 @@ async function main() {
   }
 
   if (stderr && /error|fatal/i.test(stderr))
-    console.warn(`mpv emitted diagnostics during window smoke: ${stderr.trim()}`);
+    console.warn(
+      `mpv emitted diagnostics during window smoke: ${publicDiagnostic(stderr.trim())}`,
+    );
   if (process.env.IINATAN_E2E_DEBUG === "1" && stderr)
-    console.error(`mpv stderr during window smoke:\n${stderr.trim()}`);
+    console.error(
+      `mpv stderr during window smoke:\n${publicDiagnostic(stderr.trim())}`,
+    );
 }
 
 main().catch((error) => {
-  console.error(`STOCK MPV WINDOW SMOKE FAILED: ${error.message}`);
+  console.error(`STOCK MPV WINDOW SMOKE FAILED: ${publicDiagnostic(error.message)}`);
   process.exitCode = 1;
 });

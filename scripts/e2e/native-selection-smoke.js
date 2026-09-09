@@ -9,8 +9,37 @@ const { execFile, spawn } = require("node:child_process");
 
 const root = path.resolve(__dirname, "../..");
 
+function publicDiagnostic(value) {
+  const text = String(value);
+  const escapedRoot = root.replaceAll("\\", "\\\\");
+  const escapedHome = os.homedir().replaceAll("\\", "\\\\");
+  return text
+    .replaceAll(root, "<repo>")
+    .replaceAll(escapedRoot, "<repo>")
+    .replaceAll(os.homedir(), "<home>")
+    .replaceAll(escapedHome, "<home>");
+}
+
 function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function removeTemporaryRoot(directory) {
+  const attempts = process.platform === "win32" ? 12 : 1;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      await fs.rm(directory, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (
+        process.platform !== "win32" ||
+        !["EBUSY", "EPERM", "ENOTEMPTY"].includes(error.code) ||
+        attempt === attempts - 1
+      )
+        throw error;
+      await delay(100 * (attempt + 1));
+    }
+  }
 }
 
 async function readJson(filePath) {
@@ -54,6 +83,19 @@ function helperPath() {
       ),
       path.join(root, "build", "native", "Release", executableName),
       path.join(root, "build", "native", executableName),
+      path.join(
+        root,
+        "build",
+        process.platform === "win32" ? "native/windows-ninja" : "native/linux-ninja",
+        executableName,
+      ),
+      path.join(
+        root,
+        "build",
+        process.platform === "win32" ? "native/windows-ninja" : "native/linux-ninja",
+        "Release",
+        executableName,
+      ),
     ].find((candidate) => fsSync.existsSync(candidate)) ||
     ""
   );
@@ -216,32 +258,36 @@ async function main() {
         `native selection result was not successful: ${JSON.stringify(result)}`,
       );
     console.log(
-      JSON.stringify(
-        {
-          ok: true,
-          helper: input,
-          capture,
-          scale,
-          start,
-          end,
-          result,
-          mode: "native-electron-text-selection",
-        },
-        null,
-        2,
+      publicDiagnostic(
+        JSON.stringify(
+          {
+            ok: true,
+            helper: input,
+            capture,
+            scale,
+            start,
+            end,
+            result,
+            mode: "native-electron-text-selection",
+          },
+          null,
+          2,
+        ),
       ),
     );
   } finally {
     await stopProcess(child);
-    await fs.rm(temporaryRoot, { recursive: true, force: true });
+    await removeTemporaryRoot(temporaryRoot);
   }
   if (stderr && /error|fatal/i.test(stderr))
     console.warn(
-      `Electron native selection smoke emitted diagnostics: ${stderr.trim()}`,
+      `Electron native selection smoke emitted diagnostics: ${publicDiagnostic(stderr.trim())}`,
     );
 }
 
 main().catch((error) => {
-  console.error(`NATIVE SELECTION SMOKE FAILED: ${error.stack || error.message}`);
+  console.error(
+    `NATIVE SELECTION SMOKE FAILED: ${publicDiagnostic(error.stack || error.message)}`,
+  );
   process.exitCode = 1;
 });

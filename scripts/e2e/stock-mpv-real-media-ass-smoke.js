@@ -170,7 +170,7 @@ function unitCoverage(mask, units) {
   });
 }
 
-function version(executable, args = ["--version"]) {
+function version(executable, args = ["--no-config", "--version"]) {
   return spawnSync(executable, args, { encoding: "utf8" });
 }
 
@@ -195,7 +195,11 @@ async function main() {
       path.join(
         root,
         "bin",
-        process.platform === "win32" ? "iina-hoshi-dicts.exe" : "iina-hoshi-dicts",
+        process.platform === "darwin"
+          ? "iina-hoshi-dicts"
+          : process.platform === "win32"
+            ? "iinatan-native-geometry.exe"
+            : "iinatan-native-geometry",
       ),
   );
   const ffIndex = Math.max(
@@ -271,6 +275,7 @@ async function main() {
         timeoutMs: 30000,
       }),
     );
+    const capabilities = await client.negotiate();
     const response = await client.measure({
       requestId: "real-media-ass-embedded-fonts",
       source: { path: mediaPath, ffIndex, external: false },
@@ -367,6 +372,7 @@ async function main() {
           unitCoverage: coverage,
           fillUnitCoverage: fillCoverage,
           diagnostics: response.diagnostics || null,
+          capabilities: capabilities.assGeometry,
           mode: "real-stock-mpv-ass-attachment-demux-and-unit-coverage",
         },
         null,

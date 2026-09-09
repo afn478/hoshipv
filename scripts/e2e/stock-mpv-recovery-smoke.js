@@ -14,8 +14,22 @@ const {
 
 const root = path.resolve(__dirname, "../..");
 
+function ipcEndpoint(temporaryRoot, name) {
+  return process.platform === "win32"
+    ? `\\\\.\\pipe\\iinatan-mpv-recovery-${process.pid}-${name}-${Date.now()}`
+    : path.join(temporaryRoot, `${name}.sock`);
+}
+
 function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function terminateWindowsProcessTree(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return;
+  spawnSync("taskkill.exe", ["/PID", String(pid), "/T", "/F"], {
+    stdio: "ignore",
+    windowsHide: true,
+  });
 }
 
 async function waitFor(predicate, timeoutMs, description) {
@@ -56,19 +70,49 @@ function spawnSession(executable, sessionDirectory, socketPath, sessionId, title
   return { child, getStderr: () => stderr };
 }
 
-async function stopProcess(child) {
-  if (!child || child.exitCode !== null) return;
+async function stopProcess(child, processPid = child?.pid) {
+  if (!processPid || !isProcessAlive(processPid)) return;
+  const exited = new Promise((resolve) => {
+    if (child.exitCode !== null) {
+      resolve();
+      return;
+    }
+    child.once("exit", resolve);
+  });
   child.kill("SIGTERM");
-  await Promise.race([
-    new Promise((resolve) => child.once("exit", resolve)),
-    delay(4000),
-  ]);
-  if (child.exitCode === null) child.kill("SIGKILL");
+  await Promise.race([exited, delay(4000)]);
+  if (isProcessAlive(processPid)) {
+    if (process.platform === "win32") terminateWindowsProcessTree(processPid);
+    else child.kill("SIGKILL");
+    await Promise.race([exited, delay(4000)]);
+  }
+  await waitFor(() => !isProcessAlive(processPid), 5000, "mpv process tree shutdown");
+}
+
+async function forceTerminateProcess(child, processPid = child?.pid) {
+  if (!processPid || !isProcessAlive(processPid)) return;
+  const exited = new Promise((resolve) => {
+    if (child.exitCode !== null) {
+      resolve();
+      return;
+    }
+    child.once("exit", resolve);
+  });
+  if (process.platform === "win32") terminateWindowsProcessTree(processPid);
+  else child.kill("SIGKILL");
+  await Promise.race([exited, delay(4000)]);
+  await waitFor(
+    () => !isProcessAlive(processPid),
+    5000,
+    "forced mpv process termination",
+  );
 }
 
 async function main() {
   const executable = process.env.IINATAN_MPV || "mpv";
-  const version = spawnSync(executable, ["--version"], { encoding: "utf8" });
+  const version = spawnSync(executable, ["--no-config", "--version"], {
+    encoding: "utf8",
+  });
   if (version.error || version.status !== 0)
     throw new Error(
       `stock mpv is unavailable: ${version.error?.message || version.stderr || "unknown error"}`,
@@ -81,15 +125,17 @@ async function main() {
   await fs.mkdir(sessionDirectory);
   const crashedSession = {
     id: "recovery-crashed",
-    socket: path.join(temporaryRoot, "crashed.sock"),
+    socket: ipcEndpoint(temporaryRoot, "crashed"),
   };
   const replacementSession = {
     id: "recovery-replacement",
-    socket: path.join(temporaryRoot, "replacement.sock"),
+    socket: ipcEndpoint(temporaryRoot, "replacement"),
   };
   let crashed = null;
   let replacement = null;
   let replacementBridge = null;
+  let crashedPid = null;
+  let replacementPid = null;
   let staleDescriptorPath = null;
   const diagnostics = [];
   try {
@@ -109,12 +155,9 @@ async function main() {
     staleDescriptorPath = path.join(sessionDirectory, `${crashedDescriptor.pid}.json`);
     if (crashedDescriptor.sessionId !== crashedSession.id)
       throw new Error("crash-test descriptor had the wrong session identity");
-    const crashedPid = crashedDescriptor.pid;
+    crashedPid = crashedDescriptor.pid;
 
-    crashed.child.kill("SIGKILL");
-    await new Promise((resolve) => crashed.child.once("exit", resolve));
-    if (isProcessAlive(crashedPid))
-      throw new Error("the crashed mpv process remained alive after SIGKILL");
+    await forceTerminateProcess(crashed.child, crashedPid);
 
     await waitFor(
       async () => {
@@ -152,6 +195,7 @@ async function main() {
         `expected one live replacement descriptor, got ${JSON.stringify(liveDescriptors)}`,
       );
     const replacementDescriptor = liveDescriptors[0];
+    replacementPid = replacementDescriptor.pid;
     if (replacementDescriptor.sessionId !== replacementSession.id)
       throw new Error("stale descriptor won replacement discovery");
     const normalized = await readDescriptor(
@@ -181,8 +225,8 @@ async function main() {
     );
   } finally {
     replacementBridge?.close();
-    await stopProcess(replacement?.child);
-    await stopProcess(crashed?.child);
+    await stopProcess(replacement?.child, replacementPid);
+    await stopProcess(crashed?.child, crashedPid);
     if (staleDescriptorPath)
       await fs.rm(staleDescriptorPath, { force: true }).catch(() => {});
     diagnostics.push(crashed?.getStderr?.() || "", replacement?.getStderr?.() || "");

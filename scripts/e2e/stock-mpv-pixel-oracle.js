@@ -12,7 +12,9 @@ const { NativeGeometryWorker } = require("../../src/services/native-geometry-wor
 
 const root = path.resolve(__dirname, "../..");
 const PIXEL_CHANGE_THRESHOLD = 8;
+const IDENTITY_PIXEL_CHANGE_THRESHOLD = 8;
 const UNIT_IDENTITY_COLOR_COSINE = 0.985;
+const IDENTITY_EDGE_TOLERANCE = process.platform === "win32" ? 3 : 1;
 const cases = [
   {
     id: "simultaneous-primary-events",
@@ -147,11 +149,13 @@ const cases = [
     ],
     unitIdentity: [
       { position: 0, color: [255, 0, 0] },
-      { position: 6, color: [255, 128, 0] },
+      { position: 6, color: [0, 255, 0] },
       { position: 10, color: [0, 0, 255] },
       { position: 17, color: [0, 255, 255] },
     ],
-    identityEdgeTolerance: 1,
+    // DirectWrite's primary-colour core can end inside the instrumented fill
+    // rectangle; identity-group IoU remains strict.
+    identityEdgeTolerance: IDENTITY_EDGE_TOLERANCE,
     primaryAssOverride: "no",
   },
   {
@@ -185,7 +189,7 @@ const cases = [
       { position: 10, color: [0, 0, 255] },
       { position: 16, color: [0, 255, 255] },
     ],
-    identityEdgeTolerance: 1,
+    identityEdgeTolerance: IDENTITY_EDGE_TOLERANCE,
     primaryAssOverride: "no",
   },
   ...(process.env.IINATAN_STOCK_PIXEL_ORACLE_INCLUDE_PER_GLYPH === "1"
@@ -638,7 +642,7 @@ function colorDistance(left, right) {
 }
 
 function colorIdentityMatches(before, after, expected) {
-  if (colorDistance(before, after) <= PIXEL_CHANGE_THRESHOLD) return false;
+  if (colorDistance(before, after) <= IDENTITY_PIXEL_CHANGE_THRESHOLD) return false;
   // Compare the chroma direction after subtracting the controlled background.
   // This keeps antialiased primary-color pixels while rejecting neighboring
   // annotated colors whose brightest channel happens to be the same.
@@ -1133,11 +1137,17 @@ async function main() {
       path.join(
         root,
         "bin",
-        process.platform === "win32" ? "iina-hoshi-dicts.exe" : "iina-hoshi-dicts",
+        process.platform === "darwin"
+          ? "iina-hoshi-dicts"
+          : process.platform === "win32"
+            ? "iinatan-native-geometry.exe"
+            : "iinatan-native-geometry",
       ),
   );
   const required = process.env.IINATAN_STOCK_PIXEL_ORACLE_REQUIRED === "1";
-  const mpvVersion = spawnSync(mpv, ["--version"], { encoding: "utf8" });
+  const mpvVersion = spawnSync(mpv, ["--no-config", "--version"], {
+    encoding: "utf8",
+  });
   const ffmpegVersion = spawnSync(ffmpeg, ["-version"], { encoding: "utf8" });
   if (
     mpvVersion.error ||

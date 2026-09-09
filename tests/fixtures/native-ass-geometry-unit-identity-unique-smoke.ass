@@ -7,13 +7,13 @@ ScaledBorderAndShadow: yes
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: Red,Arial,38,&H000000FF,&H000000FF,&H00101010,&H80000000,0,0,0,0,100,100,0,0,1,2,1,7,48,24,32,1
-Style: Orange,Arial,38,&H000080FF,&H000080FF,&H00101010,&H80000000,0,0,0,0,100,100,0,0,1,2,1,7,250,24,32,1
+Style: Green,Arial,38,&H0000FF00,&H0000FF00,&H00101010,&H80000000,0,0,0,0,100,100,0,0,1,2,1,7,250,24,32,1
 Style: Blue,Arial,38,&H00FF0000,&H00FF0000,&H00101010,&H80000000,0,0,0,0,100,100,0,0,1,2,1,9,48,250,32,1
 Style: Cyan,Arial,38,&H00FFFF00,&H00FFFF00,&H00101010,&H80000000,0,0,0,0,100,100,0,0,1,2,1,9,48,110,32,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 Dialogue: 0,0:00:01.00,0:00:03.00,Red,,0,0,0,,First
-Dialogue: 1,0:00:01.00,0:00:03.00,Orange,,0,0,0,,red
+Dialogue: 1,0:00:01.00,0:00:03.00,Green,,0,0,0,,red
 Dialogue: 2,0:00:01.00,0:00:03.00,Blue,,0,0,0,,Second
 Dialogue: 3,0:00:01.00,0:00:03.00,Cyan,,0,0,0,,blue

@@ -13,6 +13,17 @@ const { HoshiWorker } = require("../../src/services/hoshi-worker");
 
 const root = path.resolve(__dirname, "../..");
 
+function publicDiagnostic(value) {
+  const text = String(value);
+  const escapedRoot = root.replaceAll("\\", "\\\\");
+  const escapedHome = os.homedir().replaceAll("\\", "\\\\");
+  return text
+    .replaceAll(root, "<repo>")
+    .replaceAll(escapedRoot, "<repo>")
+    .replaceAll(os.homedir(), "<home>")
+    .replaceAll(escapedHome, "<home>");
+}
+
 async function exists(filePath) {
   return fs
     .access(filePath)
@@ -149,41 +160,43 @@ async function main() {
       );
 
     console.log(
-      JSON.stringify(
-        {
-          backend: JSON.parse(String(version.stdout).trim()),
-          recommended: {
-            id: recommended.id,
-            title: recommended.title,
-            language: recommended.language,
-            downloadUrl: recommended.downloadUrl,
-          },
-          installed: {
-            id: entry.id,
-            path: entry.path,
-            title: entry.title,
-            language: entry.language,
-            enabled: installed.enabled,
-          },
-          ready: {
-            ok: ready.ok,
-            dictCount: ready.dictCount,
-            assGeometry: ready.assGeometry || null,
-          },
-          lookup: {
-            text: lookupText,
-            resultCount: result.results.length,
-            first: {
-              matched: result.results[0].matched || null,
-              deinflected: result.results[0].deinflected || null,
-              headword: result.results[0].term?.expression || null,
+      publicDiagnostic(
+        JSON.stringify(
+          {
+            backend: JSON.parse(String(version.stdout).trim()),
+            recommended: {
+              id: recommended.id,
+              title: recommended.title,
+              language: recommended.language,
+              downloadUrl: recommended.downloadUrl,
             },
+            installed: {
+              id: entry.id,
+              path: entry.path,
+              title: entry.title,
+              language: entry.language,
+              enabled: installed.enabled,
+            },
+            ready: {
+              ok: ready.ok,
+              dictCount: ready.dictCount,
+              assGeometry: ready.assGeometry || null,
+            },
+            lookup: {
+              text: lookupText,
+              resultCount: result.results.length,
+              first: {
+                matched: result.results[0].matched || null,
+                deinflected: result.results[0].deinflected || null,
+                headword: result.results[0].term?.expression || null,
+              },
+            },
+            timings,
+            mode: "recommended-dictionary-download-smoke",
           },
-          timings,
-          mode: "recommended-dictionary-download-smoke",
-        },
-        null,
-        2,
+          null,
+          2,
+        ),
       ),
     );
   } finally {
@@ -193,6 +206,8 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error(`RECOMMENDED DICTIONARY DOWNLOAD SMOKE FAILED: ${error.message}`);
+  console.error(
+    `RECOMMENDED DICTIONARY DOWNLOAD SMOKE FAILED: ${publicDiagnostic(error.stack || error.message)}`,
+  );
   process.exitCode = 1;
 });

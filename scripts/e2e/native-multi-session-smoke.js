@@ -11,10 +11,10 @@ const {
   isProcessAlive,
   listDescriptors,
 } = require("../../src/player/session-descriptor");
+const { sanitizeDiagnosticMessage } = require("../../src/services/diagnostics");
+const { absoluteSuppliedMediaPath } = require("./supplied-media");
 
 const root = path.resolve(__dirname, "../..");
-const suppliedMedia =
-  "/Volumes/Media Files/anime/MARRIAGETOXIN/Season 01/MARRIAGETOXIN (2026) - S01E01 - The Poison Masters Search for a Bride [HDTV-1080p][AAC 2.0][x265]-DKB.mkv";
 
 function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -84,7 +84,10 @@ function spawnMpv({
   // macOS limits AF_UNIX paths to a little over 100 bytes. Keep the IPC
   // endpoint beside the session directory with a short stable name; the
   // descriptor still carries the full endpoint and session identity.
-  const socketPath = path.join(path.dirname(sessionDirectory), `${id.slice(-1)}.sock`);
+  const socketPath =
+    process.platform === "win32"
+      ? `\\\\.\\pipe\\iinatan-native-multi-${process.pid}-${id}`
+      : path.join(path.dirname(sessionDirectory), `${id.slice(-1)}.sock`);
   const child = spawn(
     executable,
     [
@@ -224,6 +227,10 @@ async function connectMpv(session) {
 }
 
 async function waitForAppSessions(statusPath, expectedIds, description) {
+  const exactContentSources =
+    process.platform === "darwin"
+      ? new Set(["appkit-content-view"])
+      : new Set(["client-area", "windows-client-area"]);
   return waitFor(
     async () => {
       const status = await statusAt(statusPath);
@@ -238,9 +245,9 @@ async function waitForAppSessions(statusPath, expectedIds, description) {
         expectedIds.some((id) => {
           const session = byId.get(id);
           return (
-            session.source?.exact !== true ||
             session.source?.contentExact !== true ||
-            session.source?.contentSource !== "appkit-content-view"
+            !exactContentSources.has(session.source?.contentSource) ||
+            (process.platform === "darwin" && session.source?.exact !== true)
           );
         })
       )
@@ -281,18 +288,24 @@ async function nativeClick(executable, point, id) {
     ["--move", String(point.x), String(point.y)],
     `${id} native pointer move`,
   );
-  if (move.accessibilityTrusted !== true || move.postEventTrusted !== true)
-    throw new Error(`${id} native move helper is not trusted: ${JSON.stringify(move)}`);
+  if (
+    process.platform === "darwin"
+      ? move.accessibilityTrusted !== true || move.postEventTrusted !== true
+      : move.nativeInputReady !== true || move.permissionModel !== "win32-sendinput"
+  )
+    throw new Error(`${id} native move helper is not ready: ${JSON.stringify(move)}`);
   await delay(24);
   const click = runNativeInput(
     executable,
     ["--click", String(point.x), String(point.y), "left"],
     `${id} native click`,
   );
-  if (click.accessibilityTrusted !== true || click.postEventTrusted !== true)
-    throw new Error(
-      `${id} native click helper is not trusted: ${JSON.stringify(click)}`,
-    );
+  if (
+    process.platform === "darwin"
+      ? click.accessibilityTrusted !== true || click.postEventTrusted !== true
+      : click.nativeInputReady !== true || click.permissionModel !== "win32-sendinput"
+  )
+    throw new Error(`${id} native click helper is not ready: ${JSON.stringify(click)}`);
   return { move, click };
 }
 
@@ -301,7 +314,15 @@ async function clickAndProbe(desktopTest, adapter, descriptor, session, id) {
     x: session.content.x + session.content.width / 2,
     y: session.content.y + session.content.height / 2,
   };
-  const click = await nativeClick(desktopTest, point, id);
+  const desktopScale = Math.max(1, Number(session.desktopScale) || 1);
+  const nativePoint =
+    process.platform === "win32"
+      ? {
+          x: point.x * desktopScale,
+          y: point.y * desktopScale,
+        }
+      : point;
+  const click = await nativeClick(desktopTest, nativePoint, id);
   let lastObserved = null;
   let observed;
   try {
@@ -316,40 +337,52 @@ async function clickAndProbe(desktopTest, adapter, descriptor, session, id) {
     );
   } catch (error) {
     throw new Error(
-      `${error.message}; point=${JSON.stringify(point)}; click=${JSON.stringify(click)}; lastObserved=${JSON.stringify(lastObserved)}`,
+      `${error.message}; point=${JSON.stringify(point)}; nativePoint=${JSON.stringify(nativePoint)}; click=${JSON.stringify(click)}; lastObserved=${JSON.stringify(lastObserved)}`,
     );
   }
-  return { point, click, observed };
+  return { point, nativePoint, desktopScale, click, observed };
 }
 
 async function main() {
-  if (process.platform !== "darwin" || process.env.IINATAN_E2E !== "1") {
+  if (
+    !["darwin", "win32"].includes(process.platform) ||
+    process.env.IINATAN_E2E !== "1"
+  ) {
     console.log(
-      "SKIP: macOS multi-session desktop evidence requires IINATAN_E2E=1 on an unlocked graphical session.",
+      "SKIP: native multi-session desktop evidence requires IINATAN_E2E=1 on a supported unlocked graphical session.",
     );
     return;
   }
 
   const mpv = process.env.IINATAN_MPV || "mpv";
-  const mediaPath = path.resolve(process.env.IINATAN_E2E_MEDIA_PATH || suppliedMedia);
-  const nativeShim = executablePath("IINATAN_NATIVE_SHIM", [
-    "bin/iinatan-mpv-window-shim.so",
-    "build/native/iinatan-mpv-window-shim.so",
-  ]);
+  const mediaPath = absoluteSuppliedMediaPath("IINATAN_E2E_MEDIA_PATH");
+  const nativeShim =
+    process.platform === "darwin"
+      ? executablePath("IINATAN_NATIVE_SHIM", [
+          "bin/iinatan-mpv-window-shim.so",
+          "build/native/iinatan-mpv-window-shim.so",
+        ])
+      : "";
   const windowProbe = executablePath("IINATAN_WINDOW_PROBE", [
     "bin/iinatan-window-probe",
     "build/native/iinatan-window-probe",
+    "build/native/Release/iinatan-window-probe.exe",
+    "build/native/windows-ninja/iinatan-window-probe.exe",
   ]);
   const desktopTest = executablePath("IINATAN_DESKTOP_TEST", [
     "build/native/iinatan-desktop-test.app/Contents/MacOS/iinatan-desktop-test",
     "build/native/iinatan-desktop-test",
+    "build/native/Release/iinatan-desktop-test.exe",
+    "build/native/windows-ninja/Release/iinatan-desktop-test.exe",
   ]);
-  if (!nativeShim || !windowProbe || !desktopTest)
+  if ((process.platform === "darwin" && !nativeShim) || !windowProbe || !desktopTest)
     throw new Error(
-      "macOS native shim, window probe, or desktop-test helper is unavailable; run npm run build:native",
+      "the native shim, window probe, or desktop-test helper is unavailable; run npm run build:native",
     );
   await fs.access(mediaPath);
-  const versionResult = spawnSync(mpv, ["--version"], { encoding: "utf8" });
+  const versionResult = spawnSync(mpv, ["--no-config", "--version"], {
+    encoding: "utf8",
+  });
   if (versionResult.error || versionResult.status !== 0)
     throw new Error(
       `stock mpv is unavailable: ${versionResult.error?.message || versionResult.stderr || "unknown error"}`,
@@ -436,6 +469,23 @@ async function main() {
       sessionDirectory,
       timeoutMs: 3000,
     });
+    if (process.platform === "win32") {
+      const rawWindow = await waitFor(
+        async () => {
+          const value = await adapter.probe(descriptorById.get("native-multi-a"));
+          return value?.ok === true && value.content ? value : null;
+        },
+        10000,
+        "Windows native multi-session window probe",
+      );
+      const desktopScale = Math.max(1, Number(rawWindow.desktopScale) || 1);
+      adapter.screen = {
+        screenToDipPoint: ({ x, y }) => ({
+          x: Number(x) / desktopScale,
+          y: Number(y) / desktopScale,
+        }),
+      };
+    }
     // The Codex desktop window may cover the disposable test players. Raise
     // them only after exact Electron attachment has been established, so the
     // visibility guard does not affect the attachment race itself.
@@ -530,15 +580,33 @@ async function main() {
           (session) => session.sessionId === "native-multi-a",
         ),
       },
-      electronStderr: electronStderr || null,
-      mode: "macos-native-stock-mpv-multi-session-ownership",
+      electronStderr: electronStderr
+        ? sanitizeDiagnosticMessage(electronStderr, "native host diagnostics")
+        : null,
+      mode:
+        process.platform === "win32"
+          ? "windows-native-stock-mpv-multi-session-ownership"
+          : "macos-native-stock-mpv-multi-session-ownership",
     };
     console.log(JSON.stringify(report, null, 2));
   } finally {
     for (const bridge of bridges.values()) bridge.close();
     if (electron) await stopProcess(electron);
     for (const session of sessions.values()) await stopMpv(session);
-    await fs.rm(temporaryRoot, { recursive: true, force: true });
+    const attempts = process.platform === "win32" ? 12 : 1;
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      try {
+        await fs.rm(temporaryRoot, { recursive: true, force: true });
+        break;
+      } catch (error) {
+        if (
+          !["EBUSY", "EPERM", "ENOTEMPTY"].includes(error?.code) ||
+          attempt + 1 === attempts
+        )
+          throw error;
+        await delay(100 * (attempt + 1));
+      }
+    }
   }
   const evidenceDirectory = String(
     process.env.IINATAN_E2E_MULTI_EVIDENCE_DIR || "",
@@ -554,6 +622,6 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error(`NATIVE MACOS MULTI-SESSION SMOKE FAILED: ${error.message}`);
+  console.error(`NATIVE MULTI-SESSION SMOKE FAILED: ${error.message}`);
   process.exitCode = 1;
 });

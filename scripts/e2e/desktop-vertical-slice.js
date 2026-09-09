@@ -19,10 +19,7 @@ const { SettingsStore } = require("../../src/settings/settings-store");
 const { HoshiWorker } = require("../../src/services/hoshi-worker");
 const { requestFor } = require("../../src/services/language-registry");
 const { decodePng } = require("./stock-mpv-pixel-oracle");
-const {
-  listDescriptors,
-  readDescriptor,
-} = require("../../src/player/session-descriptor");
+const { listDescriptors } = require("../../src/player/session-descriptor");
 
 const root = path.resolve(__dirname, "../..");
 const fixture = path.join(root, "tests", "fixtures", "native-ass-geometry-smoke.ass");
@@ -61,6 +58,25 @@ Dialogue: 0,0:00:01.00,0:00:03.00,Geometry,,0,0,0,,${text}
 function trace(stage, details = "") {
   if (process.env.IINATAN_E2E_DEBUG === "1")
     console.error(`[iinatan-e2e] ${stage}${details ? `: ${details}` : ""}`);
+}
+
+function redactPathVariants(value, source, replacement) {
+  let result = String(value);
+  let variant = String(source || "");
+  for (let depth = 0; variant && depth < 5; depth++) {
+    result = result.replaceAll(variant, replacement);
+    variant = variant.replaceAll("\\", "\\\\");
+  }
+  const slashVariant = String(source || "").replaceAll("\\", "/");
+  if (slashVariant) result = result.replaceAll(slashVariant, replacement);
+  return result;
+}
+
+function publicDiagnostic(value) {
+  let text = String(value);
+  text = redactPathVariants(text, root, "<repo>");
+  text = redactPathVariants(text, os.homedir(), "<home>");
+  return text;
 }
 
 function delay(milliseconds) {
@@ -116,6 +132,20 @@ async function synthesizeNativeControllerInput(
 ) {
   const normalizedStatePath = path.resolve(statePath);
   const temporaryPath = `${normalizedStatePath}.e2e-${process.pid}.next`;
+  async function replaceStateFile() {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await fs.rename(temporaryPath, normalizedStatePath);
+        return;
+      } catch (error) {
+        const retryableWindowsLock =
+          process.platform === "win32" &&
+          ["EACCES", "EBUSY", "EPERM"].includes(error?.code);
+        if (!retryableWindowsLock || attempt >= 80) throw error;
+        await delay(25);
+      }
+    }
+  }
   let sequence = Date.now();
   const writeState = async (pressed) => {
     const state = {
@@ -129,7 +159,7 @@ async function synthesizeNativeControllerInput(
       axes: pressed ? { leftY: 0, rightX: 0, rightY: 0, ...axes } : {},
     };
     await fs.writeFile(temporaryPath, `${JSON.stringify(state)}\n`, { mode: 0o600 });
-    await fs.rename(temporaryPath, normalizedStatePath);
+    await replaceStateFile();
   };
   // The live worker may have just reported a physical controller with a
   // different id. Prime the synthetic replacement with neutral state so the
@@ -215,6 +245,104 @@ function activateUnrelatedMacosApplication(applicationName) {
     command: "open -a",
     status: result.status,
   };
+}
+
+function windowsProcessIds(imageName) {
+  const result = spawnSync(
+    "tasklist.exe",
+    ["/FI", `IMAGENAME eq ${imageName}`, "/FO", "CSV", "/NH"],
+    { encoding: "utf8", windowsHide: true },
+  );
+  if (result.error || result.status !== 0) return [];
+  return result.stdout
+    .split(/\r?\n/)
+    .map((line) => line.match(/^"[^"]+","(\d+)"/))
+    .filter(Boolean)
+    .map((match) => Number(match[1]))
+    .filter((pid) => Number.isInteger(pid) && pid > 0);
+}
+
+function terminateWindowsProcessTree(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return;
+  spawnSync("taskkill.exe", ["/PID", String(pid), "/T", "/F"], {
+    stdio: "ignore",
+    windowsHide: true,
+  });
+}
+
+async function stopUnrelatedWindowsApplication(application) {
+  if (!application) return;
+  await stopProcess(application.process);
+  const before = new Set(application.beforePids || []);
+  const cleanupPids = new Set(application.cleanupPids || []);
+  for (const pid of windowsProcessIds("Notepad.exe")) {
+    if (!before.has(pid)) cleanupPids.add(pid);
+  }
+  for (const pid of cleanupPids) terminateWindowsProcessTree(pid);
+}
+
+async function activateUnrelatedWindowsApplication(windowProbe) {
+  const before = new Set(windowsProcessIds("Notepad.exe"));
+  const application = spawn("notepad.exe", [], {
+    // Keep Windows' spelling-service side effects out of the repository.
+    cwd: os.tmpdir(),
+    stdio: "ignore",
+    windowsHide: false,
+  });
+  const cleanupPids = new Set([application.pid]);
+  try {
+    const activation = await waitForValue(
+      async () => {
+        const candidates = [application.pid, ...windowsProcessIds("Notepad.exe")];
+        for (const pid of [...new Set(candidates)]) {
+          const result = commandOutput(
+            windowProbe,
+            ["--pid", String(pid), "--activate"],
+            "unrelated Windows application activation",
+          );
+          if (result?.foregroundVerified !== true) continue;
+          if (!before.has(pid)) cleanupPids.add(pid);
+          return { ...result, pid };
+        }
+        return null;
+      },
+      5000,
+      "unrelated Windows application activation",
+    );
+    // Notepad remembers a maximized state on some Windows installations. Keep
+    // the unrelated application visibly overlapping the player while leaving
+    // a real player coordinate exposed for the native user-click recovery.
+    // This uses the same Win32 window boundary as the production probe rather
+    // than relying on a shell-specific window-management command.
+    const windowPid = activation.pid || application.pid;
+    const positioned = commandOutput(
+      windowProbe,
+      ["--pid", String(windowPid), "--set-bounds", "80", "80", "640", "360"],
+      "unrelated Windows application positioning",
+    );
+    if (positioned?.ok !== true)
+      throw new Error(
+        `unrelated Windows application could not be positioned: ${JSON.stringify(
+          positioned,
+        )}`,
+      );
+    return {
+      process: application,
+      beforePids: [...before],
+      evidence: {
+        application: "Notepad",
+        command: "notepad.exe",
+        processPid: application.pid,
+        windowPid,
+        activation,
+        positioned,
+      },
+      cleanupPids: [...cleanupPids],
+    };
+  } catch (error) {
+    await stopUnrelatedWindowsApplication({ process: application, cleanupPids });
+    throw error;
+  }
 }
 
 function run(executable, args, description) {
@@ -542,20 +670,76 @@ async function copyIfPresent(source, target) {
   }
 }
 
+const PUBLIC_TEXT_EVIDENCE_EXTENSIONS = new Set([".conf", ".json", ".log", ".txt"]);
+
+async function copyPublicEvidence(source, target) {
+  if (!source || !target) return false;
+  if (path.resolve(source) === path.resolve(target)) return true;
+  const extension = path.extname(String(source)).toLowerCase();
+  if (!PUBLIC_TEXT_EVIDENCE_EXTENSIONS.has(extension))
+    return copyIfPresent(source, target);
+  try {
+    const contents = await fs.readFile(source, "utf8");
+    await fs.writeFile(target, publicDiagnostic(contents), { mode: 0o600 });
+    return true;
+  } catch (error) {
+    if (error.code === "ENOENT") return false;
+    throw error;
+  }
+}
+
 async function preserveEvidence(directory, files, report) {
   if (!directory) return;
   await fs.mkdir(directory, { recursive: true, mode: 0o700 });
   for (const [name, source] of Object.entries(files))
-    await copyIfPresent(source, path.join(directory, name));
+    await copyPublicEvidence(source, path.join(directory, name));
   await fs.writeFile(
     path.join(directory, "result.json"),
-    `${JSON.stringify(report, null, 2)}\n`,
+    `${publicDiagnostic(JSON.stringify(report, null, 2))}\n`,
     { mode: 0o600 },
   );
 }
 
 function sessionStatus(status, sessionId) {
   return status?.sessions?.find((session) => session.sessionId === sessionId) || null;
+}
+
+async function waitForStablePopupMetrics(
+  statusPath,
+  sessionId,
+  regionNames,
+  predicate,
+  timeoutMs,
+  description,
+) {
+  let previousSignature = null;
+  let stableSince = 0;
+  return waitForValue(
+    async () => {
+      const status = await statusAt(statusPath);
+      const session = sessionStatus(status, sessionId);
+      if (!session || (predicate && !predicate(session))) {
+        previousSignature = null;
+        stableSince = 0;
+        return null;
+      }
+      const signature = JSON.stringify({
+        popupPlacement: session.popupPlacement,
+        popupMeasuredSize: session.popupMeasuredSize,
+        regions: Object.fromEntries(
+          regionNames.map((name) => [name, session.popupRegions?.[name] || null]),
+        ),
+      });
+      if (signature !== previousSignature) {
+        previousSignature = signature;
+        stableSince = Date.now();
+        return null;
+      }
+      return Date.now() - stableSince >= 225 ? session : null;
+    },
+    timeoutMs,
+    description,
+  );
 }
 
 function lookupableUnits(session) {
@@ -610,6 +794,16 @@ function lookupCompatibleUnit(candidate, language) {
     Array.isArray(unit.utf16Range) ? unit.utf16Range[0] : 0,
     24,
   );
+}
+
+async function externalSubtitleCueCount(filePath) {
+  if (!filePath) return null;
+  try {
+    const text = await fs.readFile(filePath, "utf8");
+    return (text.match(/^\s*\d{2}:\d{2}:\d{2}[,.]\d{3}\s+-->\s+/gmu) || []).length;
+  } catch (_) {
+    return null;
+  }
 }
 
 function pointerResetTarget(session) {
@@ -908,7 +1102,19 @@ function codeSignature(executable) {
 
 function packagedApplicationExecutable(value) {
   const application = path.resolve(value);
-  if (!application.endsWith(".app")) return application;
+  if (!application.endsWith(".app")) {
+    if (fsSync.existsSync(application) && fsSync.statSync(application).isDirectory()) {
+      const executableNames =
+        process.platform === "win32"
+          ? ["iinatan for mpv.exe", "iinatan-mp.exe"]
+          : ["iinatan for mpv", "iinatan-mp"];
+      for (const name of executableNames) {
+        const executable = path.join(application, name);
+        if (fsSync.existsSync(executable)) return executable;
+      }
+    }
+    return application;
+  }
   const executableNames = [path.basename(application, ".app"), "iinatan for mpv"];
   for (const name of new Set(executableNames)) {
     const executable = path.join(application, "Contents", "MacOS", name);
@@ -951,7 +1157,8 @@ async function main() {
     Math.floor(Number(process.env.IINATAN_E2E_ADDITIONAL_POINTER_PROBES) || 0),
   );
   const nativeInteractionMatrix = process.env.IINATAN_E2E_NATIVE_INTERACTION === "1";
-  const nativeMacosFeatureParity = process.env.IINATAN_E2E_FEATURE_PARITY === "1";
+  const nativeFeatureParityRequested = process.env.IINATAN_E2E_FEATURE_PARITY === "1";
+  const nativeNestedReplayRequested = process.env.IINATAN_E2E_NATIVE_NESTED === "1";
   const nativeControllerParity = process.env.IINATAN_E2E_CONTROLLER === "1";
   const manualControllerOnly = process.env.IINATAN_E2E_MANUAL_CONTROLLER === "1";
   const syntheticNativeController =
@@ -992,20 +1199,30 @@ async function main() {
   );
   if (screenRecordingEnabled && process.platform !== "darwin")
     throw new Error("IINATAN_E2E_RECORD_SCREEN currently requires macOS screencapture");
-  if (nativeMacosFeatureParity && process.platform !== "darwin")
-    throw new Error("IINATAN_E2E_FEATURE_PARITY currently requires macOS");
-  if (nativeMacosFeatureParity && !nativeInteractionMatrix)
+  if (nativeFeatureParityRequested && !["darwin", "win32"].includes(process.platform))
+    throw new Error("IINATAN_E2E_FEATURE_PARITY currently requires macOS or Windows");
+  if (nativeFeatureParityRequested && !nativeInteractionMatrix)
     throw new Error(
       "IINATAN_E2E_FEATURE_PARITY requires IINATAN_E2E_NATIVE_INTERACTION=1",
     );
-  if (nativeControllerParity && process.platform !== "darwin")
-    throw new Error("IINATAN_E2E_CONTROLLER currently requires macOS");
+  if (nativeNestedReplayRequested && !["darwin", "win32"].includes(process.platform))
+    throw new Error("IINATAN_E2E_NATIVE_NESTED currently requires macOS or Windows");
+  if (nativeNestedReplayRequested && !nativeInteractionMatrix)
+    throw new Error(
+      "IINATAN_E2E_NATIVE_NESTED requires IINATAN_E2E_NATIVE_INTERACTION=1",
+    );
+  if (nativeControllerParity && !["darwin", "win32"].includes(process.platform))
+    throw new Error("IINATAN_E2E_CONTROLLER currently requires macOS or Windows");
   if (nativeControllerParity && !nativeInteractionMatrix)
     throw new Error("IINATAN_E2E_CONTROLLER requires IINATAN_E2E_NATIVE_INTERACTION=1");
-  if (nativeResizeTransition && process.platform !== "darwin")
-    throw new Error("IINATAN_E2E_RESIZE_TRANSITION currently requires macOS");
-  if (nativeLifecycleCycles > 0 && process.platform !== "darwin")
-    throw new Error("IINATAN_E2E_NATIVE_LIFECYCLE_CYCLES currently requires macOS");
+  if (nativeResizeTransition && !["darwin", "win32"].includes(process.platform))
+    throw new Error(
+      "IINATAN_E2E_RESIZE_TRANSITION requires macOS or Windows native desktop evidence",
+    );
+  if (nativeLifecycleCycles > 0 && !["darwin", "win32"].includes(process.platform))
+    throw new Error(
+      "IINATAN_E2E_NATIVE_LIFECYCLE_CYCLES requires macOS or Windows native desktop evidence",
+    );
   if (nativeLifecycleCycles > 0 && !nativeInteractionMatrix)
     throw new Error(
       "IINATAN_E2E_NATIVE_LIFECYCLE_CYCLES requires IINATAN_E2E_NATIVE_INTERACTION=1",
@@ -1042,12 +1259,16 @@ async function main() {
   const externalMediaPath = process.env.IINATAN_E2E_MEDIA_PATH
     ? path.resolve(process.env.IINATAN_E2E_MEDIA_PATH)
     : "";
+  const externalSubtitlePath = process.env.IINATAN_E2E_SUBTITLE_PATH
+    ? path.resolve(process.env.IINATAN_E2E_SUBTITLE_PATH)
+    : "";
   if (fixtureLanguage && externalMediaPath)
     throw new Error(
       "IINATAN_E2E_*_LANGUAGE requires the generated deterministic demo media",
     );
   const subtitleId =
-    process.env.IINATAN_E2E_SUBTITLE_ID || (externalMediaPath ? "1" : "");
+    process.env.IINATAN_E2E_SUBTITLE_ID ||
+    (externalSubtitlePath ? "auto" : externalMediaPath ? "1" : "");
   const secondarySubtitleId = process.env.IINATAN_E2E_SECONDARY_SUBTITLE_ID || "";
   const startSeconds = Number(
     process.env.IINATAN_E2E_START_SECONDS || (externalMediaPath ? "19" : "2"),
@@ -1072,6 +1293,15 @@ async function main() {
   const windowProbe = requiredExecutable({
     env: "IINATAN_WINDOW_PROBE",
     paths: [
+      ...(process.platform === "win32"
+        ? [
+            `build/native/windows-ninja/${nativeWindowExecutableName}`,
+            `build/native/windows-ninja/Release/${nativeWindowExecutableName}`,
+          ]
+        : [
+            `build/native/linux-ninja/${nativeWindowExecutableName}`,
+            `build/native/linux-ninja/Release/${nativeWindowExecutableName}`,
+          ]),
       `bin/${nativeWindowExecutableName}`,
       `build/native/${nativeWindowExecutableName}`,
       `build/native/Release/${nativeWindowExecutableName}`,
@@ -1090,9 +1320,13 @@ async function main() {
         : [
             `build/native/${nativeDesktopExecutableName}`,
             `build/native/Release/${nativeDesktopExecutableName}`,
+            `build/native/${process.platform === "win32" ? "windows-ninja" : "linux-ninja"}/${nativeDesktopExecutableName}`,
+            `build/native/${process.platform === "win32" ? "windows-ninja" : "linux-ninja"}/Release/${nativeDesktopExecutableName}`,
           ],
   });
-  const mpvVersion = spawnSync(mpv, ["--version"], { encoding: "utf8" });
+  const mpvVersion = spawnSync(mpv, ["--no-config", "--version"], {
+    encoding: "utf8",
+  });
   const ffmpegVersion = externalMediaPath
     ? null
     : spawnSync(ffmpeg, ["-version"], { encoding: "utf8" });
@@ -1142,6 +1376,7 @@ async function main() {
     ? path.resolve(process.env.IINATAN_E2E_CAPTURE_PATH)
     : null;
   const captureAfter = explicitCapture || path.join(temporaryRoot, "desktop-after.png");
+  const captureNested = path.join(temporaryRoot, "desktop-nested.png");
   const captureBefore = explicitCapture
     ? beforeCapturePath(explicitCapture)
     : path.join(temporaryRoot, "desktop-before.png");
@@ -1170,6 +1405,7 @@ async function main() {
   let electronStderr = "";
   let captureBeforeResult = null;
   let captureAfterResult = null;
+  let nestedCaptureResult = null;
   let popupVisualEvidence = null;
   let popupCaptureAttempts = 0;
   let inputCapability = null;
@@ -1188,13 +1424,16 @@ async function main() {
   let popupStatus = null;
   let clickPause = null;
   let dismissalPause = null;
+  let aliveAfterEscape = null;
   let outsideClickResult = null;
   let outsideResetMove = null;
   let outsideFocusResult = null;
   let outsideDismissalPause = null;
+  let aliveAfterOutsidePopupClick = null;
   let nativeInteraction = null;
   let nativeHoverReplacement = null;
   let nativeFeatureParity = null;
+  let nativeNestedReplay = null;
   let nativeController = null;
   let windowTransition = null;
   let controllerPointerReset = null;
@@ -1229,6 +1468,7 @@ async function main() {
   let ankiMockEvidence = null;
   let audioMock = null;
   let audioMockEvidence = null;
+  let unrelatedWindowsProcess = null;
   let finalStatus = null;
   let descriptor = null;
   let playerWindow = null;
@@ -1247,6 +1487,9 @@ async function main() {
         env: "IINATAN_HOSHI",
         paths: [
           `bin/${process.platform === "win32" ? "iina-hoshi-dicts.exe" : "iina-hoshi-dicts"}`,
+          `build/package-resources/${
+            process.platform === "win32" ? "iina-hoshi-dicts.exe" : "iina-hoshi-dicts"
+          }`,
         ],
       });
       if (!hoshiExecutable)
@@ -1296,9 +1539,14 @@ async function main() {
       await liveDictionaryWorker.stop();
       liveDictionaryWorker = null;
     }
-    if (nativeMacosFeatureParity || nativeControllerParity) {
-      if (nativeMacosFeatureParity) ankiMock = await startAnkiConnectMock();
-      audioMock = await startAudioSourceMock();
+    if (
+      nativeFeatureParityRequested ||
+      nativeControllerParity ||
+      nativeNestedReplayRequested
+    ) {
+      if (nativeFeatureParityRequested) ankiMock = await startAnkiConnectMock();
+      if (nativeFeatureParityRequested || nativeControllerParity)
+        audioMock = await startAudioSourceMock();
       const featureSettings = new SettingsStore(
         path.join(userDataPath, "settings.json"),
       );
@@ -1310,8 +1558,15 @@ async function main() {
         // sync with the controller override; passing only --lookup-language
         // changes request routing but cannot reconfigure HoshiDicts.
         if (liveDictionary) profile.preferences.lookupLanguage = lookupLanguage;
-        profile.preferences.audioSourcesJson = JSON.stringify([{ url: audioMock.url }]);
-        if (nativeMacosFeatureParity) {
+        if (audioMock)
+          profile.preferences.audioSourcesJson = JSON.stringify([
+            { url: audioMock.url },
+          ]);
+        if (nativeNestedReplayRequested) {
+          profile.preferences.nestedPopupMode = "click";
+          profile.preferences.nestedPopupMaxDepth = 2;
+        }
+        if (nativeFeatureParityRequested) {
           profile.preferences.ankiEnabled = true;
           profile.preferences.ankiConnectUrl = ankiMock.url;
           profile.preferences.ankiDeckName = "Iinatan E2E";
@@ -1322,7 +1577,7 @@ async function main() {
           profile.preferences.customPopupCss = [
             "#popup {",
             "  background-color: rgb(236, 253, 245) !important;",
-            "  border: 6px solid rgb(13, 148, 136) !important;",
+            "  border: 1px solid rgb(13, 148, 136) !important;",
             "}",
           ].join("\n");
         }
@@ -1335,6 +1590,13 @@ async function main() {
         throw new Error(
           `IINATAN_E2E_MEDIA_PATH is not a regular file: ${externalMediaPath}`,
         );
+      if (externalSubtitlePath) {
+        const subtitleStat = await fs.stat(externalSubtitlePath);
+        if (!subtitleStat.isFile())
+          throw new Error(
+            `IINATAN_E2E_SUBTITLE_PATH is not a regular file: ${externalSubtitlePath}`,
+          );
+      }
       trace("external-media", `${externalMediaPath}; start=${startSeconds}s`);
     } else {
       trace("generate-video");
@@ -1364,6 +1626,7 @@ async function main() {
     trace("video-ready");
     const subtitleArguments = externalMediaPath
       ? [
+          ...(externalSubtitlePath ? [`--sub-file=${externalSubtitlePath}`] : []),
           ...(subtitleId ? [`--sid=${subtitleId}`] : []),
           ...(secondarySubtitleId
             ? [
@@ -1425,17 +1688,25 @@ async function main() {
     mpvProcess.stderr.on("data", (chunk) => {
       mpvStderr += chunk;
     });
-    await waitForValue(
-      async () => (await listDescriptors(sessionDirectory)).length === 1,
+    const initialDescriptors = await waitForValue(
+      async () => {
+        const candidates = await listDescriptors(sessionDirectory);
+        return candidates.length === 1 ? candidates : null;
+      },
       10000,
       "stock mpv session descriptor",
     );
     trace("descriptor-ready");
-    // The native shim writes a sibling JSON sidecar; select the Lua descriptor
-    // by its PID-named contract instead of relying on directory ordering.
-    const descriptorFile = `${mpvProcess.pid}.json`;
-    const descriptorPath = path.join(sessionDirectory, descriptorFile);
-    descriptor = await readDescriptor(descriptorPath);
+    // The Lua descriptor carries the authoritative mpv PID. On Windows a
+    // launcher can cause ChildProcess.pid to refer to an intermediate process,
+    // so use the PID-named file when it matches and otherwise use the sole
+    // descriptor in this isolated session directory.
+    descriptor =
+      initialDescriptors.find((candidate) => candidate.pid === mpvProcess.pid) ||
+      initialDescriptors[0] ||
+      null;
+    if (!descriptor)
+      throw new Error("stock mpv session descriptor identity was ambiguous");
     trace("probe-ipc");
     try {
       await waitForMpvIpc(descriptor.ipcEndpoint);
@@ -1544,10 +1815,12 @@ async function main() {
     );
 
     const electronArguments = [
+      ...(process.env.IINATAN_E2E_DISABLE_GPU === "1" ? ["--disable-gpu"] : []),
       ...(packagedApplication
         ? []
         : [path.join(root, "scripts", "run-electron.js"), "."]),
-      ...(liveDictionary ? [] : ["--demo"]),
+      ...(liveDictionary || nativeNestedReplayRequested ? [] : ["--demo"]),
+      ...(allowApproximateGeometry ? ["--allow-approximate-geometry"] : []),
       `--lookup-language=${lookupLanguage}`,
       "--enable-patched-native-geometry",
       `--mpv-ipc=${descriptor.ipcEndpoint}`,
@@ -1564,6 +1837,9 @@ async function main() {
         cwd: root,
         env: {
           ...process.env,
+          ...(nativeNestedReplayRequested && !liveDictionary
+            ? { IINATAN_E2E_DEMO_DICTIONARY: "1" }
+            : {}),
           ...(syntheticNativeController
             ? { IINATAN_E2E_CONTROLLER_STATE_FILE: syntheticControllerStatePath }
             : {}),
@@ -1634,12 +1910,20 @@ async function main() {
       "stock mpv foreground ownership",
     );
     const initialSession = sessionStatus(finalStatus, descriptor.sessionId);
-    const initialLookup = lookupableUnits(initialSession).find(
+    const primaryLookupUnits = lookupableUnits(initialSession).filter(
       ({ track }) => track.role === "primary",
     );
+    const initialLookup =
+      primaryLookupUnits.find((candidate) =>
+        lookupCompatibleUnit(candidate, lookupLanguage),
+      ) || primaryLookupUnits[0];
     const unit = initialLookup?.unit;
     if (!initialLookup)
       throw new Error("Electron status did not publish a primary lookup unit");
+    if (!lookupCompatibleUnit(initialLookup, lookupLanguage))
+      throw new Error(
+        `primary subtitle track has no unit compatible with lookup language ${lookupLanguage}`,
+      );
     let activeLookup = initialLookup;
     let target = pointerTarget(initialSession, unit);
     const inputScale = Math.max(1, Number(initialSession.desktopScale) || 1);
@@ -1798,365 +2082,1207 @@ async function main() {
         "interactive popup readiness before native click",
       );
       await delay(200);
-      if (nativeInteractionMatrix) {
-        let interactionStatus = await waitForValue(
+      if (nativeNestedReplayRequested) {
+        let nestedRootStatus = await waitForValue(
           async () => {
             const status = await statusAt(statusPath);
             const session = sessionStatus(status, descriptor.sessionId);
-            return session?.popupRegions?.headword && session.popupRegions.panel
-              ? session
-              : null;
-          },
-          5000,
-          "popup native-interaction regions",
-        );
-        if (
-          interactionStatus.highlightWindow?.visible !== true ||
-          interactionStatus.highlightWindow?.alwaysOnTop !== true
-        )
-          throw new Error(
-            `subtitle highlight did not remain visible with the popup open: ${JSON.stringify(
-              interactionStatus.highlightWindow,
-            )}`,
-          );
-        const initialPanelBounds = popupRegionDesktopRect(
-          interactionStatus,
-          interactionStatus.popupRegions.panel,
-        );
-        const replacement = lookupableUnits(interactionStatus)
-          .filter(
-            (candidate) =>
-              candidate.unit.id !== activeLookup.unit.id ||
-              candidate.event.id !== activeLookup.event.id,
-          )
-          .filter((candidate) => lookupCompatibleUnit(candidate, lookupLanguage))
-          .map((candidate) => ({
-            ...candidate,
-            target: pointerTarget(interactionStatus, candidate.unit),
-          }))
-          .filter((candidate) => !pointInRect(candidate.target, initialPanelBounds))
-          .sort((left, right) => {
-            const leftDifferentEvent =
-              left.event.id !== activeLookup.event.id ||
-              left.track.id !== activeLookup.track.id;
-            const rightDifferentEvent =
-              right.event.id !== activeLookup.event.id ||
-              right.track.id !== activeLookup.track.id;
-            return Number(rightDifferentEvent) - Number(leftDifferentEvent);
-          })[0];
-        if (!replacement)
-          throw new Error(
-            `no second subtitle unit was reachable outside the open popup panel: ${JSON.stringify(
-              initialPanelBounds,
-            )}`,
-          );
-        const replacementNativeTarget = nativePoint(replacement.target, inputScale);
-        trace(
-          "native-hover-replacement-target",
-          JSON.stringify({
-            from: { unitId: activeLookup.unit.id, text: activeLookup.unit.text },
-            to: { unitId: replacement.unit.id, text: replacement.unit.text },
-            target: replacement.target,
-            nativeTarget: replacementNativeTarget,
-            inputScale,
-            cursor: interactionStatus.cursorDiagnostic,
-            popupPlacement: interactionStatus.popupPlacement,
-            panelBounds: initialPanelBounds,
-          }),
-        );
-        const replacementStartedAt = performance.now();
-        const replacementMove = commandOutput(
-          desktopTest,
-          [
-            "--move",
-            String(replacementNativeTarget.x),
-            String(replacementNativeTarget.y),
-          ],
-          "native pointer move to another subtitle unit while popup is open",
-        );
-        let replacementStatus;
-        try {
-          replacementStatus = await waitForValue(
-            async () => {
-              const status = await statusAt(statusPath);
-              const session = sessionStatus(status, descriptor.sessionId);
-              return session?.popupVisible === true &&
-                session.popupWindow?.visible === true &&
-                session.popupWindow?.focused === true &&
-                session.popupHit?.unitId === replacement.unit.id &&
-                session.popupHit?.eventId === replacement.event.id &&
-                session.highlightWindow?.visible === true
-                ? session
-                : null;
-            },
-            5000,
-            "popup replacement after hovering another subtitle unit",
-          );
-        } catch (error) {
-          const latestStatus = await statusAt(statusPath);
-          const latestSession = sessionStatus(latestStatus, descriptor.sessionId);
-          trace(
-            "native-hover-replacement-timeout",
-            JSON.stringify({
-              error: error.message,
-              expected: {
-                unitId: replacement.unit.id,
-                eventId: replacement.event.id,
-              },
-              observed: latestSession
-                ? {
-                    cursorDiagnostic: latestSession.cursorDiagnostic,
-                    interaction: latestSession.interaction,
-                    popupVisible: latestSession.popupVisible,
-                    popupHit: latestSession.popupHit,
-                    popupHeadword: latestSession.popupHeadword,
-                    popupWindow: latestSession.popupWindow,
-                    highlightWindow: latestSession.highlightWindow,
-                    lastPopupCloseReason: latestSession.lastPopupCloseReason,
-                  }
-                : null,
-            }),
-          );
-          throw error;
-        }
-        nativeHoverReplacement = {
-          from: {
-            trackId: activeLookup.track.id,
-            eventId: activeLookup.event.id,
-            unitId: activeLookup.unit.id,
-            text: activeLookup.unit.text,
-          },
-          to: {
-            trackId: replacement.track.id,
-            eventId: replacement.event.id,
-            unitId: replacement.unit.id,
-            text: replacement.unit.text,
-          },
-          target: replacement.target,
-          input: replacementMove,
-          popupHit: replacementStatus.popupHit,
-          popupHeadword: replacementStatus.popupHeadword,
-          highlightWindow: replacementStatus.highlightWindow,
-          latencyMs: Number((performance.now() - replacementStartedAt).toFixed(3)),
-        };
-        trace("native-hover-replacement", JSON.stringify(nativeHoverReplacement));
-        activeLookup = replacement;
-        target = replacement.target;
-        nativeTarget = replacementNativeTarget;
-        popupStatus = replacementStatus;
-        recordPopupForeground(
-          replacementStatus,
-          "hover-replacement",
-          popupForegroundSamples,
-        );
-        interactionStatus = await waitForValue(
-          async () => {
-            const status = await statusAt(statusPath);
-            const session = sessionStatus(status, descriptor.sessionId);
-            return session?.popupHit?.unitId === replacement.unit.id &&
-              session.popupRegions?.headword &&
+            return session?.popupRegions?.["nested-reference"] &&
               session.popupRegions.panel
               ? session
               : null;
           },
           5000,
-          "replacement popup native-interaction regions",
+          "native nested lookup reference region",
         );
-        popupStatus = interactionStatus;
-        let panelRegion = interactionStatus.popupRegions.panel;
-        let contentRegion = interactionStatus.popupRegions.content;
-        // The scroll viewport can contain large blank areas around a short
-        // dictionary entry. Prefer the renderer's measured non-control text
-        // range so the native drag begins on selectable text rather than an
-        // arbitrary point in the popup.
-        const selectionRegion =
-          interactionStatus.popupRegions.selection ||
-          interactionStatus.popupRegions.headword ||
-          contentRegion;
-        const selectionStart = popupRegionPoint(
-          interactionStatus,
-          selectionRegion,
-          0.02,
+        let nestedReference = nestedRootStatus.popupRegions["nested-reference"];
+        let nestedReferencePoint = popupRegionPoint(
+          nestedRootStatus,
+          nestedReference,
+          0.5,
           0.5,
         );
-        const selectionEnd = popupRegionPoint(
-          interactionStatus,
-          selectionRegion,
-          0.8,
-          0.5,
+        let nestedPanelBounds = popupRegionDesktopRect(
+          nestedRootStatus,
+          nestedRootStatus.popupRegions.panel,
         );
-        const nativeSelectionStart = nativePoint(selectionStart, inputScale);
-        const nativeSelectionEnd = nativePoint(selectionEnd, inputScale);
-        let popupWindowBounds = interactionStatus.popupWindow?.bounds;
-        let popupPanelBounds = popupRegionDesktopRect(interactionStatus, panelRegion);
+        let nestedScroll = null;
+        if (!pointInRect(nestedReferencePoint, nestedPanelBounds)) {
+          const scrollPoint = popupRegionPoint(
+            nestedRootStatus,
+            nestedRootStatus.popupRegions.panel,
+            0.5,
+            0.75,
+          );
+          if (!pointInRect(scrollPoint, nestedPanelBounds))
+            throw new Error(
+              `native nested-reference scroll coordinate escaped the root popup: ${JSON.stringify(
+                { scrollPoint, nestedPanelBounds },
+              )}`,
+            );
+          const scrollBefore = Number(nestedRootStatus.popupScroll?.top) || 0;
+          const delta = nestedReferencePoint.y > nestedPanelBounds.y ? -480 : 480;
+          const nativeScrollPoint = nativePoint(scrollPoint, inputScale);
+          const scrollInput = commandOutput(
+            desktopTest,
+            [
+              "--scroll",
+              String(nativeScrollPoint.x),
+              String(nativeScrollPoint.y),
+              String(delta),
+            ],
+            "native scroll to nested lookup reference",
+          );
+          nestedRootStatus = await waitForValue(
+            async () => {
+              const status = await statusAt(statusPath);
+              const session = sessionStatus(status, descriptor.sessionId);
+              const reference = session?.popupRegions?.["nested-reference"];
+              const panel = session?.popupRegions?.panel;
+              if (!reference || !panel) return null;
+              const point = popupRegionPoint(session, reference, 0.5, 0.5);
+              const bounds = popupRegionDesktopRect(session, panel);
+              const scrollTop = Number(session.popupScroll?.top) || 0;
+              const moved =
+                (delta < 0 && scrollTop > scrollBefore) ||
+                (delta > 0 && scrollTop < scrollBefore);
+              return moved && pointInRect(point, bounds) ? session : null;
+            },
+            5000,
+            "native nested lookup reference scroll",
+          );
+          nestedReference = nestedRootStatus.popupRegions["nested-reference"];
+          nestedReferencePoint = popupRegionPoint(
+            nestedRootStatus,
+            nestedReference,
+            0.5,
+            0.5,
+          );
+          nestedPanelBounds = popupRegionDesktopRect(
+            nestedRootStatus,
+            nestedRootStatus.popupRegions.panel,
+          );
+          nestedScroll = {
+            point: scrollPoint,
+            input: scrollInput,
+            before: scrollBefore,
+            after: nestedRootStatus.popupScroll,
+          };
+        }
         if (
-          !pointInRect(selectionStart, popupWindowBounds) ||
-          !pointInRect(selectionEnd, popupWindowBounds) ||
-          !pointInRect(selectionStart, popupPanelBounds) ||
-          !pointInRect(selectionEnd, popupPanelBounds)
+          !pointInRect(nestedReferencePoint, nestedRootStatus.popupWindow?.bounds) ||
+          !pointInRect(nestedReferencePoint, nestedPanelBounds)
         )
           throw new Error(
-            `native popup selection coordinates escaped the open popup: ${JSON.stringify(
-              {
+            `native nested-reference coordinate escaped the root popup: ${JSON.stringify(
+              { nestedReferencePoint, nestedPanelBounds },
+            )}`,
+          );
+        const nestedPauseBefore = bridge.property("pause");
+        const nativeNestedPoint = nativePoint(nestedReferencePoint, inputScale);
+        const nestedClick = commandOutput(
+          desktopTest,
+          ["--click", String(nativeNestedPoint.x), String(nativeNestedPoint.y), "left"],
+          "native nested lookup reference click",
+        );
+        const nestedResultStatus = await waitForValue(
+          async () => {
+            const status = await statusAt(statusPath);
+            const session = sessionStatus(status, descriptor.sessionId);
+            return session?.nestedPopupResult?.ok === true &&
+              session.nestedPopupResult.depth === 1 &&
+              session.popupRegions?.["nested-panel"]
+              ? session
+              : null;
+          },
+          5000,
+          "native nested dictionary result",
+        );
+        const nestedPauseAfter = bridge.property("pause");
+        if (nestedPauseAfter !== nestedPauseBefore)
+          throw new Error(
+            `native nested popup click changed player pause state: before=${nestedPauseBefore}, after=${nestedPauseAfter}`,
+          );
+        nestedCaptureResult = commandOutput(
+          desktopTest,
+          desktopCaptureArguments(captureNested, playerWindow),
+          "desktop capture with native nested popup",
+        );
+        const nestedPanelCapture = await compareCaptureRegion(
+          captureBefore,
+          captureNested,
+          popupRegionDesktopRect(
+            nestedResultStatus,
+            nestedResultStatus.popupRegions["nested-panel"],
+          ),
+          initialSession.desktopScale,
+          nestedCaptureResult?.origin,
+          nestedCaptureResult?.scale,
+        );
+        if (!nestedPanelCapture.ok)
+          throw new Error(
+            `combined desktop capture did not show the native nested popup: ${JSON.stringify(
+              nestedPanelCapture,
+            )}`,
+          );
+        recordPopupForeground(
+          nestedResultStatus,
+          "nested-popup",
+          popupForegroundSamples,
+        );
+        const nestedEscape = commandOutput(
+          desktopTest,
+          ["--key", "escape"],
+          "native Escape for nested popup",
+        );
+        const nestedClosedStatus = await waitForValue(
+          async () => {
+            const status = await statusAt(statusPath);
+            const session = sessionStatus(status, descriptor.sessionId);
+            return session?.popupVisible === true && session.nestedPopupResult === null
+              ? session
+              : null;
+          },
+          5000,
+          "native nested popup Escape dismissal",
+        );
+        nativeNestedReplay = {
+          mode: "native-click-and-capture",
+          rootReference: nestedReference,
+          scroll: nestedScroll,
+          result: nestedResultStatus.nestedPopupResult,
+          rootClick: nestedClick,
+          nestedPanel: nestedResultStatus.popupRegions["nested-panel"],
+          capture: nestedPanelCapture,
+          pause: { before: nestedPauseBefore, after: nestedPauseAfter },
+          escape: nestedEscape,
+          closed: nestedClosedStatus.nestedPopupResult === null,
+        };
+      }
+      if (!nativeNestedReplayRequested) {
+        if (nativeInteractionMatrix) {
+          let interactionStatus = await waitForValue(
+            async () => {
+              const status = await statusAt(statusPath);
+              const session = sessionStatus(status, descriptor.sessionId);
+              return session?.popupRegions?.headword && session.popupRegions.panel
+                ? session
+                : null;
+            },
+            5000,
+            "popup native-interaction regions",
+          );
+          if (
+            interactionStatus.highlightWindow?.visible !== true ||
+            interactionStatus.highlightWindow?.alwaysOnTop !== true
+          )
+            throw new Error(
+              `subtitle highlight did not remain visible with the popup open: ${JSON.stringify(
+                interactionStatus.highlightWindow,
+              )}`,
+            );
+          const initialPanelBounds = popupRegionDesktopRect(
+            interactionStatus,
+            interactionStatus.popupRegions.panel,
+          );
+          const replacement = lookupableUnits(interactionStatus)
+            .filter(
+              (candidate) =>
+                candidate.unit.id !== activeLookup.unit.id ||
+                candidate.event.id !== activeLookup.event.id,
+            )
+            .filter((candidate) => lookupCompatibleUnit(candidate, lookupLanguage))
+            .map((candidate) => ({
+              ...candidate,
+              target: pointerTarget(interactionStatus, candidate.unit),
+            }))
+            .filter((candidate) => !pointInRect(candidate.target, initialPanelBounds))
+            .sort((left, right) => {
+              const leftDifferentEvent =
+                left.event.id !== activeLookup.event.id ||
+                left.track.id !== activeLookup.track.id;
+              const rightDifferentEvent =
+                right.event.id !== activeLookup.event.id ||
+                right.track.id !== activeLookup.track.id;
+              return Number(rightDifferentEvent) - Number(leftDifferentEvent);
+            })[0];
+          if (!replacement)
+            throw new Error(
+              `no second subtitle unit was reachable outside the open popup panel: ${JSON.stringify(
+                initialPanelBounds,
+              )}`,
+            );
+          const replacementNativeTarget = nativePoint(replacement.target, inputScale);
+          trace(
+            "native-hover-replacement-target",
+            JSON.stringify({
+              from: { unitId: activeLookup.unit.id, text: activeLookup.unit.text },
+              to: { unitId: replacement.unit.id, text: replacement.unit.text },
+              target: replacement.target,
+              nativeTarget: replacementNativeTarget,
+              inputScale,
+              cursor: interactionStatus.cursorDiagnostic,
+              popupPlacement: interactionStatus.popupPlacement,
+              panelBounds: initialPanelBounds,
+            }),
+          );
+          const replacementStartedAt = performance.now();
+          const replacementMove = commandOutput(
+            desktopTest,
+            [
+              "--move",
+              String(replacementNativeTarget.x),
+              String(replacementNativeTarget.y),
+            ],
+            "native pointer move to another subtitle unit while popup is open",
+          );
+          let replacementStatus;
+          try {
+            replacementStatus = await waitForValue(
+              async () => {
+                const status = await statusAt(statusPath);
+                const session = sessionStatus(status, descriptor.sessionId);
+                return session?.popupVisible === true &&
+                  session.popupWindow?.visible === true &&
+                  session.popupWindow?.focused === true &&
+                  session.popupHit?.unitId === replacement.unit.id &&
+                  session.popupHit?.eventId === replacement.event.id &&
+                  session.highlightWindow?.visible === true
+                  ? session
+                  : null;
+              },
+              5000,
+              "popup replacement after hovering another subtitle unit",
+            );
+          } catch (error) {
+            const latestStatus = await statusAt(statusPath);
+            const latestSession = sessionStatus(latestStatus, descriptor.sessionId);
+            trace(
+              "native-hover-replacement-timeout",
+              JSON.stringify({
+                error: error.message,
+                expected: {
+                  unitId: replacement.unit.id,
+                  eventId: replacement.event.id,
+                },
+                observed: latestSession
+                  ? {
+                      cursorDiagnostic: latestSession.cursorDiagnostic,
+                      interaction: latestSession.interaction,
+                      popupVisible: latestSession.popupVisible,
+                      popupHit: latestSession.popupHit,
+                      popupHeadword: latestSession.popupHeadword,
+                      popupWindow: latestSession.popupWindow,
+                      highlightWindow: latestSession.highlightWindow,
+                      lastPopupCloseReason: latestSession.lastPopupCloseReason,
+                    }
+                  : null,
+              }),
+            );
+            throw error;
+          }
+          nativeHoverReplacement = {
+            from: {
+              trackId: activeLookup.track.id,
+              eventId: activeLookup.event.id,
+              unitId: activeLookup.unit.id,
+              text: activeLookup.unit.text,
+            },
+            to: {
+              trackId: replacement.track.id,
+              eventId: replacement.event.id,
+              unitId: replacement.unit.id,
+              text: replacement.unit.text,
+            },
+            target: replacement.target,
+            input: replacementMove,
+            popupHit: replacementStatus.popupHit,
+            popupHeadword: replacementStatus.popupHeadword,
+            highlightWindow: replacementStatus.highlightWindow,
+            latencyMs: Number((performance.now() - replacementStartedAt).toFixed(3)),
+          };
+          trace("native-hover-replacement", JSON.stringify(nativeHoverReplacement));
+          activeLookup = replacement;
+          target = replacement.target;
+          nativeTarget = replacementNativeTarget;
+          popupStatus = replacementStatus;
+          recordPopupForeground(
+            replacementStatus,
+            "hover-replacement",
+            popupForegroundSamples,
+          );
+          interactionStatus = await waitForValue(
+            async () => {
+              const status = await statusAt(statusPath);
+              const session = sessionStatus(status, descriptor.sessionId);
+              return session?.popupHit?.unitId === replacement.unit.id &&
+                session.popupRegions?.headword &&
+                session.popupRegions.panel
+                ? session
+                : null;
+            },
+            5000,
+            "replacement popup native-interaction regions",
+          );
+          popupStatus = interactionStatus;
+          let panelRegion = interactionStatus.popupRegions.panel;
+          let contentRegion = interactionStatus.popupRegions.content;
+          // The scroll viewport can contain large blank areas around a short
+          // dictionary entry. Prefer the renderer's measured non-control text
+          // range so the native drag begins on selectable text rather than an
+          // arbitrary point in the popup.
+          const selectionRegion =
+            interactionStatus.popupRegions.selection ||
+            interactionStatus.popupRegions.headword ||
+            contentRegion;
+          const selectionStart = popupRegionPoint(
+            interactionStatus,
+            selectionRegion,
+            0.02,
+            0.5,
+          );
+          const selectionEnd = popupRegionPoint(
+            interactionStatus,
+            selectionRegion,
+            0.8,
+            0.5,
+          );
+          const nativeSelectionStart = nativePoint(selectionStart, inputScale);
+          const nativeSelectionEnd = nativePoint(selectionEnd, inputScale);
+          let popupWindowBounds = interactionStatus.popupWindow?.bounds;
+          let popupPanelBounds = popupRegionDesktopRect(interactionStatus, panelRegion);
+          if (
+            !pointInRect(selectionStart, popupWindowBounds) ||
+            !pointInRect(selectionEnd, popupWindowBounds) ||
+            !pointInRect(selectionStart, popupPanelBounds) ||
+            !pointInRect(selectionEnd, popupPanelBounds)
+          )
+            throw new Error(
+              `native popup selection coordinates escaped the open popup: ${JSON.stringify(
+                {
+                  popupWindowBounds,
+                  popupPanelBounds,
+                  selectionStart,
+                  selectionEnd,
+                },
+              )}`,
+            );
+          trace(
+            "native-popup-selection-target",
+            JSON.stringify({ selectionRegion, selectionStart, selectionEnd }),
+          );
+          if (nativeFeatureParityRequested) {
+            const featureStatus = await waitForStablePopupMetrics(
+              statusPath,
+              descriptor.sessionId,
+              ["panel", "action-audio-source"],
+              (session) =>
+                session.popupStyle?.customCssApplied === true &&
+                session.popupRegions?.["action-audio-source"],
+              5000,
+              "native popup custom CSS and measured action region",
+            );
+            const expectedPopupStyle = {
+              customCssApplied: true,
+              backgroundColor: "rgb(236, 253, 245)",
+              borderTopColor: "rgb(13, 148, 136)",
+              borderTopWidth: "1px",
+            };
+            if (
+              featureStatus.popupStyle.customCssApplied !==
+                expectedPopupStyle.customCssApplied ||
+              featureStatus.popupStyle.backgroundColor !==
+                expectedPopupStyle.backgroundColor ||
+              featureStatus.popupStyle.borderTopColor !==
+                expectedPopupStyle.borderTopColor ||
+              featureStatus.popupStyle.borderTopWidth !==
+                expectedPopupStyle.borderTopWidth
+            )
+              throw new Error(
+                `native popup custom CSS did not reach the live panel: ${JSON.stringify(
+                  {
+                    expected: expectedPopupStyle,
+                    observed: featureStatus.popupStyle,
+                  },
+                )}`,
+              );
+            nativeFeatureParity = {
+              customCss: {
+                selector: "#popup",
+                remappedSelector: ":is(#popup, .nested-popup)",
+                expected: expectedPopupStyle,
+                observed: featureStatus.popupStyle,
+              },
+            };
+            recordPopupForeground(
+              featureStatus,
+              "feature-popup",
+              popupForegroundSamples,
+            );
+            popupWindowBounds = featureStatus.popupWindow?.bounds;
+            popupPanelBounds = popupRegionDesktopRect(
+              featureStatus,
+              featureStatus.popupRegions.panel,
+            );
+            const audioRegion = featureStatus.popupRegions["action-audio-source"];
+            if (!audioRegion)
+              throw new Error(
+                "native popup audio action region is unavailable before selection",
+              );
+            const audioPoint = popupRegionPoint(featureStatus, audioRegion, 0.5, 0.5);
+            if (
+              !pointInRect(audioPoint, featureStatus.popupWindow?.bounds) ||
+              !pointInRect(audioPoint, popupPanelBounds)
+            )
+              throw new Error(
+                `native audio action coordinate escaped the open popup: ${JSON.stringify(
+                  {
+                    audioPoint,
+                    popupWindowBounds: featureStatus.popupWindow?.bounds,
+                    popupPanelBounds,
+                  },
+                )}`,
+              );
+            const nativeAudioPoint = nativePoint(audioPoint, inputScale);
+            trace(
+              "native-feature-audio-target",
+              JSON.stringify({
+                audioPoint,
+                nativeAudioPoint,
+                inputScale,
+                audioRegion,
                 popupWindowBounds,
                 popupPanelBounds,
-                selectionStart,
-                selectionEnd,
+              }),
+            );
+            const audioMove = commandOutput(
+              desktopTest,
+              ["--move", String(nativeAudioPoint.x), String(nativeAudioPoint.y)],
+              "native popup audio action pointer move",
+            );
+            await delay(100);
+            const audioStartedAt = performance.now();
+            const audioClick = commandOutput(
+              desktopTest,
+              [
+                "--click",
+                String(nativeAudioPoint.x),
+                String(nativeAudioPoint.y),
+                "left",
+              ],
+              "native popup audio action click",
+            );
+            const audioPlaybackStatus = await waitForValue(
+              async () => {
+                const status = await statusAt(statusPath);
+                const session = sessionStatus(status, descriptor.sessionId);
+                return session?.interactionSnapshot?.state === "audio-menu-active" &&
+                  session.audioResult
+                  ? session
+                  : null;
+              },
+              5000,
+              "native popup reference audio playback",
+            );
+            recordPopupForeground(
+              audioPlaybackStatus,
+              "audio-playback",
+              popupForegroundSamples,
+            );
+            nativeFeatureParity.audio = {
+              point: audioPoint,
+              input: { move: audioMove, click: audioClick },
+              state: audioPlaybackStatus.interactionSnapshot.state,
+              result: audioPlaybackStatus.audioResult,
+              latencyMs: Number((performance.now() - audioStartedAt).toFixed(3)),
+            };
+            const audioSourceMenuClick = commandOutput(
+              desktopTest,
+              [
+                "--click",
+                String(nativeAudioPoint.x),
+                String(nativeAudioPoint.y),
+                "right",
+              ],
+              "native popup reference audio source menu context click",
+            );
+            const audioSourceMenuStatus = await waitForValue(
+              async () => {
+                const status = await statusAt(statusPath);
+                const session = sessionStatus(status, descriptor.sessionId);
+                return session?.interactionSnapshot?.state === "audio-menu-active" &&
+                  session.popupRegions?.["action-audio-close"]
+                  ? session
+                  : null;
+              },
+              5000,
+              "native popup reference audio source menu",
+            );
+            recordPopupForeground(
+              audioSourceMenuStatus,
+              "audio-source-menu",
+              popupForegroundSamples,
+            );
+            nativeFeatureParity.audio.sourceMenu = {
+              point: audioPoint,
+              region: audioSourceMenuStatus.popupRegions["action-audio-close"],
+              input: audioSourceMenuClick,
+            };
+            const audioClose = commandOutput(
+              desktopTest,
+              ["--key", "escape"],
+              "native popup reference audio source menu Escape",
+            );
+            nativeFeatureParity.audio.close = audioClose;
+            const afterAudioStatus = await waitForValue(
+              async () => {
+                const status = await statusAt(statusPath);
+                const session = sessionStatus(status, descriptor.sessionId);
+                return session?.popupVisible === true &&
+                  session.interactionSnapshot?.state === "popup-active" &&
+                  session.popupRegions?.["action-anki-add"]
+                  ? session
+                  : null;
+              },
+              5000,
+              "native popup after audio menu dismissal",
+            );
+            popupWindowBounds = afterAudioStatus.popupWindow?.bounds;
+            popupPanelBounds = popupRegionDesktopRect(
+              afterAudioStatus,
+              afterAudioStatus.popupRegions.panel,
+            );
+            const ankiRegion = afterAudioStatus.popupRegions["action-anki-add"];
+            if (!ankiRegion)
+              throw new Error("native popup Anki action region is unavailable");
+            const ankiPoint = popupRegionPoint(afterAudioStatus, ankiRegion, 0.5, 0.5);
+            if (
+              !pointInRect(ankiPoint, popupWindowBounds) ||
+              !pointInRect(ankiPoint, popupPanelBounds)
+            )
+              throw new Error(
+                `native Anki action coordinate escaped the open popup: ${JSON.stringify(
+                  {
+                    ankiPoint,
+                    popupWindowBounds,
+                    popupPanelBounds,
+                  },
+                )}`,
+              );
+            const nativeAnkiPoint = nativePoint(ankiPoint, inputScale);
+            trace(
+              "native-feature-anki-target",
+              JSON.stringify({
+                ankiPoint,
+                nativeAnkiPoint,
+                inputScale,
+                ankiRegion,
+                popupWindowBounds,
+                popupPanelBounds,
+              }),
+            );
+            const ankiMove = commandOutput(
+              desktopTest,
+              ["--move", String(nativeAnkiPoint.x), String(nativeAnkiPoint.y)],
+              "native popup Anki action pointer move",
+            );
+            await delay(100);
+            const ankiStartedAt = performance.now();
+            const ankiClick = commandOutput(
+              desktopTest,
+              ["--click", String(nativeAnkiPoint.x), String(nativeAnkiPoint.y), "left"],
+              "native popup Anki action click",
+            );
+            const ankiStatus = await waitForValue(
+              async () => {
+                const status = await statusAt(statusPath);
+                const session = sessionStatus(status, descriptor.sessionId);
+                return session?.ankiResult?.state === "added" &&
+                  session.ankiResult.ok === true
+                  ? session
+                  : null;
+              },
+              5000,
+              "native popup Anki note",
+            );
+            recordPopupForeground(ankiStatus, "anki-action", popupForegroundSamples);
+            nativeFeatureParity.anki = {
+              point: ankiPoint,
+              input: { move: ankiMove, click: ankiClick },
+              result: ankiStatus.ankiResult,
+              latencyMs: Number((performance.now() - ankiStartedAt).toFixed(3)),
+            };
+          }
+          if (smoothPopupApproach) {
+            selectionApproach = await movePointerSmoothly(
+              desktopTest,
+              nativeTarget,
+              nativeSelectionStart,
+              12,
+              statusPath,
+              descriptor.sessionId,
+            );
+            trace("native-popup-selection-approach", JSON.stringify(selectionApproach));
+            const smoothStatus = await waitForValue(
+              async () => {
+                const status = await statusAt(statusPath);
+                const session = sessionStatus(status, descriptor.sessionId);
+                return session?.popupVisible &&
+                  session.popupWindow?.visible === true &&
+                  session.popupWindow?.focused === true
+                  ? session
+                  : null;
+              },
+              5000,
+              "popup focus after smooth native approach",
+            );
+            recordPopupForeground(
+              smoothStatus,
+              "smooth-approach",
+              popupForegroundSamples,
+            );
+          }
+          const selectionStartedAt = performance.now();
+          const drag = commandOutput(
+            desktopTest,
+            [
+              "--drag",
+              String(nativeSelectionStart.x),
+              String(nativeSelectionStart.y),
+              String(nativeSelectionEnd.x),
+              String(nativeSelectionEnd.y),
+            ],
+            "native popup text selection drag",
+          );
+          const selectedStatus = await waitForValue(
+            async () => {
+              const status = await statusAt(statusPath);
+              const session = sessionStatus(status, descriptor.sessionId);
+              return session?.popupSelectionText ? session : null;
+            },
+            5000,
+            "native popup text selection",
+          );
+          recordPopupForeground(
+            selectedStatus,
+            "text-selection",
+            popupForegroundSamples,
+          );
+          latencySamples.nativeSelectionMs.push(performance.now() - selectionStartedAt);
+          nativeInteraction = {
+            regions: interactionStatus.popupRegions,
+            inputBounds: {
+              window: popupWindowBounds,
+              panel: popupPanelBounds,
+            },
+            selection: {
+              region: selectionRegion,
+              start: selectionStart,
+              end: selectionEnd,
+              approach: selectionApproach,
+              drag,
+              text: selectedStatus.popupSelectionText,
+            },
+          };
+          if (["darwin", "win32"].includes(process.platform)) {
+            const focusedPanel = await waitForValue(
+              async () => {
+                const status = await statusAt(statusPath);
+                const session = sessionStatus(status, descriptor.sessionId);
+                return session?.popupVisible &&
+                  session.popupWindow?.visible === true &&
+                  session.popupWindow?.focused === true &&
+                  session.popupFocusTarget === "popup-panel" &&
+                  Number.isInteger(session.popupFocusRevision)
+                  ? session
+                  : null;
+              },
+              5000,
+              "native popup panel focus",
+            );
+            recordPopupForeground(
+              focusedPanel,
+              "keyboard-focus",
+              popupForegroundSamples,
+            );
+            const tab = commandOutput(desktopTest, ["--key", "tab"], "native Tab");
+            if (!nativeInputReady(tab))
+              throw new Error(`native Tab lost trusted input: ${JSON.stringify(tab)}`);
+            const tabFocused = await waitForValue(
+              async () => {
+                const status = await statusAt(statusPath);
+                const session = sessionStatus(status, descriptor.sessionId);
+                return session?.popupVisible &&
+                  session.popupWindow?.visible === true &&
+                  session.popupWindow?.focused === true &&
+                  session.popupFocusTarget &&
+                  Number(session.popupFocusRevision) >
+                    Number(focusedPanel.popupFocusRevision)
+                  ? session
+                  : null;
+              },
+              5000,
+              "native Tab focus transition",
+            );
+            recordPopupForeground(tabFocused, "tab-focus", popupForegroundSamples);
+            const shiftTab = commandOutput(
+              desktopTest,
+              ["--shortcut", "shift", "tab"],
+              "native Shift-Tab",
+            );
+            if (!nativeInputReady(shiftTab))
+              throw new Error(
+                `native Shift-Tab lost trusted input: ${JSON.stringify(shiftTab)}`,
+              );
+            const shiftTabFocused = await waitForValue(
+              async () => {
+                const status = await statusAt(statusPath);
+                const session = sessionStatus(status, descriptor.sessionId);
+                return session?.popupVisible &&
+                  session.popupWindow?.visible === true &&
+                  session.popupWindow?.focused === true &&
+                  session.popupFocusTarget &&
+                  Number(session.popupFocusRevision) >
+                    Number(tabFocused.popupFocusRevision)
+                  ? session
+                  : null;
+              },
+              5000,
+              "native Shift-Tab focus transition",
+            );
+            recordPopupForeground(
+              shiftTabFocused,
+              "shift-tab-focus",
+              popupForegroundSamples,
+            );
+            keyboardFocus = {
+              initial: focusedPanel.popupFocusTarget,
+              tab: {
+                input: tab,
+                target: tabFocused.popupFocusTarget,
+              },
+              shiftTab: {
+                input: shiftTab,
+                target: shiftTabFocused.popupFocusTarget,
+                wrapped:
+                  shiftTabFocused.popupFocusTarget === tabFocused.popupFocusTarget,
+              },
+            };
+            nativeInteraction.keyboard = keyboardFocus;
+            trace("native-popup-keyboard-focus", JSON.stringify(keyboardFocus));
+          } else {
+            keyboardFocus = {
+              skipped: true,
+              reason: "macOS-native-focus-evidence-only",
+            };
+            nativeInteraction.keyboard = keyboardFocus;
+          }
+          const popupScrollable =
+            interactionStatus.popupMeasuredSize?.scrollable === true;
+          nativeInteraction.scrollable = popupScrollable;
+          if (!popupScrollable) {
+            nativeInteraction.scroll = {
+              skipped: true,
+              reason: "popup-content-not-scrollable",
+            };
+          } else {
+            const scrollPoint = popupRegionPoint(
+              interactionStatus,
+              panelRegion,
+              0.5,
+              0.75,
+            );
+            const nativeScrollPoint = nativePoint(scrollPoint, inputScale);
+            if (
+              !pointInRect(scrollPoint, popupWindowBounds) ||
+              !pointInRect(scrollPoint, popupPanelBounds)
+            )
+              throw new Error(
+                `native popup scroll coordinate escaped the open popup: ${JSON.stringify(
+                  {
+                    popupWindowBounds,
+                    popupPanelBounds,
+                    scrollPoint,
+                  },
+                )}`,
+              );
+            const scrollStartedAt = performance.now();
+            const scroll = commandOutput(
+              desktopTest,
+              [
+                "--scroll",
+                String(nativeScrollPoint.x),
+                String(nativeScrollPoint.y),
+                "-480",
+              ],
+              "native popup wheel scroll",
+            );
+            const scrolledStatus = await waitForValue(
+              async () => {
+                const status = await statusAt(statusPath);
+                const session = sessionStatus(status, descriptor.sessionId);
+                return session?.popupScroll?.top > 0 ? session : null;
+              },
+              5000,
+              "native popup scroll state",
+            );
+            recordPopupForeground(
+              scrolledStatus,
+              "wheel-scroll",
+              popupForegroundSamples,
+            );
+            latencySamples.nativeScrollMs.push(performance.now() - scrollStartedAt);
+            nativeInteraction.scroll = {
+              point: scrollPoint,
+              input: scroll,
+              state: scrolledStatus.popupScroll,
+            };
+          }
+        }
+        const clickTargetStatus = await waitForValue(
+          async () => {
+            const status = await statusAt(statusPath);
+            const session = sessionStatus(status, descriptor.sessionId);
+            return session?.popupVisible === true &&
+              session.popupWindow?.visible === true &&
+              session.popupRegions?.panel &&
+              (session.popupRegions.selection ||
+                session.popupRegions.headword ||
+                session.popupRegions.content)
+              ? session
+              : null;
+          },
+          5000,
+          "popup semantic click region",
+        );
+        const clickPanelBounds = popupRegionDesktopRect(
+          clickTargetStatus,
+          clickTargetStatus.popupRegions.panel,
+        );
+        const clickRegionCandidates = [
+          ["selection", clickTargetStatus.popupRegions.selection],
+          ["headword", clickTargetStatus.popupRegions.headword],
+          ["content", clickTargetStatus.popupRegions.content],
+        ];
+        const clickTarget = clickRegionCandidates
+          .filter(([, region]) => region)
+          .map(([name, region]) => ({
+            name,
+            region,
+            point: popupRegionPoint(clickTargetStatus, region, 0.5, 0.5),
+          }))
+          .find(
+            (candidate) =>
+              pointInRect(candidate.point, clickTargetStatus.popupWindow?.bounds) &&
+              pointInRect(candidate.point, clickPanelBounds),
+          );
+        if (!clickTarget)
+          throw new Error(
+            `native popup semantic click region was outside the open panel: ${JSON.stringify(
+              {
+                windowBounds: clickTargetStatus.popupWindow?.bounds,
+                panelBounds: clickPanelBounds,
+                regions: clickTargetStatus.popupRegions,
               },
             )}`,
           );
+        const clickPoint = clickTarget.point;
         trace(
-          "native-popup-selection-target",
-          JSON.stringify({ selectionRegion, selectionStart, selectionEnd }),
+          "native-popup-semantic-click-target",
+          JSON.stringify({
+            region: clickTarget.name,
+            bounds: clickTarget.region,
+            point: clickPoint,
+            panelBounds: clickPanelBounds,
+          }),
         );
-        if (nativeMacosFeatureParity) {
-          const featureStatus = await waitForValue(
+        const nativeClickPoint = nativePoint(clickPoint, inputScale);
+        clickResult = commandOutput(
+          desktopTest,
+          ["--click", String(nativeClickPoint.x), String(nativeClickPoint.y), "left"],
+          "native popup click",
+        );
+        await delay(300);
+        const clickedPopupStatus = await waitForValue(
+          async () => {
+            const status = await statusAt(statusPath);
+            const session = sessionStatus(status, descriptor.sessionId);
+            return session?.popupVisible === true ? session : null;
+          },
+          2000,
+          "popup status after native click",
+        );
+        recordPopupForeground(
+          clickedPopupStatus,
+          "popup-click",
+          popupForegroundSamples,
+        );
+        clickPause = bridge.property("pause");
+        const dismissalStartedAt = performance.now();
+        escapeResult = commandOutput(desktopTest, ["--key", "escape"], "native Escape");
+        await waitForValue(
+          async () => {
+            const status = await statusAt(statusPath);
+            const session = sessionStatus(status, descriptor.sessionId);
+            return session && session.popupVisible === false ? session : null;
+          },
+          5000,
+          "popup dismissal after native Escape",
+        );
+        if (nativeInteractionMatrix) {
+          dismissalFocusResult = await waitForValue(
             async () => {
               const status = await statusAt(statusPath);
               const session = sessionStatus(status, descriptor.sessionId);
-              return session?.popupStyle?.customCssApplied === true &&
-                session.popupRegions?.["action-audio-source"]
-                ? session
-                : null;
+              const activation = session?.focusPlayer;
+              if (
+                activation?.isForeground !== true ||
+                activation?.foregroundVerified !== true
+              )
+                return null;
+              let readback;
+              try {
+                readback = await nativeWindow.read(descriptor);
+              } catch (error) {
+                readback = { ok: false, reason: String(error?.message || error) };
+              }
+              return { activation, readback };
             },
             5000,
-            "native popup custom CSS telemetry",
+            "app-reported stock mpv foreground after native Escape",
           );
-          const expectedPopupStyle = {
-            customCssApplied: true,
-            backgroundColor: "rgb(236, 253, 245)",
-            borderTopColor: "rgb(13, 148, 136)",
-            borderTopWidth: "6px",
-          };
-          if (
-            featureStatus.popupStyle.customCssApplied !==
-              expectedPopupStyle.customCssApplied ||
-            featureStatus.popupStyle.backgroundColor !==
-              expectedPopupStyle.backgroundColor ||
-            featureStatus.popupStyle.borderTopColor !==
-              expectedPopupStyle.borderTopColor ||
-            featureStatus.popupStyle.borderTopWidth !==
-              expectedPopupStyle.borderTopWidth
-          )
-            throw new Error(
-              `native popup custom CSS did not reach the live panel: ${JSON.stringify({
-                expected: expectedPopupStyle,
-                observed: featureStatus.popupStyle,
-              })}`,
-            );
-          nativeFeatureParity = {
-            customCss: {
-              selector: "#popup",
-              remappedSelector: "#popup-panel",
-              expected: expectedPopupStyle,
-              observed: featureStatus.popupStyle,
-            },
-          };
-          recordPopupForeground(featureStatus, "feature-popup", popupForegroundSamples);
-          const audioRegion = featureStatus.popupRegions["action-audio-source"];
-          if (!audioRegion)
-            throw new Error(
-              "native popup audio action region is unavailable before selection",
-            );
-          const audioPoint = popupRegionPoint(featureStatus, audioRegion, 0.5, 0.5);
-          if (
-            !pointInRect(audioPoint, featureStatus.popupWindow?.bounds) ||
-            !pointInRect(audioPoint, popupPanelBounds)
-          )
-            throw new Error(
-              `native audio action coordinate escaped the open popup: ${JSON.stringify({
-                audioPoint,
-                popupWindowBounds: featureStatus.popupWindow?.bounds,
-                popupPanelBounds,
-              })}`,
-            );
-          const nativeAudioPoint = nativePoint(audioPoint, inputScale);
-          const audioStartedAt = performance.now();
-          const audioClick = commandOutput(
-            desktopTest,
-            ["--click", String(nativeAudioPoint.x), String(nativeAudioPoint.y), "left"],
-            "native popup audio action click",
-          );
-          const audioMenuStatus = await waitForValue(
-            async () => {
-              const status = await statusAt(statusPath);
-              const session = sessionStatus(status, descriptor.sessionId);
-              return session?.interactionSnapshot?.state === "audio-menu-active" &&
-                session.audioResult
-                ? session
-                : null;
-            },
-            5000,
-            "native popup audio menu",
-          );
-          recordPopupForeground(audioMenuStatus, "audio-menu", popupForegroundSamples);
-          nativeFeatureParity.audio = {
-            point: audioPoint,
-            input: audioClick,
-            state: audioMenuStatus.interactionSnapshot.state,
-            result: audioMenuStatus.audioResult,
-            latencyMs: Number((performance.now() - audioStartedAt).toFixed(3)),
-          };
-          const audioClose = commandOutput(
-            desktopTest,
-            ["--key", "escape"],
-            "native popup audio menu Escape",
-          );
-          nativeFeatureParity.audio.close = audioClose;
-          await delay(150);
-          const ankiRegion = featureStatus.popupRegions["action-anki-add"];
-          if (!ankiRegion)
-            throw new Error("native popup Anki action region is unavailable");
-          const ankiPoint = popupRegionPoint(featureStatus, ankiRegion, 0.5, 0.5);
-          if (
-            !pointInRect(ankiPoint, featureStatus.popupWindow?.bounds) ||
-            !pointInRect(ankiPoint, popupPanelBounds)
-          )
-            throw new Error(
-              `native Anki action coordinate escaped the open popup: ${JSON.stringify({
-                ankiPoint,
-                popupWindowBounds: featureStatus.popupWindow?.bounds,
-                popupPanelBounds,
-              })}`,
-            );
-          const nativeAnkiPoint = nativePoint(ankiPoint, inputScale);
-          const ankiStartedAt = performance.now();
-          const ankiClick = commandOutput(
-            desktopTest,
-            ["--click", String(nativeAnkiPoint.x), String(nativeAnkiPoint.y), "left"],
-            "native popup Anki action click",
-          );
-          const ankiStatus = await waitForValue(
-            async () => {
-              const status = await statusAt(statusPath);
-              const session = sessionStatus(status, descriptor.sessionId);
-              return session?.ankiResult?.state === "added" &&
-                session.ankiResult.ok === true
-                ? session
-                : null;
-            },
-            5000,
-            "native popup Anki note",
-          );
-          recordPopupForeground(ankiStatus, "anki-action", popupForegroundSamples);
-          nativeFeatureParity.anki = {
-            point: ankiPoint,
-            input: ankiClick,
-            result: ankiStatus.ankiResult,
-            latencyMs: Number((performance.now() - ankiStartedAt).toFixed(3)),
-          };
         }
-        if (smoothPopupApproach) {
-          selectionApproach = await movePointerSmoothly(
-            desktopTest,
-            nativeTarget,
-            nativeSelectionStart,
-            12,
-            statusPath,
-            descriptor.sessionId,
+        latencySamples.popupDismissalMs.push(performance.now() - dismissalStartedAt);
+        dismissalPause = bridge.property("pause");
+        if (dismissalPause !== startPaused)
+          throw new Error(
+            "popup dismissal changed pause ownership unexpectedly (expected " +
+              startPaused +
+              ", observed " +
+              dismissalPause +
+              ")",
           );
-          trace("native-popup-selection-approach", JSON.stringify(selectionApproach));
-          const smoothStatus = await waitForValue(
+        if (mpvProcess.exitCode !== null)
+          throw new Error("native Escape leaked to mpv and closed the player");
+        aliveAfterEscape = true;
+
+        if (nativeResizeTransition) {
+          const beforeWindow = await nativeWindow.read(descriptor);
+          const beforeStatus = await statusAt(statusPath);
+          const beforeSession = sessionStatus(beforeStatus, descriptor.sessionId);
+          const configuredScale = Number(await bridge.ipc.getProperty("window-scale"));
+          const currentScale = Number(
+            await bridge.ipc.getProperty("current-window-scale"),
+          );
+          const beforeScale =
+            Number.isFinite(currentScale) && currentScale > 0
+              ? currentScale
+              : Number.isFinite(configuredScale) && configuredScale > 0
+                ? configuredScale
+                : 1;
+          if (!Number.isFinite(configuredScale) || configuredScale < 0)
+            throw new Error(
+              `stock mpv did not expose a usable configured window-scale before resize: ${JSON.stringify(
+                {
+                  configuredScale,
+                  currentScale,
+                },
+              )}`,
+            );
+          const resizedScale = Number((beforeScale * 0.75).toFixed(3));
+          if (resizedScale <= 0 || Math.abs(resizedScale - beforeScale) < 0.01)
+            throw new Error(
+              `stock mpv resize probe could not choose a distinct scale: ${JSON.stringify(
+                {
+                  beforeScale,
+                  resizedScale,
+                },
+              )}`,
+            );
+          await bridge.ipc.setProperty("window-scale", resizedScale);
+          const resized = await waitForValue(
+            async () => {
+              const nextWindow = await nativeWindow.read(descriptor);
+              return nextWindow.content &&
+                Math.abs(nextWindow.content.width - beforeWindow.content.width) > 1
+                ? nextWindow
+                : null;
+            },
+            10000,
+            "stock mpv content resize",
+          );
+          const resizedStatus = await waitForValue(
+            async () => {
+              const status = await statusAt(statusPath);
+              const session = sessionStatus(status, descriptor.sessionId);
+              return session?.source?.contentExact === true &&
+                Number(session.geometryGeneration) >
+                  Number(beforeSession?.geometryGeneration || 0) &&
+                session.content &&
+                Math.abs(session.content.width - resized.content.width) <= 1 &&
+                Math.abs(session.content.height - resized.content.height) <= 1
+                ? session
+                : null;
+            },
+            10000,
+            "Electron geometry refresh after stock mpv resize",
+          );
+          if (resizedStatus.popupVisible === true)
+            throw new Error("stock mpv resize unexpectedly reopened the popup");
+          // mpv commonly reports an automatic configured scale of 0 while
+          // current-window-scale reports the effective value. Restore the
+          // effective scale first so Windows does not leave the client rect at
+          // the reduced size while the automatic-scale setting is being
+          // re-established.
+          // Restore the effective scale that produced the original client
+          // rectangle. A configured value of 1 can mean "automatic" on mpv;
+          // assigning it here makes Windows choose a new natural window size
+          // instead of returning to the observed geometry.
+          const restoreScale = beforeScale;
+          await bridge.ipc.setProperty("window-scale", restoreScale);
+          let restored;
+          try {
+            restored = await waitForValue(
+              async () => {
+                const nextWindow = await nativeWindow.read(descriptor);
+                return nextWindow.content &&
+                  Math.abs(nextWindow.content.width - beforeWindow.content.width) <=
+                    1 &&
+                  Math.abs(nextWindow.content.height - beforeWindow.content.height) <= 1
+                  ? nextWindow
+                  : null;
+              },
+              10000,
+              "stock mpv content resize recovery",
+            );
+          } catch (error) {
+            const observedWindow = await nativeWindow
+              .read(descriptor)
+              .catch(() => null);
+            const observedScale = await bridge.ipc
+              .getProperty("current-window-scale")
+              .catch(() => null);
+            throw new Error(
+              `${error.message}; resize=${JSON.stringify({
+                configuredScale,
+                beforeScale,
+                resizedScale,
+                restoreScale,
+                beforeContent: beforeWindow.content,
+                observedContent: observedWindow?.content || null,
+                observedScale,
+              })}`,
+            );
+          }
+          const restoredStatus = await waitForValue(
+            async () => {
+              const status = await statusAt(statusPath);
+              const session = sessionStatus(status, descriptor.sessionId);
+              return session?.source?.contentExact === true &&
+                session.content &&
+                Math.abs(session.content.width - restored.content.width) <= 1 &&
+                Math.abs(session.content.height - restored.content.height) <= 1
+                ? session
+                : null;
+            },
+            10000,
+            "Electron geometry refresh after stock mpv resize recovery",
+          );
+          if (restoredStatus.popupVisible === true)
+            throw new Error(
+              "stock mpv resize recovery unexpectedly reopened the popup",
+            );
+          windowTransition = {
+            property: "window-scale",
+            configuredScale,
+            restoreScale,
+            currentScale,
+            beforeScale,
+            resizedScale,
+            before: {
+              window: beforeWindow.content,
+              geometryGeneration: beforeSession?.geometryGeneration ?? null,
+            },
+            resized: {
+              window: resized.content,
+              geometryGeneration: resizedStatus.geometryGeneration,
+              popupVisible: resizedStatus.popupVisible,
+            },
+            restored: {
+              window: restored.content,
+              geometryGeneration: restoredStatus.geometryGeneration,
+              popupVisible: restoredStatus.popupVisible,
+            },
+          };
+          trace("native-window-resize-transition", JSON.stringify(windowTransition));
+        }
+
+        if (nativeControllerParity) {
+          const waitForControllerButton = (button, pressed, timeoutMs, description) =>
+            waitForValue(
+              async () => {
+                const status = await statusAt(statusPath);
+                const state = status?.controller?.state;
+                return state?.source === "native-hid" &&
+                  state.connected === true &&
+                  state.buttons?.[button] === pressed
+                  ? status
+                  : null;
+              },
+              timeoutMs,
+              description,
+            );
+          const controllerResetPoint = pointerResetTarget(initialSession);
+          const nativeControllerResetPoint = nativePoint(
+            controllerResetPoint,
+            inputScale,
+          );
+          controllerPointerReset = commandOutput(
+            desktopTest,
+            [
+              "--move",
+              String(nativeControllerResetPoint.x),
+              String(nativeControllerResetPoint.y),
+            ],
+            "native controller cursor-free reset move",
+          );
+          await waitForValue(
+            async () => {
+              const status = await statusAt(statusPath);
+              const session = sessionStatus(status, descriptor.sessionId);
+              return session?.popupVisible === false && !session?.controllerTarget
+                ? session
+                : null;
+            },
+            5000,
+            "cursor-free controller reset",
+          );
+          let primarySignal = null;
+          if (syntheticNativeController) {
+            console.log(
+              "SYNTHETIC CONTROLLER INPUT: injecting native-HID primary/Cross through the live worker state file.",
+            );
+            primarySignal = synthesizeNativeControllerButton(
+              syntheticControllerStatePath,
+              "primary",
+            );
+          } else {
+            console.log(
+              "CONTROLLER ACTION REQUIRED: press and release the connected DualSense primary/Cross button to open the popup.",
+            );
+          }
+          let primaryPressed;
+          try {
+            primaryPressed = await waitForControllerButton(
+              "primary",
+              true,
+              syntheticNativeController ? 10000 : 30000,
+              "native controller primary press",
+            );
+          } finally {
+            await primarySignal;
+          }
+          const controllerPopup = await waitForValue(
             async () => {
               const status = await statusAt(statusPath);
               const session = sessionStatus(status, descriptor.sessionId);
@@ -2166,1329 +3292,930 @@ async function main() {
                 ? session
                 : null;
             },
-            5000,
-            "popup focus after smooth native approach",
+            popupOpenTimeoutMs,
+            "popup opened by native controller primary",
           );
-          recordPopupForeground(
-            smoothStatus,
-            "smooth-approach",
-            popupForegroundSamples,
-          );
-        }
-        const selectionStartedAt = performance.now();
-        const drag = commandOutput(
-          desktopTest,
-          [
-            "--drag",
-            String(nativeSelectionStart.x),
-            String(nativeSelectionStart.y),
-            String(nativeSelectionEnd.x),
-            String(nativeSelectionEnd.y),
-          ],
-          "native popup text selection drag",
-        );
-        const selectedStatus = await waitForValue(
-          async () => {
-            const status = await statusAt(statusPath);
-            const session = sessionStatus(status, descriptor.sessionId);
-            return session?.popupSelectionText ? session : null;
-          },
-          5000,
-          "native popup text selection",
-        );
-        recordPopupForeground(selectedStatus, "text-selection", popupForegroundSamples);
-        latencySamples.nativeSelectionMs.push(performance.now() - selectionStartedAt);
-        nativeInteraction = {
-          regions: interactionStatus.popupRegions,
-          inputBounds: {
-            window: popupWindowBounds,
-            panel: popupPanelBounds,
-          },
-          selection: {
-            region: selectionRegion,
-            start: selectionStart,
-            end: selectionEnd,
-            approach: selectionApproach,
-            drag,
-            text: selectedStatus.popupSelectionText,
-          },
-        };
-        if (process.platform === "darwin") {
-          const focusedPanel = await waitForValue(
-            async () => {
-              const status = await statusAt(statusPath);
-              const session = sessionStatus(status, descriptor.sessionId);
-              return session?.popupVisible &&
-                session.popupWindow?.visible === true &&
-                session.popupWindow?.focused === true &&
-                session.popupFocusTarget === "popup-panel"
-                ? session
-                : null;
-            },
-            5000,
-            "native popup panel focus",
-          );
-          recordPopupForeground(focusedPanel, "keyboard-focus", popupForegroundSamples);
-          const tab = commandOutput(desktopTest, ["--key", "tab"], "native Tab");
-          if (!nativeInputReady(tab))
-            throw new Error(`native Tab lost trusted input: ${JSON.stringify(tab)}`);
-          const tabFocused = await waitForValue(
-            async () => {
-              const status = await statusAt(statusPath);
-              const session = sessionStatus(status, descriptor.sessionId);
-              return session?.popupVisible &&
-                session.popupWindow?.visible === true &&
-                session.popupWindow?.focused === true &&
-                session.popupFocusTarget &&
-                session.popupFocusTarget !== focusedPanel.popupFocusTarget
-                ? session
-                : null;
-            },
-            5000,
-            "native Tab focus transition",
-          );
-          recordPopupForeground(tabFocused, "tab-focus", popupForegroundSamples);
-          const shiftTab = commandOutput(
-            desktopTest,
-            ["--shortcut", "shift", "tab"],
-            "native Shift-Tab",
-          );
-          if (!nativeInputReady(shiftTab))
-            throw new Error(
-              `native Shift-Tab lost trusted input: ${JSON.stringify(shiftTab)}`,
-            );
-          const shiftTabFocused = await waitForValue(
-            async () => {
-              const status = await statusAt(statusPath);
-              const session = sessionStatus(status, descriptor.sessionId);
-              return session?.popupVisible &&
-                session.popupWindow?.visible === true &&
-                session.popupWindow?.focused === true &&
-                session.popupFocusTarget &&
-                session.popupFocusTarget !== tabFocused.popupFocusTarget
-                ? session
-                : null;
-            },
-            5000,
-            "native Shift-Tab focus transition",
-          );
-          recordPopupForeground(
-            shiftTabFocused,
-            "shift-tab-focus",
-            popupForegroundSamples,
-          );
-          keyboardFocus = {
-            initial: focusedPanel.popupFocusTarget,
-            tab: {
-              input: tab,
-              target: tabFocused.popupFocusTarget,
-            },
-            shiftTab: {
-              input: shiftTab,
-              target: shiftTabFocused.popupFocusTarget,
-            },
-          };
-          nativeInteraction.keyboard = keyboardFocus;
-          trace("native-popup-keyboard-focus", JSON.stringify(keyboardFocus));
-        } else {
-          keyboardFocus = {
-            skipped: true,
-            reason: "macOS-native-focus-evidence-only",
-          };
-          nativeInteraction.keyboard = keyboardFocus;
-        }
-        const popupScrollable =
-          interactionStatus.popupMeasuredSize?.scrollable === true;
-        nativeInteraction.scrollable = popupScrollable;
-        if (!popupScrollable) {
-          nativeInteraction.scroll = {
-            skipped: true,
-            reason: "popup-content-not-scrollable",
-          };
-        } else {
-          const scrollPoint = popupRegionPoint(
-            interactionStatus,
-            panelRegion,
-            0.5,
-            0.75,
-          );
-          const nativeScrollPoint = nativePoint(scrollPoint, inputScale);
-          if (
-            !pointInRect(scrollPoint, popupWindowBounds) ||
-            !pointInRect(scrollPoint, popupPanelBounds)
-          )
-            throw new Error(
-              `native popup scroll coordinate escaped the open popup: ${JSON.stringify({
-                popupWindowBounds,
-                popupPanelBounds,
-                scrollPoint,
-              })}`,
-            );
-          const scrollStartedAt = performance.now();
-          const scroll = commandOutput(
-            desktopTest,
-            [
-              "--scroll",
-              String(nativeScrollPoint.x),
-              String(nativeScrollPoint.y),
-              "-480",
-            ],
-            "native popup wheel scroll",
-          );
-          const scrolledStatus = await waitForValue(
-            async () => {
-              const status = await statusAt(statusPath);
-              const session = sessionStatus(status, descriptor.sessionId);
-              return session?.popupScroll?.top > 0 ? session : null;
-            },
-            5000,
-            "native popup scroll state",
-          );
-          recordPopupForeground(scrolledStatus, "wheel-scroll", popupForegroundSamples);
-          latencySamples.nativeScrollMs.push(performance.now() - scrollStartedAt);
-          nativeInteraction.scroll = {
-            point: scrollPoint,
-            input: scroll,
-            state: scrolledStatus.popupScroll,
-          };
-        }
-      }
-      const placement = popupStatus.popupPlacement;
-      const clickPoint = {
-        x: Number(placement?.x) + 20,
-        y: Number(placement?.y) + 20,
-      };
-      const nativeClickPoint = nativePoint(clickPoint, inputScale);
-      clickResult = commandOutput(
-        desktopTest,
-        ["--click", String(nativeClickPoint.x), String(nativeClickPoint.y), "left"],
-        "native popup click",
-      );
-      await delay(300);
-      const clickedPopupStatus = await waitForValue(
-        async () => {
-          const status = await statusAt(statusPath);
-          const session = sessionStatus(status, descriptor.sessionId);
-          return session?.popupVisible === true ? session : null;
-        },
-        2000,
-        "popup status after native click",
-      );
-      recordPopupForeground(clickedPopupStatus, "popup-click", popupForegroundSamples);
-      clickPause = bridge.property("pause");
-      const dismissalStartedAt = performance.now();
-      escapeResult = commandOutput(desktopTest, ["--key", "escape"], "native Escape");
-      await waitForValue(
-        async () => {
-          const status = await statusAt(statusPath);
-          const session = sessionStatus(status, descriptor.sessionId);
-          return session && session.popupVisible === false ? session : null;
-        },
-        5000,
-        "popup dismissal after native Escape",
-      );
-      if (nativeInteractionMatrix) {
-        dismissalFocusResult = await waitForValue(
-          async () => {
-            const status = await statusAt(statusPath);
-            const session = sessionStatus(status, descriptor.sessionId);
-            const activation = session?.focusPlayer;
-            if (
-              activation?.isForeground !== true ||
-              activation?.foregroundVerified !== true
-            )
-              return null;
-            let readback;
-            try {
-              readback = await nativeWindow.read(descriptor);
-            } catch (error) {
-              readback = { ok: false, reason: String(error?.message || error) };
-            }
-            return { activation, readback };
-          },
-          5000,
-          "app-reported stock mpv foreground after native Escape",
-        );
-      }
-      latencySamples.popupDismissalMs.push(performance.now() - dismissalStartedAt);
-      dismissalPause = bridge.property("pause");
-      if (dismissalPause !== startPaused)
-        throw new Error(
-          "popup dismissal changed pause ownership unexpectedly (expected " +
-            startPaused +
-            ", observed " +
-            dismissalPause +
-            ")",
-        );
-      if (mpvProcess.exitCode !== null)
-        throw new Error("native Escape leaked to mpv and closed the player");
-
-      if (nativeResizeTransition) {
-        const beforeWindow = await nativeWindow.read(descriptor);
-        const beforeStatus = await statusAt(statusPath);
-        const beforeSession = sessionStatus(beforeStatus, descriptor.sessionId);
-        const configuredScale = Number(await bridge.ipc.getProperty("window-scale"));
-        const currentScale = Number(
-          await bridge.ipc.getProperty("current-window-scale"),
-        );
-        const beforeScale =
-          Number.isFinite(currentScale) && currentScale > 0
-            ? currentScale
-            : Number.isFinite(configuredScale) && configuredScale > 0
-              ? configuredScale
-              : 1;
-        if (!Number.isFinite(configuredScale) || configuredScale < 0)
-          throw new Error(
-            `stock mpv did not expose a usable configured window-scale before resize: ${JSON.stringify(
-              {
-                configuredScale,
-                currentScale,
-              },
-            )}`,
-          );
-        const resizedScale = Number((beforeScale * 0.75).toFixed(3));
-        if (resizedScale <= 0 || Math.abs(resizedScale - beforeScale) < 0.01)
-          throw new Error(
-            `stock mpv resize probe could not choose a distinct scale: ${JSON.stringify(
-              {
-                beforeScale,
-                resizedScale,
-              },
-            )}`,
-          );
-        await bridge.ipc.setProperty("window-scale", resizedScale);
-        const resized = await waitForValue(
-          async () => {
-            const nextWindow = await nativeWindow.read(descriptor);
-            return nextWindow.content &&
-              Math.abs(nextWindow.content.width - beforeWindow.content.width) > 1
-              ? nextWindow
-              : null;
-          },
-          10000,
-          "stock mpv AppKit content resize",
-        );
-        const resizedStatus = await waitForValue(
-          async () => {
-            const status = await statusAt(statusPath);
-            const session = sessionStatus(status, descriptor.sessionId);
-            return session?.source?.contentExact === true &&
-              Number(session.geometryGeneration) >
-                Number(beforeSession?.geometryGeneration || 0) &&
-              session.content &&
-              Math.abs(session.content.width - resized.content.width) <= 1 &&
-              Math.abs(session.content.height - resized.content.height) <= 1
-              ? session
-              : null;
-          },
-          10000,
-          "Electron geometry refresh after stock mpv resize",
-        );
-        if (resizedStatus.popupVisible === true)
-          throw new Error("stock mpv resize unexpectedly reopened the popup");
-        await bridge.ipc.setProperty("window-scale", configuredScale);
-        const restored = await waitForValue(
-          async () => {
-            const nextWindow = await nativeWindow.read(descriptor);
-            return nextWindow.content &&
-              Math.abs(nextWindow.content.width - beforeWindow.content.width) <= 1 &&
-              Math.abs(nextWindow.content.height - beforeWindow.content.height) <= 1
-              ? nextWindow
-              : null;
-          },
-          10000,
-          "stock mpv AppKit content resize recovery",
-        );
-        const restoredStatus = await waitForValue(
-          async () => {
-            const status = await statusAt(statusPath);
-            const session = sessionStatus(status, descriptor.sessionId);
-            return session?.source?.contentExact === true &&
-              session.content &&
-              Math.abs(session.content.width - restored.content.width) <= 1 &&
-              Math.abs(session.content.height - restored.content.height) <= 1
-              ? session
-              : null;
-          },
-          10000,
-          "Electron geometry refresh after stock mpv resize recovery",
-        );
-        if (restoredStatus.popupVisible === true)
-          throw new Error("stock mpv resize recovery unexpectedly reopened the popup");
-        windowTransition = {
-          property: "window-scale",
-          configuredScale,
-          currentScale,
-          beforeScale,
-          resizedScale,
-          before: {
-            window: beforeWindow.content,
-            geometryGeneration: beforeSession?.geometryGeneration ?? null,
-          },
-          resized: {
-            window: resized.content,
-            geometryGeneration: resizedStatus.geometryGeneration,
-            popupVisible: resizedStatus.popupVisible,
-          },
-          restored: {
-            window: restored.content,
-            geometryGeneration: restoredStatus.geometryGeneration,
-            popupVisible: restoredStatus.popupVisible,
-          },
-        };
-        trace("native-window-resize-transition", JSON.stringify(windowTransition));
-      }
-
-      if (nativeControllerParity) {
-        const waitForControllerButton = (button, pressed, timeoutMs, description) =>
-          waitForValue(
-            async () => {
-              const status = await statusAt(statusPath);
-              const state = status?.controller?.state;
-              return state?.source === "native-hid" &&
-                state.connected === true &&
-                state.buttons?.[button] === pressed
-                ? status
-                : null;
-            },
-            timeoutMs,
-            description,
-          );
-        const controllerResetPoint = pointerResetTarget(initialSession);
-        const nativeControllerResetPoint = nativePoint(
-          controllerResetPoint,
-          inputScale,
-        );
-        controllerPointerReset = commandOutput(
-          desktopTest,
-          [
-            "--move",
-            String(nativeControllerResetPoint.x),
-            String(nativeControllerResetPoint.y),
-          ],
-          "native controller cursor-free reset move",
-        );
-        await waitForValue(
-          async () => {
-            const status = await statusAt(statusPath);
-            const session = sessionStatus(status, descriptor.sessionId);
-            return session?.popupVisible === false && !session?.controllerTarget
-              ? session
-              : null;
-          },
-          5000,
-          "cursor-free controller reset",
-        );
-        let primarySignal = null;
-        if (syntheticNativeController) {
-          console.log(
-            "SYNTHETIC CONTROLLER INPUT: injecting native-HID primary/Cross through the live worker state file.",
-          );
-          primarySignal = synthesizeNativeControllerButton(
-            syntheticControllerStatePath,
+          const primaryReleased = await waitForControllerButton(
             "primary",
+            false,
+            5000,
+            "native controller primary release",
           );
-        } else {
-          console.log(
-            "CONTROLLER ACTION REQUIRED: press and release the connected DualSense primary/Cross button to open the popup.",
-          );
-        }
-        let primaryPressed;
-        try {
-          primaryPressed = await waitForControllerButton(
-            "primary",
-            true,
+          const controllerFirstTarget = controllerPopup.popupHit?.unitId || null;
+          let rightStickSignal = null;
+          if (syntheticNativeController) {
+            console.log(
+              "SYNTHETIC CONTROLLER INPUT: injecting native-HID right-stick navigation.",
+            );
+            rightStickSignal = synthesizeNativeControllerInput(
+              syntheticControllerStatePath,
+              { axes: { rightX: 0.9 }, pressedMs: 220 },
+            );
+          } else {
+            console.log(
+              "CONTROLLER ACTION REQUIRED: move the connected DualSense right stick right to target the next subtitle unit.",
+            );
+          }
+          const controllerMoved = await waitForValue(
+            async () => {
+              const status = await statusAt(statusPath);
+              const session = sessionStatus(status, descriptor.sessionId);
+              return session?.popupVisible === true &&
+                session.controllerTarget &&
+                session.popupHit?.unitId &&
+                session.popupHit.unitId !== controllerFirstTarget
+                ? session
+                : null;
+            },
             syntheticNativeController ? 10000 : 30000,
-            "native controller primary press",
+            "cursor-free native controller right-stick target movement",
           );
-        } finally {
-          await primarySignal;
-        }
-        const controllerPopup = await waitForValue(
-          async () => {
-            const status = await statusAt(statusPath);
-            const session = sessionStatus(status, descriptor.sessionId);
-            return session?.popupVisible &&
-              session.popupWindow?.visible === true &&
-              session.popupWindow?.focused === true
-              ? session
-              : null;
-          },
-          popupOpenTimeoutMs,
-          "popup opened by native controller primary",
-        );
-        const primaryReleased = await waitForControllerButton(
-          "primary",
-          false,
-          5000,
-          "native controller primary release",
-        );
-        const controllerFirstTarget = controllerPopup.popupHit?.unitId || null;
-        let rightStickSignal = null;
-        if (syntheticNativeController) {
-          console.log(
-            "SYNTHETIC CONTROLLER INPUT: injecting native-HID right-stick navigation.",
-          );
-          rightStickSignal = synthesizeNativeControllerInput(
-            syntheticControllerStatePath,
-            { axes: { rightX: 0.9 }, pressedMs: 220 },
-          );
-        } else {
-          console.log(
-            "CONTROLLER ACTION REQUIRED: move the connected DualSense right stick right to target the next subtitle unit.",
-          );
-        }
-        const controllerMoved = await waitForValue(
-          async () => {
-            const status = await statusAt(statusPath);
-            const session = sessionStatus(status, descriptor.sessionId);
-            return session?.popupVisible === true &&
-              session.controllerTarget &&
-              session.popupHit?.unitId &&
-              session.popupHit.unitId !== controllerFirstTarget
-              ? session
-              : null;
-          },
-          syntheticNativeController ? 10000 : 30000,
-          "cursor-free native controller right-stick target movement",
-        );
-        if (syntheticNativeController) await rightStickSignal;
+          if (syntheticNativeController) await rightStickSignal;
 
-        let selectSignal = null;
-        if (syntheticNativeController) {
-          console.log(
-            "SYNTHETIC CONTROLLER INPUT: injecting native-HID Cross entry selection.",
+          let selectSignal = null;
+          if (syntheticNativeController) {
+            console.log(
+              "SYNTHETIC CONTROLLER INPUT: injecting native-HID Cross entry selection.",
+            );
+            selectSignal = synthesizeNativeControllerButton(
+              syntheticControllerStatePath,
+              "primary",
+              180,
+            );
+          } else {
+            console.log(
+              "CONTROLLER ACTION REQUIRED: press Cross to select the visible dictionary entry, then press D-pad right to move to the next entry.",
+            );
+          }
+          const popupSelection = await waitForValue(
+            async () => {
+              const status = await statusAt(statusPath);
+              const session = sessionStatus(status, descriptor.sessionId);
+              return session?.controllerEntryIndex >= 0 ? session : null;
+            },
+            syntheticNativeController ? 10000 : 30000,
+            "native controller popup entry selection",
           );
-          selectSignal = synthesizeNativeControllerButton(
-            syntheticControllerStatePath,
-            "primary",
-            180,
+          if (syntheticNativeController) await selectSignal;
+          const selectedEntryIndex = popupSelection.controllerEntryIndex;
+          let popupEntryNavigation = null;
+          if (selectedEntryIndex >= 0) {
+            let nextEntrySignal = null;
+            if (syntheticNativeController)
+              nextEntrySignal = synthesizeNativeControllerInput(
+                syntheticControllerStatePath,
+                { buttons: { dpadRight: true }, pressedMs: 180 },
+              );
+            popupEntryNavigation = await waitForValue(
+              async () => {
+                const status = await statusAt(statusPath);
+                const session = sessionStatus(status, descriptor.sessionId);
+                return session?.controllerEntryIndex > selectedEntryIndex
+                  ? session
+                  : null;
+              },
+              syntheticNativeController ? 5000 : 10000,
+              "native controller popup entry navigation",
+            ).catch(() => null);
+            if (syntheticNativeController) await nextEntrySignal;
+          }
+
+          const initialControllerScrollTop =
+            Number(popupSelection.popupScroll?.top) || 0;
+          let leftStickSignal = null;
+          if (syntheticNativeController) {
+            console.log(
+              "SYNTHETIC CONTROLLER INPUT: injecting native-HID left-stick proportional popup scroll.",
+            );
+            leftStickSignal = synthesizeNativeControllerInput(
+              syntheticControllerStatePath,
+              { axes: { leftY: 0.9 }, pressedMs: 260 },
+            );
+          } else {
+            console.log(
+              "CONTROLLER ACTION REQUIRED: move the connected DualSense left stick down to scroll the popup proportionally.",
+            );
+          }
+          const controllerScrolled = await waitForValue(
+            async () => {
+              const status = await statusAt(statusPath);
+              const session = sessionStatus(status, descriptor.sessionId);
+              return Number(session?.popupScroll?.top) > initialControllerScrollTop + 1
+                ? session
+                : null;
+            },
+            syntheticNativeController ? 10000 : 30000,
+            "native controller proportional left-stick popup scroll",
           );
-        } else {
-          console.log(
-            "CONTROLLER ACTION REQUIRED: press Cross to select the visible dictionary entry, then press D-pad right to move to the next entry.",
+          if (syntheticNativeController) await leftStickSignal;
+
+          let audioHoldSignal = null;
+          if (syntheticNativeController) {
+            console.log(
+              "SYNTHETIC CONTROLLER INPUT: injecting native-HID Triangle/audio hold.",
+            );
+            audioHoldSignal = synthesizeNativeControllerButton(
+              syntheticControllerStatePath,
+              "audio",
+              800,
+            );
+          } else {
+            console.log(
+              "CONTROLLER ACTION REQUIRED: hold Triangle/audio to open the audio list, then press Circle/back to close it.",
+            );
+          }
+          const audioMenuStatus = await waitForValue(
+            async () => {
+              const status = await statusAt(statusPath);
+              const session = sessionStatus(status, descriptor.sessionId);
+              return session?.interactionSnapshot?.state === "audio-menu-active" &&
+                session.audioResult &&
+                (!nativeFeatureParityRequested ||
+                  Number(session.audioResult.candidateCount) >= 2)
+                ? session
+                : null;
+            },
+            syntheticNativeController ? 10000 : 30000,
+            "native controller audio hold",
           );
-        }
-        const popupSelection = await waitForValue(
-          async () => {
-            const status = await statusAt(statusPath);
-            const session = sessionStatus(status, descriptor.sessionId);
-            return session?.controllerEntryIndex >= 0 ? session : null;
-          },
-          syntheticNativeController ? 10000 : 30000,
-          "native controller popup entry selection",
-        );
-        if (syntheticNativeController) await selectSignal;
-        const selectedEntryIndex = popupSelection.controllerEntryIndex;
-        let popupEntryNavigation = null;
-        if (selectedEntryIndex >= 0) {
-          let nextEntrySignal = null;
-          if (syntheticNativeController)
-            nextEntrySignal = synthesizeNativeControllerInput(
+          if (syntheticNativeController) await audioHoldSignal;
+
+          let audioControllerSelection = null;
+          if (nativeFeatureParityRequested && syntheticNativeController) {
+            const candidateCount = Number(audioMenuStatus.audioResult?.candidateCount);
+            if (candidateCount < 2)
+              throw new Error(
+                `native controller audio menu did not expose two Anki-capable candidates: ${JSON.stringify(
+                  audioMenuStatus.audioResult,
+                )}`,
+              );
+            const rowSignal = synthesizeNativeControllerInput(
+              syntheticControllerStatePath,
+              { buttons: { dpadDown: true }, pressedMs: 180 },
+            );
+            await rowSignal;
+            const columnSignal = synthesizeNativeControllerInput(
               syntheticControllerStatePath,
               { buttons: { dpadRight: true }, pressedMs: 180 },
             );
-          popupEntryNavigation = await waitForValue(
+            await columnSignal;
+            const activateSignal = synthesizeNativeControllerButton(
+              syntheticControllerStatePath,
+              "primary",
+              180,
+            );
+            const selectedAudioStatus = await waitForValue(
+              async () => {
+                const status = await statusAt(statusPath);
+                const session = sessionStatus(status, descriptor.sessionId);
+                return session?.audioSelection?.url ? session : null;
+              },
+              5000,
+              "native controller audio Anki-column selection",
+            );
+            await activateSignal;
+            audioControllerSelection = {
+              candidateCount,
+              row: 1,
+              column: 1,
+              selected: selectedAudioStatus.audioSelection,
+            };
+          }
+
+          let audioBackSignal = null;
+          if (syntheticNativeController) {
+            console.log(
+              "SYNTHETIC CONTROLLER INPUT: injecting native-HID Circle/audio-list close.",
+            );
+            audioBackSignal = synthesizeNativeControllerButton(
+              syntheticControllerStatePath,
+              "back",
+              180,
+            );
+          } else {
+            console.log(
+              "CONTROLLER ACTION REQUIRED: press Circle/back once to close the audio list.",
+            );
+          }
+          const audioMenuClosed = await waitForValue(
             async () => {
               const status = await statusAt(statusPath);
               const session = sessionStatus(status, descriptor.sessionId);
-              return session?.controllerEntryIndex > selectedEntryIndex
+              return session?.interactionSnapshot?.state === "popup-active"
                 ? session
                 : null;
             },
-            syntheticNativeController ? 5000 : 10000,
-            "native controller popup entry navigation",
-          ).catch(() => null);
-          if (syntheticNativeController) await nextEntrySignal;
-        }
+            syntheticNativeController ? 10000 : 30000,
+            "native controller audio-list close",
+          );
+          if (syntheticNativeController) await audioBackSignal;
 
-        const initialControllerScrollTop = Number(popupSelection.popupScroll?.top) || 0;
-        let leftStickSignal = null;
-        if (syntheticNativeController) {
-          console.log(
-            "SYNTHETIC CONTROLLER INPUT: injecting native-HID left-stick proportional popup scroll.",
-          );
-          leftStickSignal = synthesizeNativeControllerInput(
-            syntheticControllerStatePath,
-            { axes: { leftY: 0.9 }, pressedMs: 260 },
-          );
-        } else {
-          console.log(
-            "CONTROLLER ACTION REQUIRED: move the connected DualSense left stick down to scroll the popup proportionally.",
-          );
-        }
-        const controllerScrolled = await waitForValue(
-          async () => {
-            const status = await statusAt(statusPath);
-            const session = sessionStatus(status, descriptor.sessionId);
-            return Number(session?.popupScroll?.top) > initialControllerScrollTop + 1
-              ? session
-              : null;
-          },
-          syntheticNativeController ? 10000 : 30000,
-          "native controller proportional left-stick popup scroll",
-        );
-        if (syntheticNativeController) await leftStickSignal;
-
-        let audioHoldSignal = null;
-        if (syntheticNativeController) {
-          console.log(
-            "SYNTHETIC CONTROLLER INPUT: injecting native-HID Triangle/audio hold.",
-          );
-          audioHoldSignal = synthesizeNativeControllerButton(
-            syntheticControllerStatePath,
-            "audio",
-            800,
-          );
-        } else {
-          console.log(
-            "CONTROLLER ACTION REQUIRED: hold Triangle/audio to open the audio list, then press Circle/back to close it.",
-          );
-        }
-        const audioMenuStatus = await waitForValue(
-          async () => {
-            const status = await statusAt(statusPath);
-            const session = sessionStatus(status, descriptor.sessionId);
-            return session?.interactionSnapshot?.state === "audio-menu-active" &&
-              session.audioResult &&
-              (!nativeMacosFeatureParity ||
-                Number(session.audioResult.candidateCount) >= 2)
-              ? session
-              : null;
-          },
-          syntheticNativeController ? 10000 : 30000,
-          "native controller audio hold",
-        );
-        if (syntheticNativeController) await audioHoldSignal;
-
-        let audioControllerSelection = null;
-        if (nativeMacosFeatureParity && syntheticNativeController) {
-          const candidateCount = Number(audioMenuStatus.audioResult?.candidateCount);
-          if (candidateCount < 2)
-            throw new Error(
-              `native controller audio menu did not expose two Anki-capable candidates: ${JSON.stringify(
-                audioMenuStatus.audioResult,
-              )}`,
+          let backSignal = null;
+          if (syntheticNativeController) {
+            console.log(
+              "SYNTHETIC CONTROLLER INPUT: injecting native-HID back/Circle through the live worker state file.",
             );
-          const rowSignal = synthesizeNativeControllerInput(
-            syntheticControllerStatePath,
-            { buttons: { dpadDown: true }, pressedMs: 180 },
-          );
-          await rowSignal;
-          const columnSignal = synthesizeNativeControllerInput(
-            syntheticControllerStatePath,
-            { buttons: { dpadRight: true }, pressedMs: 180 },
-          );
-          await columnSignal;
-          const activateSignal = synthesizeNativeControllerButton(
-            syntheticControllerStatePath,
-            "primary",
-            180,
-          );
-          const selectedAudioStatus = await waitForValue(
+            backSignal = synthesizeNativeControllerButton(
+              syntheticControllerStatePath,
+              "back",
+            );
+          } else {
+            console.log(
+              "CONTROLLER ACTION REQUIRED: press and release the connected DualSense back/Circle button to close the popup.",
+            );
+          }
+          let backPressed;
+          try {
+            backPressed = await waitForControllerButton(
+              "back",
+              true,
+              syntheticNativeController ? 10000 : 30000,
+              "native controller back press",
+            );
+          } finally {
+            await backSignal;
+          }
+          const controllerClosed = await waitForValue(
             async () => {
               const status = await statusAt(statusPath);
               const session = sessionStatus(status, descriptor.sessionId);
-              return session?.audioSelection?.url ? session : null;
+              return session?.popupVisible === false ? session : null;
             },
             5000,
-            "native controller audio Anki-column selection",
+            "popup closed by native controller back",
           );
-          await activateSignal;
-          audioControllerSelection = {
-            candidateCount,
-            row: 1,
-            column: 1,
-            selected: selectedAudioStatus.audioSelection,
-          };
-        }
-
-        let audioBackSignal = null;
-        if (syntheticNativeController) {
-          console.log(
-            "SYNTHETIC CONTROLLER INPUT: injecting native-HID Circle/audio-list close.",
-          );
-          audioBackSignal = synthesizeNativeControllerButton(
-            syntheticControllerStatePath,
+          const backReleased = await waitForControllerButton(
             "back",
-            180,
+            false,
+            5000,
+            "native controller back release",
           );
-        } else {
-          console.log(
-            "CONTROLLER ACTION REQUIRED: press Circle/back once to close the audio list.",
-          );
-        }
-        const audioMenuClosed = await waitForValue(
-          async () => {
-            const status = await statusAt(statusPath);
-            const session = sessionStatus(status, descriptor.sessionId);
-            return session?.interactionSnapshot?.state === "popup-active"
-              ? session
-              : null;
-          },
-          syntheticNativeController ? 10000 : 30000,
-          "native controller audio-list close",
-        );
-        if (syntheticNativeController) await audioBackSignal;
-
-        let backSignal = null;
-        if (syntheticNativeController) {
-          console.log(
-            "SYNTHETIC CONTROLLER INPUT: injecting native-HID back/Circle through the live worker state file.",
-          );
-          backSignal = synthesizeNativeControllerButton(
-            syntheticControllerStatePath,
-            "back",
-          );
-        } else {
-          console.log(
-            "CONTROLLER ACTION REQUIRED: press and release the connected DualSense back/Circle button to close the popup.",
-          );
-        }
-        let backPressed;
-        try {
-          backPressed = await waitForControllerButton(
-            "back",
-            true,
-            syntheticNativeController ? 10000 : 30000,
-            "native controller back press",
-          );
-        } finally {
-          await backSignal;
-        }
-        const controllerClosed = await waitForValue(
-          async () => {
-            const status = await statusAt(statusPath);
-            const session = sessionStatus(status, descriptor.sessionId);
-            return session?.popupVisible === false ? session : null;
-          },
-          5000,
-          "popup closed by native controller back",
-        );
-        const backReleased = await waitForControllerButton(
-          "back",
-          false,
-          5000,
-          "native controller back release",
-        );
-        if (mpvProcess.exitCode !== null)
-          throw new Error("native controller popup actions leaked a quit to mpv");
-        if (bridge.property("pause") !== startPaused)
-          throw new Error(
-            `native controller popup actions changed pause ownership (expected ${startPaused}, observed ${bridge.property("pause")})`,
-          );
-        let noPopupNavigation = null;
-        if (syntheticNativeController) {
-          console.log(
-            "SYNTHETIC CONTROLLER INPUT: injecting native-HID shoulder subtitle stepping and no-popup D-pad seeking.",
-          );
-          const subtitleFingerprint = () =>
-            JSON.stringify({
-              start: bridge.property("sub-start/full"),
-              end: bridge.property("sub-end/full"),
-              ass: bridge.property("sub-text/ass-full"),
-              text: bridge.property("sub-text"),
-            });
-          const initialSubtitleFingerprint = subtitleFingerprint();
-          const initialTimePosition = Number(bridge.property("time-pos"));
-          if (initialSubtitleFingerprint === "{}")
+          if (mpvProcess.exitCode !== null)
+            throw new Error("native controller popup actions leaked a quit to mpv");
+          if (bridge.property("pause") !== startPaused)
             throw new Error(
-              "stock mpv did not expose an active primary subtitle fingerprint before controller stepping",
+              `native controller popup actions changed pause ownership (expected ${startPaused}, observed ${bridge.property("pause")})`,
             );
-          if (!Number.isFinite(initialTimePosition))
-            throw new Error(
-              `stock mpv did not expose a numeric time position before controller seeking: ${bridge.property("time-pos")}`,
+          let noPopupNavigation = null;
+          if (syntheticNativeController) {
+            console.log(
+              "SYNTHETIC CONTROLLER INPUT: injecting native-HID shoulder subtitle stepping and no-popup D-pad seeking.",
             );
+            const subtitleFingerprint = () =>
+              JSON.stringify({
+                sid: bridge.property("sid"),
+                secondarySid: bridge.property("secondary-sid"),
+                start: bridge.property("sub-start/full"),
+                end: bridge.property("sub-end/full"),
+                ass: bridge.property("sub-text/ass-full"),
+                text: bridge.property("sub-text"),
+              });
+            const initialSubtitleFingerprint = subtitleFingerprint();
+            const initialTimePosition = Number(bridge.property("time-pos"));
+            if (initialSubtitleFingerprint === "{}")
+              throw new Error(
+                "stock mpv did not expose an active primary subtitle fingerprint before controller stepping",
+              );
+            if (!Number.isFinite(initialTimePosition))
+              throw new Error(
+                `stock mpv did not expose a numeric time position before controller seeking: ${bridge.property("time-pos")}`,
+              );
 
-          const subtitleNextSignal = synthesizeNativeControllerButton(
-            syntheticControllerStatePath,
-            "rightShoulder",
-            180,
-          );
-          const subtitleNextPosition = await waitForValue(
-            () => {
-              const value = subtitleFingerprint();
-              return value !== initialSubtitleFingerprint ? value : null;
-            },
-            5000,
-            "native controller right-shoulder subtitle-next",
-          );
-          await subtitleNextSignal;
+            const externalCueCount =
+              await externalSubtitleCueCount(externalSubtitlePath);
+            const subtitleSeekSupported =
+              externalCueCount === null || externalCueCount > 1;
+            let subtitleNavigation = {
+              supported: subtitleSeekSupported,
+              cueCount: externalCueCount,
+              next: null,
+              previous: null,
+            };
+            if (subtitleSeekSupported) {
+              const subtitleNextSignal = synthesizeNativeControllerButton(
+                syntheticControllerStatePath,
+                "rightShoulder",
+                180,
+              );
+              const subtitleNextPosition = await waitForValue(
+                () => {
+                  const value = subtitleFingerprint();
+                  return value !== initialSubtitleFingerprint ? value : null;
+                },
+                5000,
+                "native controller right-shoulder subtitle-next",
+              );
+              await subtitleNextSignal;
 
-          const subtitlePreviousSignal = synthesizeNativeControllerButton(
-            syntheticControllerStatePath,
-            "leftShoulder",
-            180,
-          );
-          const subtitlePreviousPosition = await waitForValue(
-            () => {
-              const value = subtitleFingerprint();
-              return value === initialSubtitleFingerprint ? value : null;
-            },
-            5000,
-            "native controller left-shoulder subtitle-previous",
-          );
-          await subtitlePreviousSignal;
+              const subtitlePreviousSignal = synthesizeNativeControllerButton(
+                syntheticControllerStatePath,
+                "leftShoulder",
+                180,
+              );
+              const subtitlePreviousPosition = await waitForValue(
+                () => {
+                  const value = subtitleFingerprint();
+                  return value === initialSubtitleFingerprint ? value : null;
+                },
+                5000,
+                "native controller left-shoulder subtitle-previous",
+              );
+              await subtitlePreviousSignal;
+              subtitleNavigation = {
+                ...subtitleNavigation,
+                next: subtitleNextPosition,
+                previous: subtitlePreviousPosition,
+              };
+            }
 
-          const seekForwardSignal = synthesizeNativeControllerButton(
-            syntheticControllerStatePath,
-            "dpadRight",
-            180,
-          );
-          const seekForwardPosition = await waitForValue(
-            () => {
-              const value = Number(bridge.property("time-pos"));
-              return Number.isFinite(value) && value > initialTimePosition + 1
-                ? value
-                : null;
-            },
-            5000,
-            "native controller no-popup d-pad-right seek-forward",
-          );
-          await seekForwardSignal;
-
-          const seekBackwardSignal = synthesizeNativeControllerButton(
-            syntheticControllerStatePath,
-            "dpadLeft",
-            180,
-          );
-          const seekBackwardPosition = await waitForValue(
-            () => {
-              const value = Number(bridge.property("time-pos"));
-              return Number.isFinite(value) && value < seekForwardPosition - 1
-                ? value
-                : null;
-            },
-            5000,
-            "native controller no-popup d-pad-left seek-backward",
-          );
-          await seekBackwardSignal;
-          noPopupNavigation = {
-            subtitle: {
-              initial: initialSubtitleFingerprint,
-              next: subtitleNextPosition,
-              previous: subtitlePreviousPosition,
-            },
-            seek: {
-              initial: initialTimePosition,
-              forward: seekForwardPosition,
-              backward: seekBackwardPosition,
-            },
-          };
-        }
-        nativeController = {
-          ...nativeController,
-          cursorReset: controllerPointerReset,
-          primary: {
-            pressed: primaryPressed.controller?.state || null,
-            popupState: controllerPopup.interactionSnapshot?.state || null,
-            released: primaryReleased.controller?.state || null,
-          },
-          rightStick: {
-            initialTarget: controllerFirstTarget,
-            movedTarget: controllerMoved.controllerTarget || null,
-          },
-          popupSelection: {
-            selectedEntryIndex,
-            selected: popupSelection.controllerEntryIndex,
-            entryNavigation: popupEntryNavigation?.controllerEntryIndex ?? null,
-          },
-          leftStickScroll: {
-            initialTop: initialControllerScrollTop,
-            finalTop: controllerScrolled.popupScroll?.top ?? null,
-          },
-          audioHold: {
-            state: audioMenuStatus.interactionSnapshot?.state || null,
-            result: audioMenuStatus.audioResult || null,
-            closedState: audioMenuClosed.interactionSnapshot?.state || null,
-            ...(audioControllerSelection
-              ? { controllerSelection: audioControllerSelection }
-              : {}),
-          },
-          back: {
-            pressed: backPressed.controller?.state || null,
-            popupState: controllerClosed.interactionSnapshot?.state || null,
-            released: backReleased.controller?.state || null,
-          },
-          ...(noPopupNavigation ? { noPopupNavigation } : {}),
-          noMpvLeak: true,
-          pausePreserved: true,
-          synthetic: syntheticNativeController,
-        };
-      }
-
-      if (nativeInteractionMatrix) {
-        outsideFocusResult = await focusNativeWindow(nativeWindow, descriptor);
-        if (
-          outsideFocusResult.isForeground !== true ||
-          outsideFocusResult.foregroundVerified !== true
-        )
-          throw new Error(
-            `stock mpv foreground was not verified before outside-click popup reopen: ${JSON.stringify(
-              outsideFocusResult,
-            )}`,
-          );
-        await delay(250);
-        const resetPoint = pointerResetTarget(initialSession);
-        const nativeResetPoint = nativePoint(resetPoint, inputScale);
-        outsideResetMove = commandOutput(
-          desktopTest,
-          ["--move", String(nativeResetPoint.x), String(nativeResetPoint.y)],
-          "native pointer leave before outside-click popup reopen",
-        );
-        await waitForValue(
-          async () => {
-            const status = await statusAt(statusPath);
-            const session = sessionStatus(status, descriptor.sessionId);
-            return session?.popupVisible === false &&
-              session.cursorDiagnostic?.hit == null
-              ? session
-              : null;
-          },
-          5000,
-          "pointer leave before outside-click popup reopen",
-        );
-        // The controller path intentionally retains its selected target after
-        // closing the popup so Cross can reopen it without cursor movement.
-        // Reopen the mouse path on a different subtitle unit to verify that a
-        // real pointer target still takes ownership cleanly.
-        const outsideReopenTarget = pointerTarget(initialSession, initialLookup.unit);
-        const nativeOutsideReopenTarget = nativePoint(outsideReopenTarget, inputScale);
-        const reopenMove = commandOutput(
-          desktopTest,
-          [
-            "--move",
-            String(nativeOutsideReopenTarget.x),
-            String(nativeOutsideReopenTarget.y),
-          ],
-          "native pointer move to reopen popup for outside-click test",
-        );
-        await waitForValue(
-          async () => {
-            const status = await statusAt(statusPath);
-            const session = sessionStatus(status, descriptor.sessionId);
-            return session?.popupVisible &&
-              session.popupWindow?.visible === true &&
-              session.popupWindow?.focused === true &&
-              session.surfaceReadiness?.popup === true
-              ? session
-              : null;
-          },
-          5000,
-          "dictionary popup reopen for outside-click test",
-        );
-        const reopenedRegions = await waitForValue(
-          async () => {
-            const status = await statusAt(statusPath);
-            const session = sessionStatus(status, descriptor.sessionId);
-            return session?.popupRegions?.panel ? session : null;
-          },
-          5000,
-          "popup outside-click regions",
-        );
-        await delay(150);
-        const outsideWindowBounds = reopenedRegions.popupWindow?.bounds;
-        const outsidePanelBounds = popupRegionDesktopRect(
-          reopenedRegions,
-          reopenedRegions.popupRegions.panel,
-        );
-        const outsidePoint = popupOutsidePanelPoint(
-          outsideWindowBounds,
-          outsidePanelBounds,
-        );
-        const nativeOutsidePoint = nativePoint(outsidePoint, inputScale);
-        if (
-          !pointInRect(outsidePoint, outsideWindowBounds) ||
-          pointInRect(outsidePoint, outsidePanelBounds)
-        )
-          throw new Error(
-            `native outside-click coordinate was not outside the popup panel: ${JSON.stringify(
-              {
-                outsideWindowBounds,
-                outsidePanelBounds,
-                outsidePoint,
+            const seekForwardSignal = synthesizeNativeControllerButton(
+              syntheticControllerStatePath,
+              "dpadRight",
+              180,
+            );
+            const seekForwardPosition = await waitForValue(
+              () => {
+                const value = Number(bridge.property("time-pos"));
+                return Number.isFinite(value) && value > initialTimePosition + 1
+                  ? value
+                  : null;
               },
-            )}`,
-          );
-        const outsideDismissalStartedAt = performance.now();
-        const outsideClick = commandOutput(
-          desktopTest,
-          [
-            "--click",
-            String(nativeOutsidePoint.x),
-            String(nativeOutsidePoint.y),
-            "left",
-          ],
-          "native popup outside-panel click",
-        );
-        await waitForValue(
-          async () => {
-            const status = await statusAt(statusPath);
-            const session = sessionStatus(status, descriptor.sessionId);
-            return session && session.popupVisible === false ? session : null;
-          },
-          5000,
-          "popup dismissal after native outside-panel click",
-        );
-        latencySamples.outsidePopupDismissalMs.push(
-          performance.now() - outsideDismissalStartedAt,
-        );
-        outsideDismissalPause = bridge.property("pause");
-        if (outsideDismissalPause !== startPaused)
-          throw new Error(
-            "outside popup click changed pause ownership unexpectedly (expected " +
-              startPaused +
-              ", observed " +
-              outsideDismissalPause +
-              ")",
-          );
-        if (mpvProcess.exitCode !== null)
-          throw new Error(
-            "native outside popup click leaked to mpv and closed the player",
-          );
-        outsideClickResult = {
-          focus: outsideFocusResult,
-          reopenMove,
-          windowBounds: outsideWindowBounds,
-          panelBounds: outsidePanelBounds,
-          point: outsidePoint,
-          input: outsideClick,
-        };
-      }
-      if (nativeMacosFeatureParity) {
-        const backgroundFocus = await focusNativeWindow(nativeWindow, descriptor);
-        if (
-          backgroundFocus.isForeground !== true ||
-          backgroundFocus.foregroundVerified !== true
-        )
-          throw new Error(
-            `stock mpv foreground was not verified before unrelated-app deactivation: ${JSON.stringify(
-              backgroundFocus,
-            )}`,
-          );
-        const backgroundMove = commandOutput(
-          desktopTest,
-          ["--move", String(nativeTarget.x), String(nativeTarget.y)],
-          "native pointer move before unrelated-app deactivation",
-        );
-        const backgroundPopup = await waitForValue(
-          async () => {
-            const status = await statusAt(statusPath);
-            const session = sessionStatus(status, descriptor.sessionId);
-            return session?.popupVisible && session.popupWindow?.focused === true
-              ? session
-              : null;
-          },
-          popupOpenTimeoutMs,
-          "dictionary popup before unrelated-app deactivation",
-        );
-        const unrelatedApplication = activateUnrelatedMacosApplication("Finder");
-        const deactivated = await waitForValue(
-          async () => {
-            const status = await statusAt(statusPath);
-            const session = sessionStatus(status, descriptor.sessionId);
-            if (
-              session?.source?.foreground !== false ||
-              session.popupVisible !== false ||
-              session.popupWindow?.visible !== false ||
-              session.popupWindow?.alwaysOnTop !== false ||
-              session.highlightWindow?.alwaysOnTop !== false
-            )
-              return null;
-            return session;
-          },
-          8000,
-          "companion surfaces to leave the stack after unrelated-app activation",
-        );
-        // macOS treats activation as user-intent driven. After Finder has
-        // become frontmost, restore the player with the same native click a
-        // user would make on the underlying player rather than treating an
-        // accepted programmatic activation request as proof of focus.
-        const recoveryPoint = pointerResetTarget(initialSession);
-        const recoveryNativePoint = nativePoint(recoveryPoint, inputScale);
-        const recoveryPauseBeforeClick = bridge.property("pause");
-        const recoveryClick = commandOutput(
-          desktopTest,
-          [
-            "--click",
-            String(recoveryNativePoint.x),
-            String(recoveryNativePoint.y),
-            "left",
-          ],
-          "native player click after unrelated-app deactivation",
-        );
-        const recoveryFocus = await waitForValue(
-          async () => {
-            const observed = await nativeWindow.read(descriptor);
-            return observed.isForeground === true
-              ? {
-                  ...observed,
-                  foregroundVerified: true,
-                  activationMethod: "native-user-click",
-                }
-              : null;
-          },
-          5000,
-          "stock mpv foreground after native user click",
-        );
-        await delay(100);
-        const recoveryPauseAfterClick = bridge.property("pause");
-        if (recoveryPauseAfterClick !== recoveryPauseBeforeClick)
-          throw new Error(
-            `native focus-restoration click changed pause ownership (expected ${recoveryPauseBeforeClick}, observed ${recoveryPauseAfterClick})`,
-          );
-        if (mpvProcess.exitCode !== null)
-          throw new Error("native focus-restoration click leaked a quit to mpv");
-        if (
-          recoveryFocus.isForeground !== true ||
-          recoveryFocus.foregroundVerified !== true
-        )
-          throw new Error(
-            `stock mpv foreground was not restored after unrelated-app deactivation: ${JSON.stringify(
-              recoveryFocus,
-            )}`,
-          );
-        const recoveryMove = commandOutput(
-          desktopTest,
-          ["--move", String(nativeTarget.x), String(nativeTarget.y)],
-          "native pointer move after unrelated-app recovery",
-        );
-        const recovered = await waitForValue(
-          async () => {
-            const status = await statusAt(statusPath);
-            const session = sessionStatus(status, descriptor.sessionId);
-            return session?.popupVisible &&
-              session.popupWindow?.visible === true &&
-              session.popupWindow?.focused === true &&
-              session.source?.foreground === true
-              ? session
-              : null;
-          },
-          popupOpenTimeoutMs,
-          "dictionary popup after unrelated-app recovery",
-        );
-        const recoveryEscape = commandOutput(
-          desktopTest,
-          ["--key", "escape"],
-          "native Escape after unrelated-app recovery",
-        );
-        await waitForValue(
-          async () => {
-            const status = await statusAt(statusPath);
-            const session = sessionStatus(status, descriptor.sessionId);
-            return session?.popupVisible === false ? session : null;
-          },
-          5000,
-          "popup dismissal after unrelated-app recovery",
-        );
-        nativeFeatureParity.backgrounding = {
-          unrelatedApplication,
-          before: {
-            focus: backgroundFocus,
-            move: backgroundMove,
-            popup: {
-              visible: backgroundPopup.popupVisible,
-              focused: backgroundPopup.popupWindow?.focused === true,
+              5000,
+              "native controller no-popup d-pad-right seek-forward",
+            );
+            await seekForwardSignal;
+
+            const seekBackwardSignal = synthesizeNativeControllerButton(
+              syntheticControllerStatePath,
+              "dpadLeft",
+              180,
+            );
+            const seekBackwardPosition = await waitForValue(
+              () => {
+                const value = Number(bridge.property("time-pos"));
+                return Number.isFinite(value) && value < seekForwardPosition - 1
+                  ? value
+                  : null;
+              },
+              5000,
+              "native controller no-popup d-pad-left seek-backward",
+            );
+            await seekBackwardSignal;
+            noPopupNavigation = {
+              subtitle: {
+                initial: initialSubtitleFingerprint,
+                ...subtitleNavigation,
+              },
+              seek: {
+                initial: initialTimePosition,
+                forward: seekForwardPosition,
+                backward: seekBackwardPosition,
+              },
+            };
+          }
+          nativeController = {
+            ...nativeController,
+            cursorReset: controllerPointerReset,
+            primary: {
+              pressed: primaryPressed.controller?.state || null,
+              popupState: controllerPopup.interactionSnapshot?.state || null,
+              released: primaryReleased.controller?.state || null,
             },
-          },
-          deactivated: {
-            foreground: deactivated.source?.foreground === true,
-            popupVisible: deactivated.popupVisible,
-            popupWindow: deactivated.popupWindow,
-            highlightWindow: deactivated.highlightWindow,
-          },
-          recovery: {
-            focus: recoveryFocus,
-            click: recoveryClick,
-            point: recoveryPoint,
-            pauseBeforeClick: recoveryPauseBeforeClick,
-            pauseAfterClick: recoveryPauseAfterClick,
-            move: recoveryMove,
-            popupVisible: recovered.popupVisible,
-            popupFocused: recovered.popupWindow?.focused === true,
-            foreground: recovered.source?.foreground === true,
-            escape: recoveryEscape,
-          },
-        };
-      }
-      if (nativeLifecycleCycles > 0) {
-        for (let cycle = 1; cycle <= nativeLifecycleCycles; cycle++) {
-          const cycleFocus = await focusNativeWindow(nativeWindow, descriptor);
+            rightStick: {
+              initialTarget: controllerFirstTarget,
+              movedTarget: controllerMoved.controllerTarget || null,
+            },
+            popupSelection: {
+              selectedEntryIndex,
+              selected: popupSelection.controllerEntryIndex,
+              entryNavigation: popupEntryNavigation?.controllerEntryIndex ?? null,
+            },
+            leftStickScroll: {
+              initialTop: initialControllerScrollTop,
+              finalTop: controllerScrolled.popupScroll?.top ?? null,
+            },
+            audioHold: {
+              state: audioMenuStatus.interactionSnapshot?.state || null,
+              result: audioMenuStatus.audioResult || null,
+              closedState: audioMenuClosed.interactionSnapshot?.state || null,
+              ...(audioControllerSelection
+                ? { controllerSelection: audioControllerSelection }
+                : {}),
+            },
+            back: {
+              pressed: backPressed.controller?.state || null,
+              popupState: controllerClosed.interactionSnapshot?.state || null,
+              released: backReleased.controller?.state || null,
+            },
+            ...(noPopupNavigation ? { noPopupNavigation } : {}),
+            noMpvLeak: true,
+            pausePreserved: true,
+            synthetic: syntheticNativeController,
+          };
+        }
+
+        if (nativeInteractionMatrix) {
+          outsideFocusResult = await focusNativeWindow(nativeWindow, descriptor);
           if (
-            cycleFocus.isForeground !== true ||
-            cycleFocus.foregroundVerified !== true
+            outsideFocusResult.isForeground !== true ||
+            outsideFocusResult.foregroundVerified !== true
           )
             throw new Error(
-              `native lifecycle cycle ${cycle} could not verify mpv foreground: ${JSON.stringify(
-                cycleFocus,
+              `stock mpv foreground was not verified before outside-click popup reopen: ${JSON.stringify(
+                outsideFocusResult,
               )}`,
             );
-          await delay(100);
-          const cycleTargetSession = await waitForValue(
+          await delay(250);
+          const resetPoint = pointerResetTarget(initialSession);
+          const nativeResetPoint = nativePoint(resetPoint, inputScale);
+          outsideResetMove = commandOutput(
+            desktopTest,
+            ["--move", String(nativeResetPoint.x), String(nativeResetPoint.y)],
+            "native pointer leave before outside-click popup reopen",
+          );
+          await waitForValue(
             async () => {
               const status = await statusAt(statusPath);
               const session = sessionStatus(status, descriptor.sessionId);
-              return session?.source?.exact === true &&
-                session.highlightWindow &&
-                session.popupVisible === false
+              return session?.popupVisible === false &&
+                session.cursorDiagnostic?.hit == null
                 ? session
                 : null;
             },
             5000,
-            `native lifecycle cycle ${cycle} target geometry`,
+            "pointer leave before outside-click popup reopen",
           );
-          const cycleCandidates = lookupableUnits(cycleTargetSession).filter(
-            (candidate) => candidate.track.role === "primary",
+          // The controller path intentionally retains its selected target after
+          // closing the popup so Cross can reopen it without cursor movement.
+          // Reopen the mouse path on a different subtitle unit to verify that a
+          // real pointer target still takes ownership cleanly.
+          const outsideReopenTarget = pointerTarget(initialSession, initialLookup.unit);
+          const nativeOutsideReopenTarget = nativePoint(
+            outsideReopenTarget,
+            inputScale,
           );
-          const retainedCycleLookup = cycleCandidates.find(
-            (candidate) =>
-              candidate.track.id === activeLookup?.track.id &&
-              candidate.event.id === activeLookup?.event.id &&
-              candidate.unit.id === activeLookup?.unit.id,
-          );
-          const cycleLookup =
-            retainedCycleLookup ||
-            cycleCandidates.find((candidate) =>
-              lookupCompatibleUnit(candidate, lookupLanguage),
-            ) ||
-            cycleCandidates[0];
-          if (!cycleLookup)
-            throw new Error(
-              `native lifecycle cycle ${cycle} has no current primary lookup unit`,
-            );
-          const cycleTarget = pointerTarget(cycleTargetSession, cycleLookup.unit);
-          const cycleInputScale = Math.max(
-            1,
-            Number(cycleTargetSession.desktopScale) || inputScale,
-          );
-          const cycleNativeTarget = nativePoint(cycleTarget, cycleInputScale);
-          trace(
-            "native-lifecycle-target",
-            JSON.stringify({
-              cycle,
-              unitId: cycleLookup.unit.id,
-              text: cycleLookup.unit.text,
-              target: cycleTarget,
-              nativeTarget: cycleNativeTarget,
-            }),
-          );
-          const cycleStartedAt = performance.now();
-          const cycleMove = commandOutput(
+          const reopenMove = commandOutput(
             desktopTest,
-            ["--move", String(cycleNativeTarget.x), String(cycleNativeTarget.y)],
-            `native lifecycle cycle ${cycle} pointer move`,
+            [
+              "--move",
+              String(nativeOutsideReopenTarget.x),
+              String(nativeOutsideReopenTarget.y),
+            ],
+            "native pointer move to reopen popup for outside-click test",
           );
-          if (!nativeInputReady(cycleMove))
-            throw new Error(
-              `native lifecycle cycle ${cycle} lost trusted pointer input: ${JSON.stringify(
-                cycleMove,
-              )}`,
-            );
-          const cyclePopup = await waitForValue(
+          await waitForValue(
             async () => {
               const status = await statusAt(statusPath);
               const session = sessionStatus(status, descriptor.sessionId);
               return session?.popupVisible &&
                 session.popupWindow?.visible === true &&
                 session.popupWindow?.focused === true &&
-                typeof session.popupHeadword === "string" &&
-                session.popupHeadword.length > 0 &&
-                session.cursorDiagnostic?.hit?.unitId === cycleLookup.unit.id
+                session.surfaceReadiness?.popup === true
                 ? session
                 : null;
             },
-            popupOpenTimeoutMs,
-            `native lifecycle cycle ${cycle} popup`,
+            5000,
+            "dictionary popup reopen for outside-click test",
           );
-          latencySamples.nativeLifecyclePopupMs.push(
-            performance.now() - cycleStartedAt,
+          const reopenedRegions = await waitForValue(
+            async () => {
+              const status = await statusAt(statusPath);
+              const session = sessionStatus(status, descriptor.sessionId);
+              return session?.popupRegions?.panel ? session : null;
+            },
+            5000,
+            "popup outside-click regions",
           );
-          const cycleDismissalStartedAt = performance.now();
-          const cycleEscape = commandOutput(
-            desktopTest,
-            ["--key", "escape"],
-            `native lifecycle cycle ${cycle} Escape`,
+          await delay(150);
+          const outsideWindowBounds = reopenedRegions.popupWindow?.bounds;
+          const outsidePanelBounds = popupRegionDesktopRect(
+            reopenedRegions,
+            reopenedRegions.popupRegions.panel,
           );
-          if (!nativeInputReady(cycleEscape))
+          const outsidePoint = popupOutsidePanelPoint(
+            outsideWindowBounds,
+            outsidePanelBounds,
+          );
+          const nativeOutsidePoint = nativePoint(outsidePoint, inputScale);
+          if (
+            !pointInRect(outsidePoint, outsideWindowBounds) ||
+            pointInRect(outsidePoint, outsidePanelBounds)
+          )
             throw new Error(
-              `native lifecycle cycle ${cycle} lost trusted keyboard input: ${JSON.stringify(
-                cycleEscape,
+              `native outside-click coordinate was not outside the popup panel: ${JSON.stringify(
+                {
+                  outsideWindowBounds,
+                  outsidePanelBounds,
+                  outsidePoint,
+                },
               )}`,
             );
-          const cycleClosed = await waitForValue(
+          const outsideDismissalStartedAt = performance.now();
+          const outsideClick = commandOutput(
+            desktopTest,
+            [
+              "--click",
+              String(nativeOutsidePoint.x),
+              String(nativeOutsidePoint.y),
+              "left",
+            ],
+            "native popup outside-panel click",
+          );
+          await waitForValue(
             async () => {
               const status = await statusAt(statusPath);
               const session = sessionStatus(status, descriptor.sessionId);
               return session && session.popupVisible === false ? session : null;
             },
             5000,
-            `native lifecycle cycle ${cycle} dismissal`,
+            "popup dismissal after native outside-panel click",
           );
-          latencySamples.nativeLifecycleDismissalMs.push(
-            performance.now() - cycleDismissalStartedAt,
+          latencySamples.outsidePopupDismissalMs.push(
+            performance.now() - outsideDismissalStartedAt,
           );
-          const cyclePause = bridge.property("pause");
-          if (cyclePause !== startPaused)
+          outsideDismissalPause = bridge.property("pause");
+          if (outsideDismissalPause !== startPaused)
             throw new Error(
-              `native lifecycle cycle ${cycle} changed pause ownership (expected ${startPaused}, observed ${cyclePause})`,
+              "outside popup click changed pause ownership unexpectedly (expected " +
+                startPaused +
+                ", observed " +
+                outsideDismissalPause +
+                ")",
             );
           if (mpvProcess.exitCode !== null)
-            throw new Error(`native lifecycle cycle ${cycle} leaked Escape to mpv`);
-          const resetPoint = pointerResetTarget(cycleClosed);
-          const resetInputScale = Math.max(
-            1,
-            Number(cycleClosed.desktopScale) || inputScale,
-          );
-          const resetNativePoint = nativePoint(resetPoint, resetInputScale);
-          const resetMove = commandOutput(
-            desktopTest,
-            ["--move", String(resetNativePoint.x), String(resetNativePoint.y)],
-            `native lifecycle cycle ${cycle} pointer reset`,
-          );
-          if (!nativeInputReady(resetMove))
             throw new Error(
-              `native lifecycle cycle ${cycle} lost trusted reset input: ${JSON.stringify(
-                resetMove,
+              "native outside popup click leaked to mpv and closed the player",
+            );
+          aliveAfterOutsidePopupClick = true;
+          outsideClickResult = {
+            focus: outsideFocusResult,
+            reopenMove,
+            windowBounds: outsideWindowBounds,
+            panelBounds: outsidePanelBounds,
+            point: outsidePoint,
+            input: outsideClick,
+          };
+        }
+        if (nativeFeatureParityRequested) {
+          const backgroundFocus = await focusNativeWindow(nativeWindow, descriptor);
+          if (
+            backgroundFocus.isForeground !== true ||
+            backgroundFocus.foregroundVerified !== true
+          )
+            throw new Error(
+              `stock mpv foreground was not verified before unrelated-app deactivation: ${JSON.stringify(
+                backgroundFocus,
               )}`,
             );
+          const backgroundMove = commandOutput(
+            desktopTest,
+            ["--move", String(nativeTarget.x), String(nativeTarget.y)],
+            "native pointer move before unrelated-app deactivation",
+          );
+          const backgroundPopup = await waitForValue(
+            async () => {
+              const status = await statusAt(statusPath);
+              const session = sessionStatus(status, descriptor.sessionId);
+              return session?.popupVisible && session.popupWindow?.focused === true
+                ? session
+                : null;
+            },
+            popupOpenTimeoutMs,
+            "dictionary popup before unrelated-app deactivation",
+          );
+          let unrelatedApplication;
+          if (process.platform === "darwin") {
+            unrelatedApplication = activateUnrelatedMacosApplication("Finder");
+          } else {
+            const unrelatedWindows =
+              await activateUnrelatedWindowsApplication(windowProbe);
+            unrelatedWindowsProcess = unrelatedWindows;
+            unrelatedApplication = unrelatedWindows.evidence;
+          }
+          const deactivated = await waitForValue(
+            async () => {
+              const status = await statusAt(statusPath);
+              const session = sessionStatus(status, descriptor.sessionId);
+              if (
+                session?.source?.foreground !== false ||
+                session.popupVisible !== false ||
+                session.popupWindow?.visible !== false ||
+                session.popupWindow?.alwaysOnTop !== false ||
+                session.highlightWindow?.alwaysOnTop !== false
+              )
+                return null;
+              return session;
+            },
+            8000,
+            "companion surfaces to leave the stack after unrelated-app activation",
+          );
+          // macOS treats activation as user-intent driven. After Finder has
+          // become frontmost, restore the player with the same native click a
+          // user would make on the underlying player rather than treating an
+          // accepted programmatic activation request as proof of focus.
+          const recoveryPoint = pointerResetTarget(initialSession);
+          const recoveryNativePoint = nativePoint(recoveryPoint, inputScale);
+          const recoveryPauseBeforeClick = bridge.property("pause");
+          const recoveryClick = commandOutput(
+            desktopTest,
+            [
+              "--click",
+              String(recoveryNativePoint.x),
+              String(recoveryNativePoint.y),
+              "left",
+            ],
+            "native player click after unrelated-app deactivation",
+          );
+          const recoveryFocus = await waitForValue(
+            async () => {
+              const observed = await nativeWindow.read(descriptor);
+              return observed.isForeground === true
+                ? {
+                    ...observed,
+                    foregroundVerified: true,
+                    activationMethod: "native-user-click",
+                  }
+                : null;
+            },
+            5000,
+            "stock mpv foreground after native user click",
+          );
+          await delay(100);
+          const recoveryPauseAfterClick = bridge.property("pause");
+          // This click is intentionally on the player to model a user bringing
+          // an overlapped mpv window forward. The disposable input.conf maps a
+          // left click to pause, so require exactly that player action, then
+          // restore the state before the remaining focus assertions.
+          if (recoveryPauseAfterClick !== !recoveryPauseBeforeClick)
+            throw new Error(
+              `native focus-restoration click did not reach the expected mpv binding (expected pause ${!recoveryPauseBeforeClick}, observed ${recoveryPauseAfterClick})`,
+            );
+          await bridge.setPause(recoveryPauseBeforeClick);
+          await waitForValue(
+            () => bridge.property("pause") === recoveryPauseBeforeClick,
+            2000,
+            "stock mpv pause restoration after native focus click",
+          );
+          if (mpvProcess.exitCode !== null)
+            throw new Error("native focus-restoration click leaked a quit to mpv");
+          if (
+            recoveryFocus.isForeground !== true ||
+            recoveryFocus.foregroundVerified !== true
+          )
+            throw new Error(
+              `stock mpv foreground was not restored after unrelated-app deactivation: ${JSON.stringify(
+                recoveryFocus,
+              )}`,
+            );
+          const recoveryMove = commandOutput(
+            desktopTest,
+            ["--move", String(nativeTarget.x), String(nativeTarget.y)],
+            "native pointer move after unrelated-app recovery",
+          );
+          const recovered = await waitForValue(
+            async () => {
+              const status = await statusAt(statusPath);
+              const session = sessionStatus(status, descriptor.sessionId);
+              return session?.popupVisible &&
+                session.popupWindow?.visible === true &&
+                session.popupWindow?.focused === true &&
+                session.source?.foreground === true
+                ? session
+                : null;
+            },
+            popupOpenTimeoutMs,
+            "dictionary popup after unrelated-app recovery",
+          );
+          const recoveryEscape = commandOutput(
+            desktopTest,
+            ["--key", "escape"],
+            "native Escape after unrelated-app recovery",
+          );
           await waitForValue(
             async () => {
               const status = await statusAt(statusPath);
               const session = sessionStatus(status, descriptor.sessionId);
-              return session &&
-                session.popupVisible === false &&
-                session.cursorDiagnostic?.hit === null
-                ? session
-                : null;
+              return session?.popupVisible === false ? session : null;
             },
             5000,
-            `native lifecycle cycle ${cycle} pointer reset`,
+            "popup dismissal after unrelated-app recovery",
           );
-          nativeLifecycle.push({
-            cycle,
-            target: {
-              trackId: cycleLookup.track.id,
-              eventId: cycleLookup.event.id,
-              unitId: cycleLookup.unit.id,
-              text: cycleLookup.unit.text,
-              point: cycleTarget,
+          if (unrelatedWindowsProcess) {
+            await stopUnrelatedWindowsApplication(unrelatedWindowsProcess);
+            unrelatedWindowsProcess = null;
+          }
+          nativeFeatureParity.backgrounding = {
+            unrelatedApplication,
+            before: {
+              focus: backgroundFocus,
+              move: backgroundMove,
+              popup: {
+                visible: backgroundPopup.popupVisible,
+                focused: backgroundPopup.popupWindow?.focused === true,
+              },
             },
-            focus: cycleFocus,
-            move: cycleMove,
-            popup: {
-              state: cyclePopup.interactionSnapshot?.state || null,
-              hit: cyclePopup.cursorDiagnostic?.hit || null,
-              headword: cyclePopup.popupHeadword || null,
+            deactivated: {
+              foreground: deactivated.source?.foreground === true,
+              popupVisible: deactivated.popupVisible,
+              popupWindow: deactivated.popupWindow,
+              highlightWindow: deactivated.highlightWindow,
             },
-            escape: cycleEscape,
-            closedState: cycleClosed.interactionSnapshot?.state || null,
-            pause: cyclePause,
-            mpvAlive: mpvProcess.exitCode === null,
-            reset: {
-              point: resetPoint,
-              input: resetMove,
+            recovery: {
+              focus: recoveryFocus,
+              click: recoveryClick,
+              point: recoveryPoint,
+              pauseBeforeClick: recoveryPauseBeforeClick,
+              pauseAfterClick: recoveryPauseAfterClick,
+              pauseRestored: bridge.property("pause"),
+              move: recoveryMove,
+              popupVisible: recovered.popupVisible,
+              popupFocused: recovered.popupWindow?.focused === true,
+              foreground: recovered.source?.foreground === true,
+              escape: recoveryEscape,
             },
-          });
+          };
+        }
+        if (nativeLifecycleCycles > 0) {
+          for (let cycle = 1; cycle <= nativeLifecycleCycles; cycle++) {
+            const cycleFocus = await focusNativeWindow(nativeWindow, descriptor);
+            if (
+              cycleFocus.isForeground !== true ||
+              cycleFocus.foregroundVerified !== true
+            )
+              throw new Error(
+                `native lifecycle cycle ${cycle} could not verify mpv foreground: ${JSON.stringify(
+                  cycleFocus,
+                )}`,
+              );
+            await delay(100);
+            const cycleTargetSession = await waitForValue(
+              async () => {
+                const status = await statusAt(statusPath);
+                const session = sessionStatus(status, descriptor.sessionId);
+                return (session?.source?.exact === true ||
+                  (allowApproximateGeometry &&
+                    session?.source?.contentExact === true)) &&
+                  session.highlightWindow &&
+                  session.popupVisible === false
+                  ? session
+                  : null;
+              },
+              5000,
+              `native lifecycle cycle ${cycle} target geometry`,
+            );
+            const cycleCandidates = lookupableUnits(cycleTargetSession).filter(
+              (candidate) => candidate.track.role === "primary",
+            );
+            const retainedCycleLookup = cycleCandidates.find(
+              (candidate) =>
+                candidate.track.id === activeLookup?.track.id &&
+                candidate.event.id === activeLookup?.event.id &&
+                candidate.unit.id === activeLookup?.unit.id,
+            );
+            const cycleLookup =
+              retainedCycleLookup ||
+              cycleCandidates.find((candidate) =>
+                lookupCompatibleUnit(candidate, lookupLanguage),
+              ) ||
+              cycleCandidates[0];
+            if (!cycleLookup)
+              throw new Error(
+                `native lifecycle cycle ${cycle} has no current primary lookup unit`,
+              );
+            const cycleTarget = pointerTarget(cycleTargetSession, cycleLookup.unit);
+            const cycleInputScale = Math.max(
+              1,
+              Number(cycleTargetSession.desktopScale) || inputScale,
+            );
+            const cycleNativeTarget = nativePoint(cycleTarget, cycleInputScale);
+            trace(
+              "native-lifecycle-target",
+              JSON.stringify({
+                cycle,
+                unitId: cycleLookup.unit.id,
+                text: cycleLookup.unit.text,
+                target: cycleTarget,
+                nativeTarget: cycleNativeTarget,
+              }),
+            );
+            const cycleStartedAt = performance.now();
+            const cycleMove = commandOutput(
+              desktopTest,
+              ["--move", String(cycleNativeTarget.x), String(cycleNativeTarget.y)],
+              `native lifecycle cycle ${cycle} pointer move`,
+            );
+            if (!nativeInputReady(cycleMove))
+              throw new Error(
+                `native lifecycle cycle ${cycle} lost trusted pointer input: ${JSON.stringify(
+                  cycleMove,
+                )}`,
+              );
+            const cyclePopup = await waitForValue(
+              async () => {
+                const status = await statusAt(statusPath);
+                const session = sessionStatus(status, descriptor.sessionId);
+                return session?.popupVisible &&
+                  session.popupWindow?.visible === true &&
+                  session.popupWindow?.focused === true &&
+                  typeof session.popupHeadword === "string" &&
+                  session.popupHeadword.length > 0 &&
+                  session.cursorDiagnostic?.hit?.unitId === cycleLookup.unit.id
+                  ? session
+                  : null;
+              },
+              popupOpenTimeoutMs,
+              `native lifecycle cycle ${cycle} popup`,
+            );
+            latencySamples.nativeLifecyclePopupMs.push(
+              performance.now() - cycleStartedAt,
+            );
+            const cycleDismissalStartedAt = performance.now();
+            const cycleEscape = commandOutput(
+              desktopTest,
+              ["--key", "escape"],
+              `native lifecycle cycle ${cycle} Escape`,
+            );
+            if (!nativeInputReady(cycleEscape))
+              throw new Error(
+                `native lifecycle cycle ${cycle} lost trusted keyboard input: ${JSON.stringify(
+                  cycleEscape,
+                )}`,
+              );
+            const cycleClosed = await waitForValue(
+              async () => {
+                const status = await statusAt(statusPath);
+                const session = sessionStatus(status, descriptor.sessionId);
+                return session && session.popupVisible === false ? session : null;
+              },
+              5000,
+              `native lifecycle cycle ${cycle} dismissal`,
+            );
+            latencySamples.nativeLifecycleDismissalMs.push(
+              performance.now() - cycleDismissalStartedAt,
+            );
+            const cyclePause = bridge.property("pause");
+            if (cyclePause !== startPaused)
+              throw new Error(
+                `native lifecycle cycle ${cycle} changed pause ownership (expected ${startPaused}, observed ${cyclePause})`,
+              );
+            if (mpvProcess.exitCode !== null)
+              throw new Error(`native lifecycle cycle ${cycle} leaked Escape to mpv`);
+            const resetPoint = pointerResetTarget(cycleClosed);
+            const resetInputScale = Math.max(
+              1,
+              Number(cycleClosed.desktopScale) || inputScale,
+            );
+            const resetNativePoint = nativePoint(resetPoint, resetInputScale);
+            const resetMove = commandOutput(
+              desktopTest,
+              ["--move", String(resetNativePoint.x), String(resetNativePoint.y)],
+              `native lifecycle cycle ${cycle} pointer reset`,
+            );
+            if (!nativeInputReady(resetMove))
+              throw new Error(
+                `native lifecycle cycle ${cycle} lost trusted reset input: ${JSON.stringify(
+                  resetMove,
+                )}`,
+              );
+            await waitForValue(
+              async () => {
+                const status = await statusAt(statusPath);
+                const session = sessionStatus(status, descriptor.sessionId);
+                return session &&
+                  session.popupVisible === false &&
+                  session.cursorDiagnostic?.hit === null
+                  ? session
+                  : null;
+              },
+              5000,
+              `native lifecycle cycle ${cycle} pointer reset`,
+            );
+            nativeLifecycle.push({
+              cycle,
+              target: {
+                trackId: cycleLookup.track.id,
+                eventId: cycleLookup.event.id,
+                unitId: cycleLookup.unit.id,
+                text: cycleLookup.unit.text,
+                point: cycleTarget,
+              },
+              focus: cycleFocus,
+              move: cycleMove,
+              popup: {
+                state: cyclePopup.interactionSnapshot?.state || null,
+                hit: cyclePopup.cursorDiagnostic?.hit || null,
+                headword: cyclePopup.popupHeadword || null,
+              },
+              escape: cycleEscape,
+              closedState: cycleClosed.interactionSnapshot?.state || null,
+              pause: cyclePause,
+              mpvAlive: mpvProcess.exitCode === null,
+              reset: {
+                point: resetPoint,
+                input: resetMove,
+              },
+            });
+          }
         }
       }
     } else if (!inputCapability.nativeInputReady) {
@@ -3501,7 +4228,7 @@ async function main() {
       failure = "native pointer move did not open the popup";
     }
 
-    if (additionalPointerProbeCount > 0) {
+    if (additionalPointerProbeCount > 0 && !nativeNestedReplayRequested) {
       if (!popupStatus || !inputCapability.nativeInputReady)
         throw new Error(
           "additional native pointer probes require the initial popup and trusted native input",
@@ -3633,109 +4360,117 @@ async function main() {
     }
 
     console.log(
-      JSON.stringify(
-        {
-          mpv: mpvVersion.stdout.split(/\r?\n/)[0],
-          ffmpeg: ffmpegVersion ? ffmpegVersion.stdout.split(/\r?\n/)[0] : null,
-          mediaPath: externalMediaPath || null,
-          startSeconds,
-          subtitleId: subtitleId || null,
-          secondarySubtitleId: secondarySubtitleId || null,
-          videoOutput,
-          gpuContext: gpuContext || null,
-          macosRenderTimer: macosRenderTimer || null,
-          startPaused,
-          lookupLanguage,
-          demoLanguage: demoLanguage || null,
-          demoLanguageText: demoLanguage ? DEMO_LANGUAGE_TEXT[demoLanguage] : null,
-          fixtureLanguage: fixtureLanguage || null,
-          fixtureLanguageText: fixtureLanguage
-            ? DEMO_LANGUAGE_TEXT[fixtureLanguage]
-            : null,
-          dictionaryMode: liveDictionary ? "live-hoshi" : "demo",
-          dictionary: liveDictionaryEvidence,
-          ankiMock: ankiMock
-            ? {
-                calls: [...ankiMock.calls],
-                addNoteCount: ankiMock.calls.filter((action) => action === "addNote")
-                  .length,
-              }
-            : null,
-          audioMock: audioMock
-            ? {
-                requests: [...audioMock.requests],
-              }
-            : null,
-          fullscreenRequested: fullscreen,
-          fullscreenObserved,
-          fullscreenEvidence,
-          allowApproximateGeometry,
-          additionalPointerProbeCount,
-          nativeInteractionMatrix,
-          nativeMacosFeatureParity,
-          nativeControllerParity,
-          syntheticNativeController,
-          nativeResizeTransition,
-          nativeLifecycleCycles,
-          nativeLifecycle,
-          nativeInteraction,
-          popupForegroundSamples,
-          nativeHoverReplacement,
-          nativeController,
-          windowTransition,
-          nativeFeatureParity,
-          latency: summarizeLatencies(latencySamples),
-          pointerProbes,
-          pointerProbeEscapes,
-          requireStableSigning,
-          testHelperSignature,
-          electronLaunch: packagedApplication || process.execPath,
-          packagedApplication: !!packagedApplication,
-          descriptor: {
-            sessionId: descriptor.sessionId,
-            pid: descriptor.pid,
-            ipcEndpoint: descriptor.ipcEndpoint,
+      publicDiagnostic(
+        JSON.stringify(
+          {
+            mpv: mpvVersion.stdout.split(/\r?\n/)[0],
+            ffmpeg: ffmpegVersion ? ffmpegVersion.stdout.split(/\r?\n/)[0] : null,
+            mediaPath: externalMediaPath || null,
+            startSeconds,
+            subtitleId: subtitleId || null,
+            secondarySubtitleId: secondarySubtitleId || null,
+            videoOutput,
+            gpuContext: gpuContext || null,
+            macosRenderTimer: macosRenderTimer || null,
+            startPaused,
+            lookupLanguage,
+            demoLanguage: demoLanguage || null,
+            demoLanguageText: demoLanguage ? DEMO_LANGUAGE_TEXT[demoLanguage] : null,
+            fixtureLanguage: fixtureLanguage || null,
+            fixtureLanguageText: fixtureLanguage
+              ? DEMO_LANGUAGE_TEXT[fixtureLanguage]
+              : null,
+            dictionaryMode: liveDictionary ? "live-hoshi" : "demo",
+            dictionary: liveDictionaryEvidence,
+            ankiMock: ankiMock
+              ? {
+                  calls: [...ankiMock.calls],
+                  addNoteCount: ankiMock.calls.filter((action) => action === "addNote")
+                    .length,
+                }
+              : null,
+            audioMock: audioMock
+              ? {
+                  requests: [...audioMock.requests],
+                }
+              : null,
+            fullscreenRequested: fullscreen,
+            fullscreenObserved,
+            fullscreenEvidence,
+            allowApproximateGeometry,
+            additionalPointerProbeCount,
+            nativeInteractionMatrix,
+            nativeFeatureParityRequested,
+            nativeNestedReplayRequested,
+            nativeControllerParity,
+            syntheticNativeController,
+            nativeResizeTransition,
+            nativeLifecycleCycles,
+            nativeLifecycle,
+            nativeInteraction,
+            popupForegroundSamples,
+            nativeHoverReplacement,
+            nativeNestedReplay,
+            nativeController,
+            windowTransition,
+            nativeFeatureParity,
+            windowTransitionState:
+              sessionStatus(finalStatus, descriptor.sessionId)?.windowTransitions ||
+              null,
+            latency: summarizeLatencies(latencySamples),
+            pointerProbes,
+            pointerProbeEscapes,
+            requireStableSigning,
+            testHelperSignature,
+            electronLaunch: packagedApplication || process.execPath,
+            packagedApplication: !!packagedApplication,
+            descriptor: {
+              sessionId: descriptor.sessionId,
+              pid: descriptor.pid,
+              ipcEndpoint: descriptor.ipcEndpoint,
+            },
+            playerWindow,
+            electron: finalStatus,
+            input: {
+              capability: inputCapability,
+              playerFocus: focusResult,
+              recordingFocus: recordingFocusResult,
+              move: moveResult,
+              click: clickResult,
+              escape: escapeResult,
+              escapeFocus: dismissalFocusResult,
+              outsideReset: outsideResetMove,
+              outsideClick: outsideClickResult,
+            },
+            capture: {
+              before: captureBeforeResult,
+              after: captureAfterResult,
+              nested: nestedCaptureResult,
+              popupVisualEvidence,
+              popupCaptureAttempts,
+              combinedVisiblePopup: popupVisualEvidence?.ok === true,
+            },
+            screenRecording: screenRecordingResult,
+            player: {
+              pauseAfterPopupClick: clickPause,
+              pauseAfterPopupDismiss: dismissalPause,
+              pauseAfterOutsidePopupDismiss: outsideDismissalPause,
+              aliveAfterEscape,
+              aliveAfterOutsidePopupClick,
+            },
+            stderr: electronStderr.slice(-4000),
+            platform: process.platform,
+            mode: `native-desktop-combined-${process.platform}-e2e`,
+            claim:
+              popupVisualEvidence?.ok === true
+                ? initialSession.source?.exact === true
+                  ? "real-stock-mpv-real-electron-windows-combined-capture-and-native-input"
+                  : "real-stock-mpv-real-electron-windows-combined-capture-and-native-input-with-approximate-geometry"
+                : "blocked-before-native-input-or-combined-popup-capture",
           },
-          playerWindow,
-          electron: finalStatus,
-          input: {
-            capability: inputCapability,
-            playerFocus: focusResult,
-            recordingFocus: recordingFocusResult,
-            move: moveResult,
-            click: clickResult,
-            escape: escapeResult,
-            escapeFocus: dismissalFocusResult,
-            outsideReset: outsideResetMove,
-            outsideClick: outsideClickResult,
-          },
-          capture: {
-            before: captureBeforeResult,
-            after: captureAfterResult,
-            popupVisualEvidence,
-            popupCaptureAttempts,
-            combinedVisiblePopup: popupVisualEvidence?.ok === true,
-          },
-          screenRecording: screenRecordingResult,
-          player: {
-            pauseAfterPopupClick: clickPause,
-            pauseAfterPopupDismiss: dismissalPause,
-            pauseAfterOutsidePopupDismiss: outsideDismissalPause,
-            aliveAfterEscape: mpvProcess.exitCode === null,
-            aliveAfterOutsidePopupClick: mpvProcess.exitCode === null,
-          },
-          stderr: electronStderr.slice(-4000),
-          platform: process.platform,
-          mode: `native-desktop-combined-${process.platform}-e2e`,
-          claim:
-            popupVisualEvidence?.ok === true
-              ? initialSession.source?.exact === true
-                ? "real-stock-mpv-real-electron-windows-combined-capture-and-native-input"
-                : "real-stock-mpv-real-electron-windows-combined-capture-and-native-input-with-approximate-geometry"
-              : "blocked-before-native-input-or-combined-popup-capture",
-        },
-        null,
-        2,
+          null,
+          2,
+        ),
       ),
     );
   } catch (error) {
@@ -3785,6 +4520,8 @@ async function main() {
       await new Promise((resolve) => audioMock.server.close(resolve));
       audioMock = null;
     }
+    await stopUnrelatedWindowsApplication(unrelatedWindowsProcess);
+    unrelatedWindowsProcess = null;
     await liveDictionaryWorker?.stop().catch(() => {});
     bridge?.close();
     await stopProcess(electronProcess);
@@ -3804,6 +4541,7 @@ async function main() {
         "electron-stderr.log": path.join(temporaryRoot, "electron-stderr.log"),
         "desktop-before.png": captureBefore,
         "desktop-after.png": captureAfter,
+        "desktop-nested.png": captureNested,
         "input.conf": inputConf,
         "desktop-interaction.mov": screenRecordingPath,
       },
@@ -3840,7 +4578,8 @@ async function main() {
         allowApproximateGeometry,
         additionalPointerProbeCount,
         nativeInteractionMatrix,
-        nativeMacosFeatureParity,
+        nativeFeatureParityRequested,
+        nativeNestedReplayRequested,
         nativeControllerParity,
         syntheticNativeController,
         nativeResizeTransition,
@@ -3849,8 +4588,12 @@ async function main() {
         nativeInteraction,
         popupForegroundSamples,
         nativeController,
+        nativeNestedReplay,
         windowTransition,
         nativeFeatureParity,
+        windowTransitionState:
+          sessionStatus(finalStatus || lastElectronStatus, descriptor?.sessionId)
+            ?.windowTransitions || null,
         latency: summarizeLatencies(latencySamples),
         pointerProbes,
         pointerProbeEscapes,
@@ -3876,6 +4619,7 @@ async function main() {
         capture: {
           before: captureBeforeResult,
           after: captureAfterResult,
+          nested: nestedCaptureResult,
           popupVisualEvidence,
           popupCaptureAttempts,
           combinedVisiblePopup: popupVisualEvidence?.ok === true,
@@ -3885,9 +4629,16 @@ async function main() {
           pauseAfterPopupClick: clickPause,
           pauseAfterPopupDismiss: dismissalPause,
           pauseAfterOutsidePopupDismiss: outsideDismissalPause,
-          aliveAfterEscape: mpvProcess?.exitCode === null,
-          aliveAfterOutsidePopupClick: mpvProcess?.exitCode === null,
+          aliveAfterEscape,
+          aliveAfterOutsidePopupClick,
         },
+        mode: `native-desktop-combined-${process.platform}-e2e`,
+        claim:
+          popupVisualEvidence?.ok === true
+            ? foregroundStatus?.source?.exact === true
+              ? "real-stock-mpv-real-electron-windows-combined-capture-and-native-input"
+              : "real-stock-mpv-real-electron-windows-combined-capture-and-native-input-with-approximate-geometry"
+            : "blocked-before-native-input-or-combined-popup-capture",
         stderr: {
           mpv: mpvStderr.slice(-4000),
           electron: electronStderr.slice(-4000),
@@ -3896,12 +4647,14 @@ async function main() {
       },
     );
     if (evidenceDirectory) {
-      await fs.writeFile(path.join(evidenceDirectory, "mpv-stderr.log"), mpvStderr, {
-        mode: 0o600,
-      });
+      await fs.writeFile(
+        path.join(evidenceDirectory, "mpv-stderr.log"),
+        publicDiagnostic(mpvStderr),
+        { mode: 0o600 },
+      );
       await fs.writeFile(
         path.join(evidenceDirectory, "electron-stderr.log"),
-        electronStderr,
+        publicDiagnostic(electronStderr),
         { mode: 0o600 },
       );
     }
@@ -3911,13 +4664,15 @@ async function main() {
 
   if (failure) {
     console.error(
-      `NATIVE DESKTOP E2E BLOCKED: ${failure}\nevidence: ${evidenceDirectory || "none"}\nmpv stderr: ${mpvStderr.trim()}\nmpv log: ${mpvLog.slice(-4000).trim()}\nElectron stderr: ${electronStderr.trim()}`,
+      publicDiagnostic(
+        `NATIVE DESKTOP E2E BLOCKED: ${failure}\nevidence: ${evidenceDirectory || "none"}\nmpv stderr: ${mpvStderr.trim()}\nmpv log: ${mpvLog.slice(-4000).trim()}\nElectron stderr: ${electronStderr.trim()}`,
+      ),
     );
     process.exitCode = 2;
   }
 }
 
 main().catch((error) => {
-  console.error(`NATIVE DESKTOP E2E BLOCKED: ${error.message}`);
+  console.error(`NATIVE DESKTOP E2E BLOCKED: ${publicDiagnostic(error.message)}`);
   process.exitCode = 2;
 });

@@ -8,10 +8,9 @@ const { spawnSync } = require("node:child_process");
 const { MpvJsonIpc } = require("../../src/player/mpv-ipc");
 const { launchMpv } = require("../../src/player/mpv-launcher");
 const { readDescriptor } = require("../../src/player/session-descriptor");
+const { absoluteSuppliedMediaPath } = require("./supplied-media");
 
 const root = path.resolve(__dirname, "../..");
-const DEFAULT_MEDIA_PATH =
-  "/Volumes/Media Files/anime/MARRIAGETOXIN/Season 01/MARRIAGETOXIN (2026) - S01E01 - The Poison Masters Search for a Bride [HDTV-1080p][AAC 2.0][x265]-DKB.mkv";
 
 function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -59,9 +58,7 @@ async function main() {
     throw new Error(`unsupported launcher smoke platform: ${process.platform}`);
   }
 
-  const mediaPath = path.resolve(
-    process.env.IINATAN_MPV_LAUNCHER_MEDIA_PATH || DEFAULT_MEDIA_PATH,
-  );
+  const mediaPath = absoluteSuppliedMediaPath("IINATAN_MPV_LAUNCHER_MEDIA_PATH");
   const mediaStat = await fs.stat(mediaPath);
   assert.equal(
     mediaStat.isFile(),
@@ -70,7 +67,9 @@ async function main() {
   );
   const executable =
     process.env.IINATAN_MPV || (process.platform === "win32" ? "mpv.exe" : "mpv");
-  const version = spawnSync(executable, ["--version"], { encoding: "utf8" });
+  const version = spawnSync(executable, ["--no-config", "--version"], {
+    encoding: "utf8",
+  });
   if (version.error || version.status !== 0)
     throw new Error(
       `stock mpv is unavailable: ${version.error?.message || version.stderr || "unknown error"}`,

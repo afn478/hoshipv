@@ -117,6 +117,8 @@ const {
 } = require("../src/services/native-bitmap-ocr-client");
 const {
   NativeSubtitleGeometryService,
+  WINDOWS_LIBASS_0174_EMBEDDED_ASS_PROFILE,
+  WINDOWS_LIBASS_0174_SUBRIP_PROFILE,
   nativeDisplayIndex,
   nativeStrippedDisplayIndex,
   rendererForTrack,
@@ -160,7 +162,7 @@ test("diagnostic messages redact paths without hiding the geometry reason", () =
 test("media launch arguments resolve both packaged-file and explicit forms", () => {
   assert.equal(
     requestedMediaPath(["electron", ".", "--open-media=/media/episode.mkv"]),
-    "/media/episode.mkv",
+    path.resolve("/media/episode.mkv"),
   );
   assert.equal(
     requestedMediaPath(["electron", ".", "--open-media", "media/episode.mkv"]),
@@ -261,6 +263,9 @@ class FakeBrowserWindow extends EventEmitter {
     this.ignoreMouse = null;
     this.alwaysOnTop = null;
     this.topMoves = 0;
+    this.opacity = 1;
+    this.showCount = 0;
+    this.showInactiveCount = 0;
     FakeBrowserWindow.instances.push(this);
   }
 
@@ -278,14 +283,19 @@ class FakeBrowserWindow extends EventEmitter {
     this.bounds = { ...value };
   }
   showInactive() {
+    this.showInactiveCount += 1;
     this.visible = true;
     this.focused = false;
   }
   show() {
+    this.showCount += 1;
     this.visible = true;
   }
   focus() {
     this.focused = true;
+  }
+  setOpacity(value) {
+    this.opacity = value;
   }
   hide() {
     this.visible = false;
@@ -1502,6 +1512,7 @@ test("BrowserHost keeps passive and popup surfaces separate and validates sender
     assert.equal(popup.options.focusable, true);
     assert.equal(highlight.options.type, "panel");
     assert.equal(popup.options.type, "panel");
+    assert.equal(host.windowTransitionState().popup.reason, "platform-not-windows");
     assert.deepEqual(highlight.ignoreMouse, {
       ignore: true,
       options: { forward: true },
@@ -1528,6 +1539,12 @@ test("BrowserHost keeps passive and popup surfaces separate and validates sender
       "host-request",
       { sender: popup.webContents },
       { protocol: 1, type: "ready", payload: { surface: "popup" } },
+    );
+    assert.equal(popup.visible, false);
+    ipcMain.emit(
+      "host-request",
+      { sender: popup.webContents },
+      { protocol: 1, type: "popup-painted", payload: {} },
     );
     assert.equal(popup.visible, true);
     assert.equal(popup.focused, true);
@@ -1636,6 +1653,46 @@ test("BrowserHost negotiates DOM and native-input capabilities after surface rea
   }
 });
 
+test("BrowserHost activates the Windows popup before handing it input", async () => {
+  FakeBrowserWindow.reset();
+  const ipcMain = new EventEmitter();
+  const host = new BrowserHost({
+    BrowserWindow: FakeBrowserWindow,
+    platform: "win32",
+    ipcMain,
+    preloadPath: "/tmp/iinatan-preload.js",
+    overlayUrl: "iinatan://app/overlay.html",
+  });
+
+  try {
+    await host.create();
+    const [, popup] = FakeBrowserWindow.instances;
+    assert.equal(popup.options.accentColor, false);
+    assert.equal(popup.options.thickFrame, false);
+    assert.equal(popup.options.roundedCorners, false);
+    host.showPopup({ position: { x: 10, y: 12 }, result: { entries: [] } });
+    ipcMain.emit(
+      "host-request",
+      { sender: popup.webContents },
+      { protocol: 1, type: "ready", payload: { surface: "popup" } },
+    );
+    ipcMain.emit(
+      "host-request",
+      { sender: popup.webContents },
+      { protocol: 1, type: "popup-painted", payload: {} },
+    );
+    assert.equal(popup.showCount, 0);
+    assert.equal(popup.showInactiveCount, 1);
+    assert.equal(popup.opacity, 1);
+    assert.equal(popup.focused, true);
+    host.hidePopup({ focusPlayer: false });
+    assert.equal(popup.visible, true);
+    assert.equal(popup.opacity, 0);
+  } finally {
+    host.close();
+  }
+});
+
 test("BrowserHost uses a nonactivating macOS panel for interactive popup input", async () => {
   FakeBrowserWindow.reset();
   const ipcMain = new EventEmitter();
@@ -1669,6 +1726,11 @@ test("BrowserHost uses a nonactivating macOS panel for interactive popup input",
       "host-request",
       { sender: popup.webContents },
       { protocol: 1, type: "ready", payload: { surface: "popup" } },
+    );
+    ipcMain.emit(
+      "host-request",
+      { sender: popup.webContents },
+      { protocol: 1, type: "popup-painted", payload: {} },
     );
     assert.equal(popup.visible, true);
     assert.equal(popup.focused, true);
@@ -2088,6 +2150,171 @@ test("native subtitle geometry fails closed for an unvalidated player tuple", as
     },
   );
   assert.equal(measured, false);
+});
+
+test("native geometry selects the Windows libass 0.17.4 profile only for external SubRip", async () => {
+  const track = {
+    id: "subrip-track",
+    role: "primary",
+    selected: true,
+    source: { path: "/tmp/subtitles.srt", ffIndex: 0, external: true },
+    assFull: "",
+    assExtradata: "",
+    startMs: 1000,
+    endMs: 4000,
+    events: [
+      {
+        rawText: "Primary 日本語",
+        startMs: 1000,
+        endMs: 4000,
+        layer: 0,
+        drawing: false,
+        units: [{ position: 0, utf16Range: [0, 7], lookupable: true }],
+      },
+    ],
+    renderer: { overrideMode: "no" },
+  };
+  let measured = 0;
+  const service = new NativeSubtitleGeometryService({
+    geometryProvider: {
+      applyNativeResponse(snapshot, response) {
+        return {
+          ...snapshot,
+          source: { exact: true, profile: response.diagnostics.profile },
+        };
+      },
+    },
+    profiles: [
+      {
+        ...WINDOWS_LIBASS_0174_SUBRIP_PROFILE,
+        client: {
+          async measure(request) {
+            measured += 1;
+            return {
+              ok: true,
+              protocol: 1,
+              units: request.units.map((unit) => ({
+                position: unit.position,
+                rects: [{ x: 10, y: 20, w: 30, h: 40 }],
+              })),
+              diagnostics: { validationEnabled: true },
+            };
+          },
+        },
+      },
+    ],
+  });
+  const exact = await service.apply({
+    sessionId: "windows-compat-session",
+    mediaGeneration: 0,
+    geometryGeneration: 1,
+    timeMs: 2000,
+    player: {
+      mpvVersion: "0.41.0",
+      libassVersion: "0.17.4",
+      ffmpegVersion: "f853d12",
+    },
+    osd: { width: 1280, height: 720 },
+    tracks: [track],
+  });
+  assert.equal(exact.source.exact, true);
+  assert.equal(exact.source.profile, WINDOWS_LIBASS_0174_SUBRIP_PROFILE.id);
+  assert.equal(measured, 1);
+
+  await assert.rejects(
+    () =>
+      service.apply({
+        sessionId: "windows-compat-ass-session",
+        mediaGeneration: 0,
+        geometryGeneration: 2,
+        timeMs: 2000,
+        player: {
+          mpvVersion: "0.41.0",
+          libassVersion: "0.17.4",
+          ffmpegVersion: "f853d12",
+        },
+        osd: { width: 1280, height: 720 },
+        tracks: [
+          {
+            ...track,
+            source: { path: "/tmp/subtitles.ass", ffIndex: 0, external: true },
+            assFull: "Dialogue: 0,0:00:01.00,0:00:04.00,Default,,0,0,0,,Primary 日本語",
+          },
+        ],
+      }),
+    (error) => error.code === "NATIVE_GEOMETRY_PROFILE_INPUT_UNSUPPORTED",
+  );
+  assert.equal(measured, 1);
+});
+
+test("native geometry selects the Windows libass 0.17.4 profile for embedded ASS attachments", async () => {
+  const track = {
+    id: "embedded-ass-track",
+    role: "primary",
+    selected: true,
+    source: { path: "/tmp/video.mkv", ffIndex: 2, external: false },
+    assFull: "Dialogue: 0,0:00:01.00,0:00:04.00,Default,,0,0,0,,Primary 日本語",
+    assExtradata: "[Script Info]\nScriptType: v4.00+\nPlayResX: 1920\nPlayResY: 1080",
+    startMs: 1000,
+    endMs: 4000,
+    events: [
+      {
+        rawText: "Primary 日本語",
+        startMs: 1000,
+        endMs: 4000,
+        layer: 0,
+        drawing: false,
+        units: [{ position: 0, utf16Range: [0, 7], lookupable: true }],
+      },
+    ],
+    renderer: { overrideMode: "no" },
+  };
+  let measured = 0;
+  const service = new NativeSubtitleGeometryService({
+    geometryProvider: {
+      applyNativeResponse(snapshot, response) {
+        return {
+          ...snapshot,
+          source: { exact: true, profile: response.diagnostics.profile },
+        };
+      },
+    },
+    profiles: [
+      {
+        ...WINDOWS_LIBASS_0174_EMBEDDED_ASS_PROFILE,
+        client: {
+          async measure(request) {
+            measured += 1;
+            return {
+              ok: true,
+              protocol: 1,
+              units: request.units.map((unit) => ({
+                position: unit.position,
+                rects: [{ x: 10, y: 20, w: 30, h: 40 }],
+              })),
+              diagnostics: { validationEnabled: true },
+            };
+          },
+        },
+      },
+    ],
+  });
+  const exact = await service.apply({
+    sessionId: "windows-embedded-ass-session",
+    mediaGeneration: 0,
+    geometryGeneration: 1,
+    timeMs: 2000,
+    player: {
+      mpvVersion: "0.41.0",
+      libassVersion: "0.17.4",
+      ffmpegVersion: "f853d12",
+    },
+    osd: { width: 1920, height: 1080 },
+    tracks: [track],
+  });
+  assert.equal(exact.source.exact, true);
+  assert.equal(exact.source.profile, WINDOWS_LIBASS_0174_EMBEDDED_ASS_PROFILE.id);
+  assert.equal(measured, 1);
 });
 
 test("native geometry preserves ASS event metadata when extradata is empty", () => {
@@ -3522,6 +3749,13 @@ test("Hoshi-shaped metadata and structured glossary content survive normalizatio
         content: [
           "cat",
           { tag: "a", href: "https://example.com/source", content: " source" },
+          {
+            tag: "a",
+            href: "?query=%E7%8C%AB%E8%BB%8A&wildcards=off",
+            content: [
+              { tag: "ruby", content: ["猫車", { tag: "rt", content: "ねこぐるま" }] },
+            ],
+          },
           { tag: "script", content: "ignored" },
         ],
       },
@@ -3562,7 +3796,13 @@ test("Hoshi-shaped metadata and structured glossary content survive normalizatio
     entry.glossaries[0].content[0].content[0].content[1].href,
     "https://example.com/source",
   );
-  assert.equal(entry.glossaries[0].content[0].content[0].content.length, 2);
+  const plainLink = entry.glossaries[0].content[0].content[0].content[2];
+  assert.equal(plainLink.tag, "a");
+  assert.equal("lookup" in plainLink, false);
+  assert.equal("href" in plainLink, false);
+  assert.equal(plainLink.content[0].tag, "ruby");
+  assert.equal(plainLink.content[0].content[1].tag, "rt");
+  assert.equal(entry.glossaries[0].content[0].content[0].content.length, 3);
 
   const context = contextForEntry({
     entry,
@@ -3613,7 +3853,12 @@ test("Hoshi dictionary import uses the validated backend command contract", asyn
   assert.equal(result.title, "fixture");
   assert.deepEqual(invocation, {
     executable: "fake-hoshi",
-    args: ["import", "/tmp/fixture.zip", "/tmp/dictionaries/fixture", "--normal-ram"],
+    args: [
+      "import",
+      path.normalize("/tmp/fixture.zip"),
+      path.normalize("/tmp/dictionaries/fixture"),
+      "--normal-ram",
+    ],
     options: {
       timeout: 1800000,
       windowsHide: true,

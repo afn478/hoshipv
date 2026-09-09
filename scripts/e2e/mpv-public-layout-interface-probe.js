@@ -19,7 +19,7 @@ function luaString(value) {
 }
 
 function mpvVersion(executable) {
-  const result = spawnSync(executable, ["--version"], {
+  const result = spawnSync(executable, ["--no-config", "--version"], {
     cwd: root,
     encoding: "utf8",
     maxBuffer: 128 * 1024,

@@ -6,13 +6,12 @@ const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 const { PlayerBridge } = require("../../src/player/player-bridge");
 const {
+  isProcessAlive,
   listDescriptors,
-  readDescriptor,
 } = require("../../src/player/session-descriptor");
+const { absoluteSuppliedMediaPath } = require("./supplied-media");
 
 const root = path.resolve(__dirname, "../..");
-const suppliedMedia =
-  "/Volumes/Media Files/anime/MARRIAGETOXIN/Season 01/MARRIAGETOXIN (2026) - S01E01 - The Poison Masters Search for a Bride [HDTV-1080p][AAC 2.0][x265]-DKB.mkv";
 
 const PLAYER_COMMANDS = Object.freeze([
   "seek-backward",
@@ -42,20 +41,39 @@ async function waitFor(predicate, timeoutMs, description) {
   throw new Error(`timed out waiting for ${description}`);
 }
 
-async function stopProcess(child) {
-  if (!child || child.exitCode !== null) return;
+function terminateWindowsProcessTree(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return;
+  spawnSync("taskkill.exe", ["/PID", String(pid), "/T", "/F"], {
+    stdio: "ignore",
+    windowsHide: true,
+  });
+}
+
+async function stopProcess(child, processPid = child?.pid) {
+  if (!child || !processPid || !isProcessAlive(processPid)) return;
+  const exited = new Promise((resolve) => {
+    if (child.exitCode !== null) {
+      resolve();
+      return;
+    }
+    child.once("exit", resolve);
+  });
   child.kill("SIGTERM");
-  await Promise.race([
-    new Promise((resolve) => child.once("exit", resolve)),
-    delay(4000),
-  ]);
-  if (child.exitCode === null) child.kill("SIGKILL");
+  await Promise.race([exited, delay(4000)]);
+  if (isProcessAlive(processPid)) {
+    if (process.platform === "win32") terminateWindowsProcessTree(processPid);
+    else child.kill("SIGKILL");
+    await Promise.race([exited, delay(4000)]);
+  }
+  await waitFor(() => !isProcessAlive(processPid), 5000, "mpv process tree shutdown");
 }
 
 async function main() {
   const executable = process.env.IINATAN_MPV || "mpv";
-  const mediaPath = path.resolve(process.env.IINATAN_E2E_MEDIA_PATH || suppliedMedia);
-  const version = spawnSync(executable, ["--version"], { encoding: "utf8" });
+  const mediaPath = absoluteSuppliedMediaPath("IINATAN_E2E_MEDIA_PATH");
+  const version = spawnSync(executable, ["--no-config", "--version"], {
+    encoding: "utf8",
+  });
   if (version.error || version.status !== 0)
     throw new Error(
       `stock mpv is unavailable: ${version.error?.message || version.stderr || "unknown error"}`,
@@ -68,7 +86,10 @@ async function main() {
     path.join(os.tmpdir(), "iinatan-mpv-command-smoke-"),
   );
   const sessionDirectory = path.join(temporaryRoot, "sessions");
-  const socketPath = path.join(temporaryRoot, "mpv.sock");
+  const socketPath =
+    process.platform === "win32"
+      ? `\\\\.\\pipe\\iinatan-mpv-command-${process.pid}-${Date.now()}`
+      : path.join(temporaryRoot, "mpv.sock");
   await fs.mkdir(sessionDirectory, { mode: 0o700 });
 
   const child = spawn(
@@ -100,15 +121,16 @@ async function main() {
   });
 
   let bridge = null;
+  let processPid = child.pid;
   try {
     await waitFor(
       async () => (await listDescriptors(sessionDirectory)).length === 1,
       10000,
       "stock mpv command-smoke descriptor",
     );
-    const descriptor = await readDescriptor(
-      path.join(sessionDirectory, `${child.pid}.json`),
-    );
+    const descriptor = (await listDescriptors(sessionDirectory))[0];
+    if (!descriptor) throw new Error("stock mpv command-smoke descriptor disappeared");
+    processPid = descriptor.pid;
     bridge = new PlayerBridge(descriptor, { timeoutMs: 3000 });
     await bridge.connect();
     await waitFor(
@@ -158,7 +180,7 @@ async function main() {
     if (!report.ok) process.exitCode = 1;
   } finally {
     bridge?.close();
-    await stopProcess(child);
+    await stopProcess(child, processPid);
     await fs.rm(temporaryRoot, { recursive: true, force: true });
   }
 

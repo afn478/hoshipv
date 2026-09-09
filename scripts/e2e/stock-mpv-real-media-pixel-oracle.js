@@ -129,7 +129,11 @@ async function main() {
       path.join(
         root,
         "bin",
-        process.platform === "win32" ? "iina-hoshi-dicts.exe" : "iina-hoshi-dicts",
+        process.platform === "darwin"
+          ? "iina-hoshi-dicts"
+          : process.platform === "win32"
+            ? "iinatan-native-geometry.exe"
+            : "iinatan-native-geometry",
       ),
   );
   const subtitlePath = path.resolve(
@@ -139,7 +143,9 @@ async function main() {
   const subtitleId = String(process.env.IINATAN_STOCK_PIXEL_SUBTITLE_ID || "15");
   const startSeconds = numberFromEnvironment("IINATAN_STOCK_PIXEL_START_SECONDS", 19);
   const timeMs = Math.round(startSeconds * 1000);
-  const mpvVersion = spawnSync(mpv, ["--version"], { encoding: "utf8" });
+  const mpvVersion = spawnSync(mpv, ["--no-config", "--version"], {
+    encoding: "utf8",
+  });
   if (
     mpvVersion.error ||
     mpvVersion.status !== 0 ||
@@ -215,6 +221,7 @@ async function main() {
         timeoutMs: 30000,
       }),
     );
+    const capabilities = await client.negotiate();
     const response = await client.measure(request);
     const predictedBounds = rectBounds(response.units);
     const predictedEnvelopeBounds = rectBounds(response.units, "envelopeRects");
@@ -259,6 +266,7 @@ async function main() {
           maskPixels: mask.pixels,
           unitCoverage: coverage,
           diagnostics: response.diagnostics || null,
+          capabilities: capabilities.assGeometry,
           mode: "independent-stock-mpv-pixel-oracle-supplied-media",
         },
         null,

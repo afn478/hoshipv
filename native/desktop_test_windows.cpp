@@ -33,10 +33,15 @@ bool finite_point(double x, double y) {
 }
 
 std::string input_status(const char* operation) {
+  POINT cursor{};
+  const bool cursor_available = GetCursorPos(&cursor) != FALSE;
   std::ostringstream stream;
   stream << R"({"ok":true,"backend":"win32-test-input","operation":")"
          << operation
-         << R"(","nativeInputReady":true,"permissionModel":"win32-sendinput"})";
+         << R"(","nativeInputReady":true,"permissionModel":"win32-sendinput")";
+  if (cursor_available)
+    stream << R"(,"cursor":{"x":)" << cursor.x << R"(,"y":)" << cursor.y << "}";
+  stream << "}";
   return stream.str();
 }
 
@@ -57,6 +62,23 @@ WORD key_code(const std::string& key) {
   if (key == "return") return VK_RETURN;
   if (key == "space") return VK_SPACE;
   if (key == "tab") return VK_TAB;
+  if (key == "delete") return VK_DELETE;
+  if (key == "left") return VK_LEFT;
+  if (key == "right") return VK_RIGHT;
+  if (key == "down") return VK_DOWN;
+  if (key == "up") return VK_UP;
+  if (key == "home") return VK_HOME;
+  if (key == "end") return VK_END;
+  if (key == "pageup") return VK_PRIOR;
+  if (key == "pagedown") return VK_NEXT;
+  return 0;
+}
+
+WORD modifier_code(const std::string& modifier) {
+  if (modifier == "shift") return VK_SHIFT;
+  if (modifier == "control" || modifier == "ctrl") return VK_CONTROL;
+  if (modifier == "alt") return VK_MENU;
+  if (modifier == "win" || modifier == "windows") return VK_LWIN;
   return 0;
 }
 
@@ -142,10 +164,11 @@ std::string click_pointer(double x, double y, int button) {
 std::string scroll_pointer(double x, double y, double delta_y) {
   if (!finite_point(x, y) || !std::isfinite(delta_y) || delta_y == 0)
     return R"({"ok":false,"reason":"invalid-scroll","backend":"win32"})";
-  const LONG amount = static_cast<LONG>(std::clamp(
-      std::lround(delta_y),
-      static_cast<long long>(-WHEEL_DELTA * 32),
-      static_cast<long long>(WHEEL_DELTA * 32)));
+  const long long rounded_delta = static_cast<long long>(std::llround(delta_y));
+  const LONG amount = static_cast<LONG>(std::clamp<long long>(
+      rounded_delta,
+      -static_cast<long long>(WHEEL_DELTA) * 32,
+      static_cast<long long>(WHEEL_DELTA) * 32));
   return set_pointer(x, y) && send_mouse(MOUSEEVENTF_WHEEL, static_cast<DWORD>(amount))
              ? input_status("scroll")
              : R"({"ok":false,"reason":"win32-scroll-failed","backend":"win32"})";
@@ -185,12 +208,57 @@ std::string press_key(const std::string& key) {
              : R"({"ok":false,"reason":"win32-key-failed","backend":"win32"})";
 }
 
-std::string press_shortcut(const std::string&, const std::string&) {
-  return R"({"ok":false,"reason":"shortcut-not-implemented","backend":"win32"})";
+std::string press_shortcut(const std::string& modifier, const std::string& key) {
+  const WORD modifier_key = modifier_code(modifier);
+  const WORD key_value = key_code(key);
+  if (!modifier_key || !key_value)
+    return R"({"ok":false,"reason":"unsupported-shortcut","backend":"win32"})";
+  INPUT inputs[4]{};
+  inputs[0].type = INPUT_KEYBOARD;
+  inputs[0].ki.wVk = modifier_key;
+  inputs[1].type = INPUT_KEYBOARD;
+  inputs[1].ki.wVk = key_value;
+  inputs[2] = inputs[1];
+  inputs[2].ki.dwFlags = KEYEVENTF_KEYUP;
+  inputs[3] = inputs[0];
+  inputs[3].ki.dwFlags = KEYEVENTF_KEYUP;
+  return SendInput(4, inputs, sizeof(INPUT)) == 4
+             ? input_status("shortcut")
+             : R"({"ok":false,"reason":"win32-shortcut-failed","backend":"win32"})";
 }
 
-std::string type_text(const std::string&) {
-  return R"({"ok":false,"reason":"type-not-implemented","backend":"win32"})";
+std::string type_text(const std::string& text) {
+  if (text.empty() || text.size() > 4096)
+    return R"({"ok":false,"reason":"invalid-text","backend":"win32"})";
+  const int length = MultiByteToWideChar(
+      CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), nullptr, 0);
+  if (length <= 0)
+    return R"({"ok":false,"reason":"invalid-utf8-text","backend":"win32"})";
+  std::vector<wchar_t> characters(static_cast<std::size_t>(length));
+  if (MultiByteToWideChar(
+          CP_UTF8,
+          MB_ERR_INVALID_CHARS,
+          text.data(),
+          static_cast<int>(text.size()),
+          characters.data(),
+          length) != length)
+    return R"({"ok":false,"reason":"invalid-utf8-text","backend":"win32"})";
+  std::vector<INPUT> inputs;
+  inputs.reserve(characters.size() * 2);
+  for (const wchar_t character : characters) {
+    INPUT down{};
+    down.type = INPUT_KEYBOARD;
+    down.ki.dwFlags = KEYEVENTF_UNICODE;
+    down.ki.wScan = static_cast<WORD>(character);
+    INPUT up = down;
+    up.ki.dwFlags |= KEYEVENTF_KEYUP;
+    inputs.push_back(down);
+    inputs.push_back(up);
+  }
+  return SendInput(static_cast<UINT>(inputs.size()), inputs.data(), sizeof(INPUT)) ==
+             inputs.size()
+             ? input_status("type")
+             : R"({"ok":false,"reason":"win32-type-failed","backend":"win32"})";
 }
 
 std::string activate_process(int) {

@@ -6,9 +6,10 @@ const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 const { PlayerBridge } = require("../../src/player/player-bridge");
 const {
+  isProcessAlive,
   listDescriptors,
-  readDescriptor,
 } = require("../../src/player/session-descriptor");
+const { absoluteSuppliedMediaPath } = require("./supplied-media");
 
 const root = path.resolve(__dirname, "../..");
 
@@ -26,15 +27,35 @@ async function waitForValue(predicate, timeoutMs, description) {
   throw new Error(`timed out waiting for ${description}`);
 }
 
-async function stopProcess(child) {
-  if (!child || child.exitCode !== null) return;
-  const exited = new Promise((resolve) => child.once("exit", resolve));
+function terminateWindowsProcessTree(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return;
+  spawnSync("taskkill.exe", ["/PID", String(pid), "/T", "/F"], {
+    stdio: "ignore",
+    windowsHide: true,
+  });
+}
+
+async function stopProcess(child, processPid = child?.pid) {
+  if (!child || !processPid || !isProcessAlive(processPid)) return;
+  const exited = new Promise((resolve) => {
+    if (child.exitCode !== null) {
+      resolve();
+      return;
+    }
+    child.once("exit", resolve);
+  });
   child.kill("SIGTERM");
   await Promise.race([exited, delay(4000)]);
-  if (child.exitCode === null) {
-    child.kill("SIGKILL");
-    await Promise.race([exited, delay(1000)]);
+  if (isProcessAlive(processPid)) {
+    if (process.platform === "win32") terminateWindowsProcessTree(processPid);
+    else child.kill("SIGKILL");
+    await Promise.race([exited, delay(4000)]);
   }
+  await waitForValue(
+    () => !isProcessAlive(processPid),
+    5000,
+    "mpv process tree shutdown",
+  );
 }
 
 function firstSubtitleTrack(tracks, id) {
@@ -45,11 +66,13 @@ function firstSubtitleTrack(tracks, id) {
 }
 
 async function main() {
-  const configuredMediaPath =
-    process.env.IINATAN_MEDIA_PATH || process.env.IINATAN_E2E_MEDIA_PATH || "";
+  const configuredMediaPath = absoluteSuppliedMediaPath(
+    "IINATAN_MEDIA_PATH",
+    "IINATAN_E2E_MEDIA_PATH",
+  );
   if (!configuredMediaPath) {
     console.log(
-      "SKIP: set IINATAN_MEDIA_PATH to an existing media file for real-media stock-mpv evidence.",
+      "SKIP: set IINATAN_TEST_MEDIA_PATH or IINATAN_MEDIA_PATH to an existing media file for real-media stock-mpv evidence.",
     );
     return;
   }
@@ -70,7 +93,9 @@ async function main() {
     throw new Error("media start time must be a non-negative number");
 
   const executable = process.env.IINATAN_MPV || "mpv";
-  const version = spawnSync(executable, ["--version"], { encoding: "utf8" });
+  const version = spawnSync(executable, ["--no-config", "--version"], {
+    encoding: "utf8",
+  });
   if (version.error || version.status !== 0)
     throw new Error(
       `stock mpv is unavailable: ${version.error?.message || version.stderr || "unknown error"}`,
@@ -80,7 +105,10 @@ async function main() {
     path.join(os.tmpdir(), "iinatan-mpv-media-smoke-"),
   );
   const sessionDirectory = path.join(temporaryRoot, "sessions");
-  const socketPath = path.join(temporaryRoot, "mpv.sock");
+  const socketPath =
+    process.platform === "win32"
+      ? `\\\\.\\pipe\\iinatan-mpv-media-${process.pid}-${Date.now()}`
+      : path.join(temporaryRoot, "mpv.sock");
   await fs.mkdir(sessionDirectory);
 
   const child = spawn(
@@ -114,19 +142,16 @@ async function main() {
   });
 
   let bridge = null;
+  let processPid = child.pid;
   try {
     await waitForValue(
       async () => (await listDescriptors(sessionDirectory)).length === 1,
       15000,
       "mpv session descriptor",
     );
-    const descriptor = await readDescriptor(
-      path.join(sessionDirectory, `${child.pid}.json`),
-    );
-    if (descriptor.pid !== child.pid)
-      throw new Error(
-        `descriptor PID ${descriptor.pid} does not match mpv PID ${child.pid}`,
-      );
+    const descriptor = (await listDescriptors(sessionDirectory))[0];
+    if (!descriptor) throw new Error("stock mpv media-smoke descriptor disappeared");
+    processPid = descriptor.pid;
 
     bridge = new PlayerBridge(descriptor, { timeoutMs: 5000 });
     await bridge.connect();
@@ -187,7 +212,7 @@ async function main() {
     );
   } finally {
     bridge?.close();
-    await stopProcess(child);
+    await stopProcess(child, processPid);
     await fs.rm(temporaryRoot, { recursive: true, force: true });
   }
 

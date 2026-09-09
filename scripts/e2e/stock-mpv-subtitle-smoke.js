@@ -6,6 +6,7 @@ const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 const { PlayerBridge } = require("../../src/player/player-bridge");
 const {
+  isProcessAlive,
   listDescriptors,
   readDescriptor,
 } = require("../../src/player/session-descriptor");
@@ -13,8 +14,27 @@ const {
 const root = path.resolve(__dirname, "../..");
 const fixtureDirectory = path.join(root, "tests", "fixtures");
 
+function publicDiagnostic(value) {
+  const text = String(value);
+  const escapedRoot = root.replaceAll("\\", "\\\\");
+  const escapedHome = os.homedir().replaceAll("\\", "\\\\");
+  return text
+    .replaceAll(root, "<repo>")
+    .replaceAll(escapedRoot, "<repo>")
+    .replaceAll(os.homedir(), "<home>")
+    .replaceAll(escapedHome, "<home>");
+}
+
 function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function terminateWindowsProcessTree(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return;
+  spawnSync("taskkill.exe", ["/PID", String(pid), "/T", "/F"], {
+    stdio: "ignore",
+    windowsHide: true,
+  });
 }
 
 async function waitFor(predicate, timeoutMs, description) {
@@ -52,14 +72,23 @@ function command(executable, args, description) {
   });
 }
 
-async function stopProcess(child) {
-  if (child.exitCode !== null) return;
+async function stopProcess(child, processPid = child?.pid) {
+  if (!processPid || !isProcessAlive(processPid)) return;
+  const exited = new Promise((resolve) => {
+    if (child.exitCode !== null) {
+      resolve();
+      return;
+    }
+    child.once("exit", resolve);
+  });
   child.kill("SIGTERM");
-  await Promise.race([
-    new Promise((resolve) => child.once("exit", resolve)),
-    delay(4000),
-  ]);
-  if (child.exitCode === null) child.kill("SIGKILL");
+  await Promise.race([exited, delay(4000)]);
+  if (isProcessAlive(processPid)) {
+    if (process.platform === "win32") terminateWindowsProcessTree(processPid);
+    else child.kill("SIGKILL");
+    await Promise.race([exited, delay(4000)]);
+  }
+  await waitFor(() => !isProcessAlive(processPid), 5000, "mpv process tree shutdown");
 }
 
 function firstTrack(tracks, id) {
@@ -73,7 +102,9 @@ function firstTrack(tracks, id) {
 async function main() {
   const executable = process.env.IINATAN_MPV || "mpv";
   const ffmpeg = process.env.IINATAN_FFMPEG || "ffmpeg";
-  const version = spawnSync(executable, ["--version"], { encoding: "utf8" });
+  const version = spawnSync(executable, ["--no-config", "--version"], {
+    encoding: "utf8",
+  });
   if (version.error || version.status !== 0)
     throw new Error(
       `stock mpv is unavailable: ${version.error?.message || version.stderr || "unknown error"}`,
@@ -100,6 +131,7 @@ async function main() {
   let child = null;
   let bridge = null;
   let descriptorPath = null;
+  let processPid = null;
   let stderr = "";
   try {
     await command(
@@ -156,18 +188,19 @@ async function main() {
       stderr += chunk;
     });
 
+    let descriptors = [];
     await waitFor(
-      async () => (await listDescriptors(sessionDirectory)).length === 1,
+      async () => {
+        descriptors = await listDescriptors(sessionDirectory);
+        return descriptors.length === 1;
+      },
       10000,
       "mpv session descriptor",
     );
-    const descriptorFile = `${child.pid}.json`;
-    descriptorPath = path.join(sessionDirectory, descriptorFile);
-    const descriptor = await readDescriptor(descriptorPath);
-    if (descriptor.pid !== child.pid)
-      throw new Error(
-        `descriptor PID ${descriptor.pid} does not match mpv PID ${child.pid}`,
-      );
+    const descriptor = descriptors[0];
+    processPid = descriptor.pid;
+    descriptorPath = path.join(sessionDirectory, `${descriptor.pid}.json`);
+    await readDescriptor(descriptorPath);
 
     bridge = new PlayerBridge(descriptor, { timeoutMs: 3000 });
     await bridge.connect();
@@ -294,70 +327,70 @@ async function main() {
       throw new Error("seek did not expose the later primary subtitle event");
 
     console.log(
-      JSON.stringify(
-        {
-          mpv: version.stdout.split(/\r?\n/)[0],
-          ffmpeg: ffmpegVersion.stdout.split(/\r?\n/)[0],
-          descriptor: {
-            sessionId: descriptor.sessionId,
-            pid: descriptor.pid,
-            ipcEndpoint: descriptor.ipcEndpoint,
-          },
-          tracks: {
-            primary: {
-              id: bridge.property("sid"),
-              title: primaryTrack.title || null,
-              externalFilename: primaryTrack["external-filename"] || null,
+      publicDiagnostic(
+        JSON.stringify(
+          {
+            mpv: version.stdout.split(/\r?\n/)[0],
+            ffmpeg: ffmpegVersion.stdout.split(/\r?\n/)[0],
+            descriptor: {
+              sessionId: descriptor.sessionId,
+              pid: descriptor.pid,
+              ipcEndpoint: descriptor.ipcEndpoint,
             },
-            secondary: {
-              id: bridge.property("secondary-sid"),
-              title: secondaryTrack.title || null,
-              externalFilename: secondaryTrack["external-filename"] || null,
+            tracks: {
+              primary: {
+                id: bridge.property("sid"),
+                title: primaryTrack.title || null,
+                externalFilename: primaryTrack["external-filename"] || null,
+              },
+              secondary: {
+                id: bridge.property("secondary-sid"),
+                title: secondaryTrack.title || null,
+                externalFilename: secondaryTrack["external-filename"] || null,
+              },
             },
+            simultaneous: {
+              primaryText,
+              secondaryText,
+              secondaryTextAvailable: !!secondaryText,
+              secondaryTimingReported,
+              secondaryAssFull: initial.secondary.assFull || null,
+              secondaryPlainText: initial.secondary.plainText,
+              ...initialWindow,
+            },
+            transitions: {
+              secondaryDisabled: secondaryWasDisabled,
+              secondaryRestored: Number(bridge.property("secondary-sid")) === 2,
+              seekText: afterSeek.primary.assFull,
+              seekStartMs: afterSeek.primary.startMs,
+            },
+            timingControls,
+            mode: "headless-stock-mpv-subtitle-property-smoke",
           },
-          simultaneous: {
-            primaryText,
-            secondaryText,
-            secondaryTextAvailable: !!secondaryText,
-            secondaryTimingReported,
-            secondaryAssFull: initial.secondary.assFull || null,
-            secondaryPlainText: initial.secondary.plainText,
-            ...initialWindow,
-          },
-          transitions: {
-            secondaryDisabled: secondaryWasDisabled,
-            secondaryRestored: Number(bridge.property("secondary-sid")) === 2,
-            seekText: afterSeek.primary.assFull,
-            seekStartMs: afterSeek.primary.startMs,
-          },
-          timingControls,
-          mode: "headless-stock-mpv-subtitle-property-smoke",
-        },
-        null,
-        2,
+          null,
+          2,
+        ),
       ),
     );
   } finally {
     bridge?.close();
-    if (child) await stopProcess(child);
-    if (descriptorPath)
-      await waitFor(
-        async () =>
-          !(await fs
-            .access(descriptorPath)
-            .then(() => true)
-            .catch(() => false)),
-        2000,
-        "mpv session descriptor cleanup",
-      );
+    if (child) await stopProcess(child, processPid || child.pid);
+    if (descriptorPath) {
+      // SIGTERM is not guaranteed to run Lua's shutdown callback on Windows.
+      // The process is confirmed dead above, so remove only this test's file.
+      await fs.rm(descriptorPath, { force: true });
+      await fs.rm(`${descriptorPath}.next`, { force: true });
+    }
     await fs.rm(temporaryRoot, { recursive: true, force: true });
   }
 
   if (stderr && /error|fatal/i.test(stderr))
-    console.warn(`mpv emitted diagnostics during subtitle smoke: ${stderr.trim()}`);
+    console.warn(
+      `mpv emitted diagnostics during subtitle smoke: ${publicDiagnostic(stderr.trim())}`,
+    );
 }
 
 main().catch((error) => {
-  console.error(`STOCK MPV SUBTITLE SMOKE FAILED: ${error.message}`);
+  console.error(`STOCK MPV SUBTITLE SMOKE FAILED: ${publicDiagnostic(error.message)}`);
   process.exitCode = 1;
 });

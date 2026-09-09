@@ -9,13 +9,20 @@ const {
   isProcessAlive,
   listDescriptors,
   sameSession,
-  readDescriptor,
 } = require("../../src/player/session-descriptor");
 
 const root = path.resolve(__dirname, "../..");
 
 function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function terminateWindowsProcessTree(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return;
+  spawnSync("taskkill.exe", ["/PID", String(pid), "/T", "/F"], {
+    stdio: "ignore",
+    windowsHide: true,
+  });
 }
 
 async function waitFor(predicate, timeoutMs, description) {
@@ -53,22 +60,33 @@ function spawnSession(executable, sessionDirectory, socketPath, sessionId, title
   child.stderr.on("data", (chunk) => {
     stderr += chunk;
   });
-  return { child, getStderr: () => stderr };
+  return { child, sessionId, processPid: null, getStderr: () => stderr };
 }
 
-async function stopProcess(child) {
-  if (!child || child.exitCode !== null) return;
+async function stopProcess(child, processPid = child?.pid) {
+  if (!child || !processPid || !isProcessAlive(processPid)) return;
+  const exited = new Promise((resolve) => {
+    if (child.exitCode !== null) {
+      resolve();
+      return;
+    }
+    child.once("exit", resolve);
+  });
   child.kill("SIGTERM");
-  await Promise.race([
-    new Promise((resolve) => child.once("exit", resolve)),
-    delay(4000),
-  ]);
-  if (child.exitCode === null) child.kill("SIGKILL");
+  await Promise.race([exited, delay(4000)]);
+  if (isProcessAlive(processPid)) {
+    if (process.platform === "win32") terminateWindowsProcessTree(processPid);
+    else child.kill("SIGKILL");
+    await Promise.race([exited, delay(4000)]);
+  }
+  await waitFor(() => !isProcessAlive(processPid), 5000, "mpv process tree shutdown");
 }
 
 async function main() {
   const executable = process.env.IINATAN_MPV || "mpv";
-  const version = spawnSync(executable, ["--version"], { encoding: "utf8" });
+  const version = spawnSync(executable, ["--no-config", "--version"], {
+    encoding: "utf8",
+  });
   if (version.error || version.status !== 0)
     throw new Error(
       `stock mpv is unavailable: ${version.error?.message || version.stderr || "unknown error"}`,
@@ -131,6 +149,10 @@ async function main() {
     const descriptorBySession = new Map(
       descriptors.map((descriptor) => [descriptor.sessionId, descriptor]),
     );
+    for (const runningSession of running) {
+      runningSession.processPid =
+        descriptorBySession.get(runningSession.sessionId)?.pid || null;
+    }
     for (const session of sessions) {
       const descriptor = descriptorBySession.get(session.id);
       const bridge = bridges.find(
@@ -173,7 +195,8 @@ async function main() {
     );
   } finally {
     for (const bridge of bridges) bridge.close();
-    for (const { child } of running) await stopProcess(child);
+    for (const runningSession of running)
+      await stopProcess(runningSession.child, runningSession.processPid);
     await waitFor(
       async () => (await listDescriptors(sessionDirectory)).length === 0,
       3000,

@@ -27,6 +27,17 @@ const unicodeFixture = path.join(
   "native-ass-geometry-unicode-smoke.ass",
 );
 
+function publicDiagnostic(value) {
+  const text = String(value);
+  const escapedRoot = root.replaceAll("\\", "\\\\");
+  const escapedHome = os.homedir().replaceAll("\\", "\\\\");
+  return text
+    .replaceAll(root, "<repo>")
+    .replaceAll(escapedRoot, "<repo>")
+    .replaceAll(os.homedir(), "<home>")
+    .replaceAll(escapedHome, "<home>");
+}
+
 async function exists(filePath) {
   return fs
     .access(filePath)
@@ -34,15 +45,47 @@ async function exists(filePath) {
     .catch(() => false);
 }
 
+function geometryExecutableCandidates() {
+  const executableName =
+    process.platform === "darwin"
+      ? "iina-hoshi-dicts"
+      : process.platform === "win32"
+        ? "iinatan-native-geometry.exe"
+        : "iinatan-native-geometry";
+  const buildPlatform = process.platform === "win32" ? "windows" : "linux";
+  return [
+    path.join(root, "bin", executableName),
+    path.join(root, "build", "native", executableName),
+    path.join(root, "build", "native", "Release", executableName),
+    path.join(root, "build", `native-geometry-${buildPlatform}-x86_64`, executableName),
+    path.join(
+      root,
+      "build",
+      `native-geometry-${buildPlatform}-x86_64`,
+      "Release",
+      executableName,
+    ),
+    path.join(
+      root,
+      "build",
+      `native-geometry-${buildPlatform}-cmake`,
+      "Release",
+      executableName,
+    ),
+  ];
+}
+
+async function firstExisting(candidates) {
+  for (const candidate of candidates) if (await exists(candidate)) return candidate;
+  return "";
+}
+
 async function main() {
-  const executable = path.resolve(
-    process.env.IINATAN_NATIVE_GEOMETRY ||
-      path.join(
-        root,
-        "bin",
-        process.platform === "win32" ? "iina-hoshi-dicts.exe" : "iina-hoshi-dicts",
-      ),
-  );
+  const configuredExecutable = process.env.IINATAN_NATIVE_GEOMETRY
+    ? path.resolve(process.env.IINATAN_NATIVE_GEOMETRY)
+    : "";
+  const executable =
+    configuredExecutable || (await firstExisting(geometryExecutableCandidates()));
   const required = process.env.IINATAN_NATIVE_GEOMETRY_REQUIRED === "1";
   if (!(await exists(executable))) {
     if (required)
@@ -62,6 +105,12 @@ async function main() {
         timeoutMs: 30000,
       }),
     );
+    const capabilities = await client.negotiate();
+    if (
+      capabilities.assGeometry?.available !== true ||
+      capabilities.assGeometry?.protocol !== 1
+    )
+      throw new Error("native geometry helper did not negotiate ASS geometry");
     const response = await client.measure({
       requestId: "geometry-smoke-1",
       source: { path: fixture, ffIndex: 0, external: true },
@@ -220,25 +269,28 @@ async function main() {
       throw new Error("native geometry unicode mapping was not exact");
 
     console.log(
-      JSON.stringify(
-        {
-          executable,
-          fixture,
-          unitPositions: response.units.map((unit) => unit.position),
-          units: response.units,
-          secondaryStrip: {
-            unitCount: stripUnits.length,
-            source: stripResult.source,
+      publicDiagnostic(
+        JSON.stringify(
+          {
+            executable,
+            fixture,
+            unitPositions: response.units.map((unit) => unit.position),
+            units: response.units,
+            secondaryStrip: {
+              unitCount: stripUnits.length,
+              source: stripResult.source,
+            },
+            unicode: {
+              unitCount: unicodeUnits.length,
+              source: unicodeResult.source,
+            },
+            diagnostics: response.diagnostics || null,
+            capabilities: capabilities.assGeometry,
+            mode: "bundled-native-ass-geometry-smoke",
           },
-          unicode: {
-            unitCount: unicodeUnits.length,
-            source: unicodeResult.source,
-          },
-          diagnostics: response.diagnostics || null,
-          mode: "bundled-native-ass-geometry-smoke",
-        },
-        null,
-        2,
+          null,
+          2,
+        ),
       ),
     );
   } finally {
@@ -247,6 +299,6 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error(`NATIVE GEOMETRY SMOKE FAILED: ${error.message}`);
+  console.error(`NATIVE GEOMETRY SMOKE FAILED: ${publicDiagnostic(error.message)}`);
   process.exitCode = 1;
 });

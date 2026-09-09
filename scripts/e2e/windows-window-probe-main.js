@@ -31,6 +31,19 @@ async function probe(activate = false) {
   return JSON.parse(lines.at(-1) || "{}");
 }
 
+async function disableTransitions(windowId) {
+  const result = await execFileAsync(
+    probePath,
+    ["--window-id", String(windowId), "--disable-transitions"],
+    { timeout: 3000, windowsHide: true, maxBuffer: 1024 * 1024 },
+  );
+  const lines = String(result.stdout || "")
+    .trim()
+    .split(/\r?\n/)
+    .filter(Boolean);
+  return JSON.parse(lines.at(-1) || "{}");
+}
+
 async function waitFor(predicate, label, timeoutMs = 5000) {
   const deadline = Date.now() + timeoutMs;
   let lastError = null;
@@ -108,6 +121,11 @@ async function run() {
       expectedPhysicalSize(window.getContentBounds(), initial.desktopScale),
       "initial client area",
     );
+    const transitions = await disableTransitions(initial.windowId);
+    assert.equal(transitions.ok, true);
+    assert.equal(transitions.backend, "windows");
+    assert.equal(transitions.transitionsDisabled, true);
+    assert.equal(transitions.transitionsVerified, true, JSON.stringify(transitions));
 
     const activation = await probe(true);
     assert.equal(activation.activationRequested, true);
@@ -140,6 +158,7 @@ async function run() {
       ok: true,
       pid: process.pid,
       initial,
+      transitions,
       activation,
       focused,
       resized,
