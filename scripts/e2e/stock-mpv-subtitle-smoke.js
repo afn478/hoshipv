@@ -166,7 +166,7 @@ async function main() {
         "--pause=yes",
         "--keep-open=yes",
         `--input-ipc-server=${socketPath}`,
-        `--script=${path.join(root, "mpv", "iinatan-session.lua")}`,
+        `--script=${path.join(root, "mpv", "iinatan.lua")}`,
         `--sub-file=${primaryPath}`,
         `--sub-file=${secondaryPath}`,
         "--sid=1",

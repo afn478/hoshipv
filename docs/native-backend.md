@@ -121,7 +121,7 @@ or replace mpv's subtitle renderer.
 The plugin is built as a Mach-O module with the `.so` suffix recognized by
 mpv's C-plugin loader. It must be loaded explicitly with `--script=/path/to/`
 `iinatan-mpv-window-shim.so`, or through `IINATAN_NATIVE_SHIM` / the
-`iinatan-native-shim` script option used by `mpv/iinatan-session.lua`. A stock
+`iinatan-native-shim` script option used by `mpv/iinatan.lua`. A stock
 mpv process without the plugin continues through the external CoreGraphics
 window probe and remains content-inexact. The sidecar is authoritative for
 the player content view. The session descriptor publishes PID/session/IPC

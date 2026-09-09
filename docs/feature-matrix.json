@@ -26,7 +26,7 @@
     {
       "id": "stock-mpv-ipc-session",
       "source": "reference mpv bridge",
-      "implementation": "src/player/mpv-ipc.js; src/player/player-bridge.js; mpv/iinatan-session.lua",
+      "implementation": "src/player/mpv-ipc.js; src/player/player-bridge.js; mpv/iinatan.lua",
       "tests": [
         "tests/integration/mpv-ipc.test.js",
         "scripts/e2e/stock-mpv-ipc-smoke.js",
@@ -43,15 +43,16 @@
     {
       "id": "ordinary-mpv-bootstrap",
       "source": "objective ordinary mpv workflow and packaging bootstrap",
-      "implementation": "src/player/mpv-launcher.js; src/player/launch-arguments.js; app/main.js; mpv/iinatan-session.lua",
+      "implementation": "src/player/mpv-launcher.js; src/player/launch-arguments.js; app/main.js; mpv/iinatan.lua",
       "tests": [
         "tests/integration/mpv-launcher.test.js",
         "tests/core.test.js (explicit --open-media argument parsing)",
         "scripts/e2e/mpv-launcher-smoke.js (opt-in real stock-mpv run)",
-        "scripts/e2e/native-autostart-smoke.js (opt-in macOS LaunchServices run)"
+        "scripts/e2e/native-autostart-smoke.js (opt-in macOS LaunchServices run)",
+        "scripts/e2e/windows-plugin-autostart-smoke.js (Windows drop-in bundle run)"
       ],
-      "status": "native-file-picker-and-explicit-path-bootstrap;direct-mpv-session-script-derives-private-ipc-and-descriptor-location;macos-companion-auto-start;no-config-mutation;platform-named-pipe-contract-tested;current-dist-launchservices-selection-and-supplied-live-popup-passed",
-      "nativeDesktopStatus": "macos-arm64-packaged-GUI-menu-file-picker-launch-passed;real-stock-mpv-process-loaded-bundled-session-script-and-private-IPC;real-stock-mpv-launcher-descriptor-and-IPC-smoke-passed;direct-script-default-session-contract-passed;refreshed-signed-package-direct-attach-detach-passed;direct-macos-auto-start-exact-session-attachment-and-default-native-geometry-passed"
+      "status": "native-file-picker-and-explicit-path-bootstrap;direct-mpv-session-script-derives-private-ipc-and-descriptor-location;macos-windows-linux-companion-auto-start-implemented;windows-two-file-drop-in-mpv-plugin-bundle-assembled;no-config-mutation;platform-named-pipe-contract-tested;current-dist-launchservices-selection-and-supplied-live-popup-passed",
+      "nativeDesktopStatus": "macos-arm64-packaged-GUI-menu-file-picker-launch-passed;real-stock-mpv-process-loaded-bundled-session-script-and-private-IPC;real-stock-mpv-launcher-descriptor-and-IPC-smoke-passed;direct-script-default-session-contract-passed;refreshed-signed-package-direct-attach-detach-passed;direct-macos-auto-start-exact-session-attachment-and-default-native-geometry-passed;windows-two-file-plugin-autostart-passed;linux-plugin-autostart-unverified"
     },
     {
       "id": "explicit-session-identity",
@@ -105,8 +106,8 @@
       "source": "objective geometry investigation order",
       "implementation": "src/geometry/subtitle-geometry-provider.js; src/geometry/native-subtitle-geometry-service.js; src/services/native-geometry-client.js; native/portable_geometry_main.cpp; native/portable_geometry_media_demux.cpp; scripts/build-native-geometry.sh; native window probe boundary",
       "tests": ["tests/core.test.js", "scripts/e2e/native-geometry-smoke.js"],
-      "status": "macos-packaged-default-client-integrated;windows-linux-packaged-helper-discovery-and-capability-handshake-integrated;development-explicit-opt-in;macos-helper-bundled;windows-directwrite-helper-built-and-smoked;linux-fontconfig-helper-built-and-smoked;validated-mpv-libass-ffmpeg-tuple-gate;fill-rectangles-hit-geometry-and-additive-visible-envelope-rectangles;supported-mode-bounded-default-strip-simple-external-subrip-explicit-position-explicit-movement-static-tags-karaoke-vector-clipping-advanced-non-drawing-tags-and-transform-oracle-passed;supplied-mkv-japanese-subrip-pixel-oracle-passed;supplied-mkv-ASS-attachment-demux-visible-grapheme-and-word-coverage-passed;Windows-0.17.4-embedded-ASS-profile-font-attachment-and-packaged-native-replay-passed;drawing-only-and-unknown-modes-fail-closed;live-unsupported-renderer-options-fail-closed-and-recovery-smoke-passed;supported-embeddedfonts-toggle-remained-exact;nonmacos-stock-glyph-equivalence-and-full-desktop-media-support-open",
-      "nativeDesktopStatus": "macos-supplied-media-windowed-and-fullscreen-instrumented-native-e2e-passed;windows-helper-and-fixture-smoke-passed;windows-external-subrip-and-embedded-ass-compatibility-profiles-fullscreen-native-e2e-passed;linux-helper-and-fixture-smoke-passed;arbitrary-stock-glyph-equivalence-and-nonmacos-native-media-oracle-open"
+      "status": "macos-packaged-default-client-integrated;windows-linux-packaged-helper-discovery-and-capability-handshake-integrated;development-explicit-opt-in;macos-helper-bundled;windows-directwrite-helper-built-and-smoked;linux-fontconfig-helper-built-and-smoked;validated-mpv-libass-ffmpeg-tuple-gate;fill-rectangles-hit-geometry-and-additive-visible-envelope-rectangles;supported-mode-bounded-default-strip-simple-external-subrip-explicit-position-explicit-movement-static-tags-karaoke-vector-clipping-advanced-non-drawing-tags-and-transform-oracle-passed;supplied-mkv-japanese-subrip-pixel-oracle-passed;supplied-mkv-ASS-attachment-demux-visible-grapheme-and-word-coverage-passed;Windows-0.17.4-embedded-ASS-profile-font-attachment-and-packaged-native-replay-passed;drawing-only-and-unknown-modes-fail-closed;live-unsupported-renderer-options-fail-closed-and-recovery-smoke-passed;supported-embeddedfonts-toggle-remained-exact;stock-glyph-equivalence-and-linux-full-desktop-media-support-open",
+      "nativeDesktopStatus": "macos-supplied-media-windowed-and-fullscreen-instrumented-native-e2e-passed;windows-helper-and-fixture-smoke-passed;windows-external-subrip-and-embedded-ass-compatibility-profiles-fullscreen-native-e2e-passed;linux-helper-and-fixture-smoke-passed;arbitrary-stock-glyph-equivalence-and-linux-native-media-oracle-open"
     },
     {
       "id": "popup-placement-hysteresis",
@@ -173,7 +174,7 @@
         "scripts/e2e/recommended-dictionary-download-smoke.js"
       ],
       "status": "bounded-lookup-cancellation-and-timeouts; macos-arm64-full-backend-bundled; windows-linux-portable-dictionary-worker-built; windows-winmm-controller-capability-and-live-state-smoked; portable-helper-revision-attested-and-smoked; separate-windows-directwrite-and-linux-fontconfig-geometry-workers-built; dictionary-and-geometry-capabilities-negotiated-independently",
-      "nativeDesktopStatus": "macos-windowed-live-hoshi-popup-and-input-tested;real-pgs-live-hoshi-popup-and-input-passed;windows-live-jitendex-japanese-popup-selection-scroll-and-input-tested-with-exact-external-subrip-profile;nonmacos-live-hoshi-dictionary-geometry-exactness-unverified"
+      "nativeDesktopStatus": "macos-windowed-live-hoshi-popup-and-input-tested;real-pgs-live-hoshi-popup-and-input-passed;windows-live-jitendex-japanese-popup-selection-scroll-and-input-tested-with-exact-external-subrip-profile;linux-live-hoshi-dictionary-native-desktop-unverified"
     },
     {
       "id": "six-lookup-languages",
@@ -197,7 +198,7 @@
       "implementation": "app/renderer.js; src/services/content-security.js",
       "tests": ["tests/core.test.js", "scripts/e2e/browser-integration.js"],
       "status": "secure-structured-content-renderer-with-scoped-etymology-grammar-and-non-lemma-presentation;bounded-nested-child-lookup-rendering-tested",
-      "nativeDesktopStatus": "macos-live-structured-popup-native-selection-scroll-and-combined-capture-passed;windows-live-hoshi-popup-selection-scroll-custom-css-audio-and-anki-passed-with-exact-external-subrip-profile;windows-native-nested-result-injection-and-live-hoshi-nested-text-replay-passed-with-exact-external-subrip-profile;nonmacos-full-structured-native-rendering-unverified"
+      "nativeDesktopStatus": "macos-live-structured-popup-native-selection-scroll-and-combined-capture-passed;windows-live-hoshi-popup-selection-scroll-custom-css-audio-and-anki-passed-with-exact-external-subrip-profile;windows-native-nested-result-injection-and-live-hoshi-nested-text-replay-passed-with-exact-external-subrip-profile;linux-full-structured-native-rendering-unverified"
     },
     {
       "id": "browser-document-integration",
@@ -209,7 +210,7 @@
         ".github/workflows/native-release.yml (Linux Xvfb document-integration job)"
       ],
       "status": "real-electron-chromium-document-smoke-with-structured-content-input-events-context-menu-focus-layout-reflow-capability-handshake-nested-lookup-depth-cancellation-escape-request-correlation-request-correlated-audio-and-release-security-contract",
-      "nativeDesktopStatus": "macos-native-live-popup-selection-scroll-focus-dismissal-and-measured-action-clicks-passed;windows-native-live-popup-selection-scroll-focus-dismissal-and-measured-audio-anki-clicks-passed;windows-native-nested-result-injection-and-native-child-dismissal-passed-with-deterministic-demo-dictionary;windows-live-hoshi-nested-text-replay-and-native-child-dismissal-passed;nonmacos-native-desktop-unverified"
+      "nativeDesktopStatus": "macos-native-live-popup-selection-scroll-focus-dismissal-and-measured-action-clicks-passed;windows-native-live-popup-selection-scroll-focus-dismissal-and-measured-audio-anki-clicks-passed;windows-native-nested-result-injection-and-native-child-dismissal-passed-with-deterministic-demo-dictionary;windows-live-hoshi-nested-text-replay-and-native-child-dismissal-passed;linux-native-desktop-unverified"
     },
     {
       "id": "phase-a-performance-and-lifecycle-stress",
@@ -220,7 +221,7 @@
         "tests/integration/application-controller.test.js"
       ],
       "status": "host-microbenchmarks-and-twelve-cycle-attach-detach-stress",
-      "nativeDesktopStatus": "native-harness-status-and-combined-capture-latency-telemetry-added;macos-native-demo-24-cycle-popup-lifecycle-replay-passed;windows-live-feature-parity-memory-sampled-at-481.1MiB-working-set-and-361.0MiB-private;scanout-latency-and-unbounded-compositor-stress-unverified"
+      "nativeDesktopStatus": "native-harness-status-and-combined-capture-latency-telemetry-added;macos-native-demo-24-cycle-popup-lifecycle-replay-passed;windows-live-feature-parity-memory-sampled-with-run-dependent-Windows-counters;current-two-file-plugin-smoke-sampled-at-767.5MiB-working-set-and-284.3MiB-private-across-nine-processes;scanout-latency-and-unbounded-compositor-stress-unverified"
     },
     {
       "id": "directory-package-layout",
@@ -229,10 +230,12 @@
       "tests": [
         "scripts/validate-package.js (platform-aware directory-package validation)",
         "scripts/e2e/windows-installer-smoke.js (NSIS install, installed-resource validation, uninstall, and user-data-scope check)",
+        "scripts/assemble-mpv-plugin.js (Windows/Linux two-file drop-in bundle)",
+        "scripts/e2e/windows-plugin-autostart-smoke.js (Windows automatic script load and parent-config companion launch)",
         "scripts/validate-release.js"
       ],
-      "status": "macos-arm64-directory-package-resource-copy-remove-and-release-security-contract-smoke",
-      "nativeDesktopStatus": "windows-directory-package-resource-copy-remove-and-packaged-runtime-validated;windows-NSIS-install-uninstall-and-installed-resource-validation-passed;Windows-installer-currently-unsigned;signed-windows-installer-and-linux-package-unverified"
+      "status": "macos-arm64-directory-package-resource-copy-remove-and-release-security-contract-smoke;windows-two-file-mpv-plugin-bundle-assembly-smoke",
+      "nativeDesktopStatus": "windows-directory-package-resource-copy-remove-and-packaged-runtime-validated;windows-NSIS-install-uninstall-and-installed-resource-validation-passed;windows-portable-two-file-mpv-plugin-autostart-passed;Windows-installer-currently-unsigned;signed-windows-installer-and-linux-package-unverified"
     },
     {
       "id": "anki-connect",
@@ -245,7 +248,7 @@
         "scripts/e2e/sentence-audio-smoke.js"
       ],
       "status": "host-rendered-cards-duplicates-selected-text-word-media-screenshot-and-bounded-sentence-audio-markers;loopback-mock-ankiconnect-discovery-media-and-note-smoke;anki-media-controller-integration-passed;macos-bundled-ffmpeg-package-tested;cross-platform-codec-acceptance-open",
-      "nativeDesktopStatus": "macos-signed-live-popup-native-action-added-through-loopback-mock;windows-packaged-live-popup-Anki-action-added-through-loopback-mock;real-user-collection-unmodified;nonmacos-native-action-unverified"
+      "nativeDesktopStatus": "macos-signed-live-popup-native-action-added-through-loopback-mock;windows-packaged-live-popup-Anki-action-added-through-loopback-mock;real-user-collection-unmodified;linux-native-action-unverified"
     },
     {
       "id": "audio-sources",
@@ -253,7 +256,7 @@
       "implementation": "src/services/audio-service.js; app/renderer.js; src/player/application-controller.js",
       "tests": ["tests/core.test.js", "scripts/e2e/browser-integration.js"],
       "status": "bounded-resolution-with-source-selection-request-correlation-and-cancellation",
-      "nativeDesktopStatus": "macos-signed-live-popup-native-audio-action-and-five-candidate-resolution-passed;windows-packaged-live-popup-native-audio-action-and-five-candidate-resolution-passed;nonmacos-native-audio-unverified"
+      "nativeDesktopStatus": "macos-signed-live-popup-native-audio-action-and-five-candidate-resolution-passed;windows-packaged-live-popup-native-audio-action-and-five-candidate-resolution-passed;linux-native-audio-unverified"
     },
     {
       "id": "ocr-migration-limit",
@@ -372,11 +375,12 @@
       "implementation": "package.json build metadata; scripts/validate-release.js",
       "tests": [
         "scripts/validate-package.js",
+        "scripts/assemble-mpv-plugin.js",
         "scripts/validate-release.js",
         ".github/workflows/native-release.yml (platform package jobs)"
       ],
-      "status": "macos-arm64-dmg-zip-and-directory-package-tested;Apple-Development-signed;notarization-unavailable-without-notary-credentials;windows-directory-package-resource-copy-remove-and-packaged-runtime-validated;linux-ci-package-job-defined",
-      "nativeDesktopStatus": "macos-installer-artifacts-verified;windows-directory-package-and-packaged-fullscreen-feature-parity-replay-passed;windows-signed-installer-unverified;linux-package-unverified"
+      "status": "macos-arm64-dmg-zip-and-directory-package-tested;Apple-Development-signed;notarization-unavailable-without-notary-credentials;windows-directory-package-resource-copy-remove-and-packaged-runtime-validated;windows-portable-and-two-file-mpv-plugin-bundle-built;linux-ci-package-job-defined",
+      "nativeDesktopStatus": "macos-installer-artifacts-verified;windows-directory-package-and-packaged-fullscreen-feature-parity-replay-passed;windows-two-file-mpv-plugin-autostart-passed;windows-signed-installer-unverified;linux-package-unverified"
     }
   ]
 }

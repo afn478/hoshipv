@@ -1,9 +1,11 @@
 "use strict";
 
 const fs = require("node:fs/promises");
+const crypto = require("node:crypto");
 const path = require("node:path");
 const { normalizeSettingsDocument } = require("./defaults");
 const { readFileBounded } = require("../services/bounded-file");
+const { acquireLock, withLock } = require("../services/storage-layout");
 
 const FORMAT = "iinatan-mp-settings";
 const BACKUP_VERSION = 1;
@@ -41,8 +43,9 @@ async function atomicWriteJson(filePath, value, backupPath) {
   if (!isAbsolutePath(filePath)) throw new Error("settings path must be absolute");
   const directory = path.dirname(filePath);
   await fs.mkdir(directory, { recursive: true, mode: 0o700 });
-  const temporaryPath = `${filePath}.${process.pid}.${Date.now()}.next`;
+  const temporaryPath = `${filePath}.${process.pid}.${crypto.randomUUID()}.next`;
   if (backupPath) {
+    await fs.mkdir(path.dirname(backupPath), { recursive: true, mode: 0o700 });
     try {
       await fs.copyFile(filePath, backupPath);
     } catch (error) {
@@ -52,25 +55,45 @@ async function atomicWriteJson(filePath, value, backupPath) {
   await fs.writeFile(temporaryPath, `${JSON.stringify(value, null, 2)}\n`, {
     mode: 0o600,
   });
-  await fs.rename(temporaryPath, filePath);
+  try {
+    await fs.rename(temporaryPath, filePath);
+  } finally {
+    await fs.rm(temporaryPath, { force: true }).catch(() => {});
+  }
 }
 
 class SettingsStore {
-  constructor(filePath) {
+  constructor(filePath, options = {}) {
     if (!isAbsolutePath(filePath))
       throw new Error("SettingsStore requires an absolute path");
     this.filePath = filePath;
-    this.backupPath = `${filePath}.backup`;
+    this.backupPath = options.backupPath
+      ? String(options.backupPath)
+      : `${filePath}.backup`;
+    if (!isAbsolutePath(this.backupPath))
+      throw new Error("SettingsStore backup path must be absolute");
+    this.lockPath = options.lockPath ? String(options.lockPath) : `${filePath}.lock`;
+    if (!isAbsolutePath(this.lockPath))
+      throw new Error("SettingsStore lock path must be absolute");
+    this.lockOptions = {
+      timeoutMs: options.lockTimeoutMs,
+      staleMs: options.lockStaleMs,
+    };
     this.data = null;
   }
 
   async load() {
-    const primary = await readJson(this.filePath);
-    const backup = primary ? null : await readJson(this.backupPath);
-    this.data = normalizeSettingsDocument(primary || backup || {});
-    if (!primary && backup)
-      await atomicWriteJson(this.filePath, this.data, this.backupPath);
-    return this.data;
+    return withLock(
+      this.lockPath,
+      async () => {
+        const primary = await readJson(this.filePath);
+        const backup = primary ? null : await readJson(this.backupPath);
+        this.data = normalizeSettingsDocument(primary || backup || {});
+        if (!primary) await atomicWriteJson(this.filePath, this.data, this.backupPath);
+        return this.data;
+      },
+      this.lockOptions,
+    );
   }
 
   current() {
@@ -80,18 +103,37 @@ class SettingsStore {
 
   async save(next) {
     const normalized = normalizeSettingsDocument(next || this.data || {});
-    await atomicWriteJson(this.filePath, normalized, this.backupPath);
-    const readBack = normalizeSettingsDocument(await readJson(this.filePath));
-    if (readBack.schemaVersion !== normalized.schemaVersion)
-      throw new Error("settings read-back verification failed");
-    this.data = readBack;
-    return this.data;
+    return withLock(
+      this.lockPath,
+      async () => {
+        await atomicWriteJson(this.filePath, normalized, this.backupPath);
+        const readBack = normalizeSettingsDocument(await readJson(this.filePath));
+        if (readBack.schemaVersion !== normalized.schemaVersion)
+          throw new Error("settings read-back verification failed");
+        this.data = readBack;
+        return this.data;
+      },
+      this.lockOptions,
+    );
   }
 
   async update(mutator) {
-    const next = normalizeSettingsDocument(this.data || {});
-    await mutator(next);
-    return this.save(next);
+    return withLock(
+      this.lockPath,
+      async () => {
+        const primary = await readJson(this.filePath);
+        const backup = primary ? null : await readJson(this.backupPath);
+        const next = normalizeSettingsDocument(primary || backup || this.data || {});
+        await mutator(next);
+        await atomicWriteJson(this.filePath, next, this.backupPath);
+        const readBack = normalizeSettingsDocument(await readJson(this.filePath));
+        if (readBack.schemaVersion !== next.schemaVersion)
+          throw new Error("settings read-back verification failed");
+        this.data = readBack;
+        return this.data;
+      },
+      this.lockOptions,
+    );
   }
 
   async setActiveProfile(id) {
@@ -186,6 +228,7 @@ module.exports = {
   BACKUP_VERSION,
   SettingsStore,
   atomicWriteJson,
+  acquireLock,
   readJson,
   profileId,
 };

@@ -214,6 +214,57 @@ The generated Windows installer currently reports `NotSigned` under
 Authenticode, so this is an installable preview artifact and the production
 Windows signing/SmartScreen gate remains open.
 
+After the renderer bootstrap changes, `npm run package` rebuilt the NSIS and
+ZIP artifacts from the current source. `npm run test:installer:windows` again
+installed the NSIS artifact into an isolated directory, validated its ASAR and
+external resources, removed the application files with the uninstaller, and
+confirmed that the sentinel outside the install directory survived. The
+rebuilt installer remains an unsigned preview (`NotSigned`); its install and
+uninstall behavior passed.
+
+After the branch push, the packaged Windows feature-parity replay was repeated
+against the supplied Japanese SubRip media with the same exact
+`windows-mpv-0.41.0-libass-0.17.4-external-subrip` profile. Live Jitendex
+download/import, fullscreen, native selection and focus traversal, scrolling,
+custom CSS, audio candidates, Anki actions, outside dismissal, pause ownership,
+and mpv liveness passed again. The active packaged companion/helper sample
+peaked at approximately `469.1 MiB` working set and `355.2 MiB` private memory
+across up to seven processes, excluding mpv; the native desktop test drivers
+added approximately `6.6 MiB` working set and `1.2 MiB` private memory.
+
+The freshly rebuilt package was replayed again after the renderer bootstrap
+failure handling and subtitle-owner assertions were added. The fullscreen
+Japanese feature-parity run passed with exact compatibility-profile geometry,
+`1920x1080` fullscreen observation, native semantic-region selection, keyboard
+focus traversal, scrolling to offset `2036`, custom CSS, audio candidates,
+loopback Anki actions, popup capture, Escape/outside dismissal, pause
+ownership, and mpv liveness. Both transparent surfaces reported verified
+transition suppression. The popup capture changed `99.7779%` of its measured
+region. The active companion/helper memory sample was not retained for this
+short replay because the processes had exited before the asynchronous poll;
+the preceding seven-process sample above remains the current memory benchmark.
+
+The renderer bootstrap now reports a bounded `surface-bootstrap-failed`
+diagnostic when a sequential overlay asset cannot load. BrowserHost makes the
+affected surface passive, dismisses an active popup, and the controller
+releases plugin-owned pause. The renderer bootstrap unit, BrowserHost, and
+controller integration checks passed on Windows; the normal popup presentation
+and host integration remain unchanged.
+
+The real Electron browser integration also confirmed that the imported popup
+renderer does not become a second subtitle owner: mpv popup integration applies
+`experimentalNativeSubtitleHitLayer: false` and
+`experimentalNativeSubtitleLookupHighlight: false`, and the popup document has
+no native subtitle host or hit-box layer. The separate highlight surface and
+stock-mpv/native geometry path remain the only subtitle interaction owner.
+
+The Windows `window-scale` transition probe also passed separately in windowed
+mode, changing exact client content from `1280x720` to `960x540` and back while
+refreshing Electron geometry generations and keeping both surfaces
+transitionless. Native fullscreen does not resize the client area in response
+to this stock-mpv property, so `IINATAN_E2E_RESIZE_TRANSITION=1` is a windowed
+runtime-resize check on Windows.
+
 The dedicated Windows nested-popup replay completed on 2026-09-09 with the
 same exact external-SubRip profile and fullscreen stock-mpv window. The
 deterministic cross-reference replay received a depth-one result and captured a
@@ -415,6 +466,35 @@ the uninstaller, and checks that generated user-data outside the application
 directory is preserved. The smoke uses Windows `Start-Process` for the GUI
 installer lifecycle and does not add a runtime dependency to the shipped app.
 
+For the drop-in mpv installation, run:
+
+```sh
+npm run package:plugin:windows
+npm run test:native:plugin-autostart
+```
+
+The first command builds the portable Windows companion and assembles exactly
+two files under `dist/mpv-plugin`: `iinatan.lua` and
+`iinatan-companion.exe`. Copy them into the mpv config root so the Lua script is
+under `%APPDATA%\mpv\scripts` and the companion is directly under
+`%APPDATA%\mpv`. The first launch creates `iinatan/config.json`,
+`dictionaries/`, `backups/`, `cache/`, and `logs/`; no settings or dictionary
+files are shipped in the plugin bundle. The Windows smoke exercises automatic
+script loading with no explicit companion or session environment variables,
+reports the working/private memory of the launched companion process tree, and
+tears down only its own mpv and companion tree. `--load-scripts=no` and the
+script's auto-start option remain explicit opt-outs. The smoke reports the
+active companion process tree's Windows working-set and private-memory totals
+on each run; values are machine and workload dependent, and processes outside
+the test tree are excluded.
+
+The storage-layout tests cover fresh creation under spaces and Unicode,
+non-destructive migration with dictionary path rewrites and conflict reports,
+atomic settings updates from multiple instances, and bounded log rotation.
+Package validation also checks that copying or removing the installed
+application leaves the `iinatan/` data root intact; the Windows NSIS settings
+keep application data during uninstall unless the user explicitly removes it.
+
 The current macOS arm64 package run additionally produced and verified
 `dist/iinatan for mpv-0.1.0-arm64-mac.zip` and
 `dist/iinatan for mpv-0.1.0-arm64.dmg`. `unzip -t`, `hdiutil verify`, and deep
@@ -488,7 +568,7 @@ run of `Open media in mpv…` remains a native desktop workflow check separate
 from the headless launcher contract.
 
 It launches the installed, unmodified mpv with video output disabled, loads
-`mpv/iinatan-session.lua`, verifies the descriptor PID/session/IPC identity,
+`mpv/iinatan.lua`, verifies the descriptor PID/session/IPC identity,
 connects through the real JSON IPC socket, reads bridge properties, and checks
 descriptor cleanup on shutdown. This is headless stock-mpv evidence only; it
 does not prove native window geometry, Electron composition, or OS input.
@@ -514,7 +594,7 @@ platform-specific path-length regression.
 
 A direct-session probe was also run against the same stock mpv without an
 explicit session directory or IPC endpoint. With companion auto-start disabled
-for isolation, `iinatan-session.lua` created the default macOS descriptor and
+for isolation, `iinatan.lua` created the default macOS descriptor and
 Unix socket, published matching PID/IPC identity, and removed both artifacts
 after a graceful JSON-IPC quit. A controlled `open -g -a` probe verified the
 macOS companion auto-start command and default application name; the live
@@ -700,7 +780,7 @@ native window placement or input behavior.
 The packaged macOS arm64 menu path has also been replayed against the real
 desktop surface. The signed app opened the native `Open media in mpv…` file
 picker; selecting a media file started `/opt/homebrew/bin/mpv` without a
-terminal, with the bundled `mpv/iinatan-session.lua`, a private Unix IPC socket,
+terminal, with the bundled `mpv/iinatan.lua`, a private Unix IPC socket,
 and the selected path. The resulting process and descriptor were observed in
 `/tmp/iinatan-menu-launch-E7N18n/packaged-status.json`; the picker and launch
 screen capture are in the same directory. This proves the macOS GUI bootstrap

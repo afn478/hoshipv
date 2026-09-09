@@ -44,7 +44,7 @@ function spawnSession(executable, sessionDirectory, socketPath, sessionId, title
       "--idle=yes",
       "--keep-open=yes",
       `--input-ipc-server=${socketPath}`,
-      `--script=${path.join(root, "mpv", "iinatan-session.lua")}`,
+      `--script=${path.join(root, "mpv", "iinatan.lua")}`,
       `--script-opts=iinatan-session-id=${sessionId}`,
       `--title=${title}`,
     ],

@@ -16,6 +16,7 @@ const required = [
   "app/settings.html",
   "app/settings.css",
   "src/services/bounded-file.js",
+  "src/services/storage-layout.js",
   "docs/architecture-decision-record.md",
   "docs/coordinate-geometry.md",
   "docs/deinflection.md",
@@ -28,7 +29,9 @@ const required = [
   "docs/platform-capability-matrix.md",
   "docs/security.md",
   "docs/validation.md",
-  "mpv/iinatan-session.lua",
+  "docs/iina-popup-parity.md",
+  "docs/iina-popup-parity.json",
+  "mpv/iinatan.lua",
   "native/window_probe.hpp",
   "native/window_probe_main.cpp",
   "native/desktop_test.hpp",
@@ -45,11 +48,15 @@ const required = [
   "native/portable_hoshi_main.cpp",
   "native/portable_geometry_main.cpp",
   "native/portable_geometry_media_demux.cpp",
+  "native/companion_launcher.cpp",
   "native/native-geometry-dependencies.lock.json",
   "native/patches/libass-0.17.4-iinatan-geometry-v2.patch",
   "scripts/build-native-geometry.sh",
   "scripts/prepare-runtime-tools.js",
   "scripts/prepare-native-package.js",
+  "scripts/assemble-mpv-plugin.js",
+  "scripts/build-windows-companion-launcher.js",
+  "scripts/validate-popup-parity.js",
   "scripts/e2e/portable-hoshi-smoke.js",
   "scripts/e2e/anki-connect-smoke.js",
   "scripts/e2e/mpv-launcher-smoke.js",
@@ -62,6 +69,8 @@ const required = [
   "scripts/e2e/windows-window-probe-main.js",
   "scripts/e2e/windows-window-probe-smoke.js",
   "scripts/e2e/windows-installer-smoke.js",
+  "scripts/e2e/windows-plugin-autostart-smoke.js",
+  "tests/storage-layout.test.js",
   "scripts/e2e/stock-mpv-real-media-ass-smoke.js",
   "scripts/e2e/stock-mpv-glyph-equivalence-diagnostic.js",
 ];
@@ -79,6 +88,8 @@ if (packageJson.devDependencies?.electron !== "44.2.0")
   throw new Error("Electron version must remain pinned to the reviewed runtime");
 if (packageJson.devDependencies?.["ffmpeg-static"] !== "5.3.0")
   throw new Error("ffmpeg-static must remain pinned to the reviewed binary package");
+if (packageJson.build?.nsis?.deleteAppDataOnUninstall !== false)
+  throw new Error("NSIS uninstall must preserve application data by default");
 
 function hasExtraResource(platform, source, destination) {
   return (packageJson.build?.[platform]?.extraResources || []).some(

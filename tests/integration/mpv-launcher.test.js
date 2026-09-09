@@ -21,7 +21,7 @@ test("mpv launch plan uses the session script and platform IPC endpoint", () => 
   });
 
   assert.deepEqual(plan.args, [
-    "--script=/Applications/iinatan.app/Contents/Resources/mpv/iinatan-session.lua",
+    "--script=/Applications/iinatan.app/Contents/Resources/mpv/iinatan.lua",
     "--input-ipc-server=/var/folders/test/i-fixture-token.sock",
     "--",
     "/media/episode.mkv",
@@ -52,10 +52,7 @@ test("mpv launcher starts without a shell and cleans only its own artifacts", as
   const sessionDirectory = path.join(root, "sessions");
   const mediaPath = path.join(root, "episode.mkv");
   await fs.mkdir(path.join(resourceRoot, "mpv"), { recursive: true });
-  await fs.writeFile(
-    path.join(resourceRoot, "mpv", "iinatan-session.lua"),
-    "-- fixture\n",
-  );
+  await fs.writeFile(path.join(resourceRoot, "mpv", "iinatan.lua"), "-- fixture\n");
   await fs.writeFile(mediaPath, "fixture\n");
 
   let invocation = null;
@@ -97,10 +94,7 @@ test("mpv launcher rejects non-files before starting a process", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "iinatan-mpv-launcher-"));
   const resourceRoot = path.join(root, "resources");
   await fs.mkdir(path.join(resourceRoot, "mpv"), { recursive: true });
-  await fs.writeFile(
-    path.join(resourceRoot, "mpv", "iinatan-session.lua"),
-    "-- fixture\n",
-  );
+  await fs.writeFile(path.join(resourceRoot, "mpv", "iinatan.lua"), "-- fixture\n");
   try {
     await assert.rejects(
       () =>

@@ -105,7 +105,7 @@ function spawnMpv({
       `--input-conf=${inputConf}`,
       `--input-ipc-server=${socketPath}`,
       `--script-opts=iinatan-session-id=${id},iinatan-session-dir=${sessionDirectory},iinatan-ipc-endpoint=${socketPath}`,
-      `--script=${path.join(root, "mpv", "iinatan-session.lua")}`,
+      `--script=${path.join(root, "mpv", "iinatan.lua")}`,
       "--",
       mediaPath,
     ],

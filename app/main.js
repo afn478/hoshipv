@@ -27,6 +27,14 @@ const { HoshiWorker } = require("../src/services/hoshi-worker");
 const { DictionaryCatalog } = require("../src/services/dictionary-catalog");
 const { SettingsStore } = require("../src/settings/settings-store");
 const {
+  acquireLock,
+  absolutePath: absoluteStoragePath,
+  prepareStorageLayout,
+  requestCompanionCommand,
+  storageLayout,
+  takeCompanionCommands,
+} = require("../src/services/storage-layout");
+const {
   normalizeGlobalSettings,
   normalizePreferences,
 } = require("../src/settings/defaults");
@@ -53,7 +61,6 @@ const {
 } = require("../src/services/diagnostics");
 const { launchMpv } = require("../src/player/mpv-launcher");
 const { requestedMediaPath } = require("../src/player/launch-arguments");
-const { defaultSessionDirectory } = require("../src/player/session-directory");
 const {
   NativeSubtitleGeometryService,
   VALIDATED_PLAYER_CAPABILITY,
@@ -72,14 +79,76 @@ protocol.registerSchemesAsPrivileged([
   },
 ]);
 
+function stripArgumentQuotes(value) {
+  let result = String(value || "").trim();
+  for (let count = 0; count < 2; count += 1) {
+    if (result.startsWith('\\"') && result.endsWith('\\"'))
+      result = result.slice(2, -2);
+    else if (result.startsWith('"') && result.endsWith('"'))
+      result = result.slice(1, -1);
+    else break;
+  }
+  return result;
+}
+
 function argumentValue(name) {
   const prefix = `${name}=`;
-  const argument = process.argv.find((value) => value.startsWith(prefix));
-  return argument ? argument.slice(prefix.length) : "";
+  for (const raw of process.argv) {
+    const argument = stripArgumentQuotes(raw);
+    if (argument.startsWith(prefix))
+      return stripArgumentQuotes(argument.slice(prefix.length));
+  }
+  return "";
 }
 
 function hasArgument(name) {
   return process.argv.includes(name);
+}
+
+function configuredAbsolutePath(argumentName, environmentName, label) {
+  const value = String(
+    argumentValue(argumentName) || process.env[environmentName] || "",
+  ).trim();
+  if (!value) return "";
+  return absoluteStoragePath(value, label);
+}
+
+function configureStoragePaths() {
+  const legacyRoot = app.getPath("userData");
+  const explicitRoot = configuredAbsolutePath(
+    "--iinatan-data-root",
+    "IINATAN_DATA_ROOT",
+    "iinatan data root",
+  );
+  const companionExecutable = String(
+    argumentValue("--iinatan-companion-executable") ||
+      process.env.IINATAN_COMPANION_APP ||
+      "",
+  ).trim();
+  if (
+    companionExecutable &&
+    process.platform !== "darwin" &&
+    !path.isAbsolute(companionExecutable)
+  )
+    throw new Error("iinatan companion executable must be an absolute path");
+  const mpvRoot = configuredAbsolutePath(
+    "--iinatan-mpv-root",
+    "IINATAN_MPV_ROOT",
+    "mpv config root",
+  );
+  const dataRoot = explicitRoot || path.join(legacyRoot, "iinatan");
+  const layout = storageLayout(dataRoot);
+  return Object.freeze({
+    legacyRoot:
+      configuredAbsolutePath(
+        "--iinatan-legacy-data-root",
+        "IINATAN_LEGACY_DATA_ROOT",
+        "legacy data root",
+      ) || legacyRoot,
+    companionExecutable,
+    mpvRoot,
+    layout,
+  });
 }
 
 function demoDictionaryEnabled() {
@@ -253,6 +322,13 @@ function settingsDiagnostics(runtime, controllers) {
       evidenceBoundary:
         "Settings diagnostics do not prove stock-mpv glyph geometry, compositor placement, or native input.",
     },
+    storage: {
+      layout: "mpv-config-root/iinatan-v1",
+      migration: {
+        performed: !!runtime.storage?.migration?.migrated,
+        conflicts: runtime.storage?.migration?.conflicts?.length || 0,
+      },
+    },
     sessions,
   };
 }
@@ -395,6 +471,7 @@ function descriptorFromArguments() {
 
 async function registerAppProtocol() {
   const appRoot = path.join(app.getAppPath(), "app");
+  let lastProtocolError = null;
   await protocol.handle("iinatan", async (request) => {
     const url = new URL(request.url);
     if (
@@ -426,7 +503,17 @@ async function registerAppProtocol() {
     ]);
     if (!allowed.has(relative)) return new Response("Not found", { status: 404 });
     const filePath = path.join(appRoot, relative);
-    const body = await fs.readFile(filePath);
+    let body;
+    try {
+      body = await fs.readFile(filePath);
+      lastProtocolError = null;
+    } catch (error) {
+      lastProtocolError = {
+        relative,
+        code: error?.code || null,
+      };
+      return new Response("Application asset could not be loaded", { status: 500 });
+    }
     const type = relative.endsWith(".html")
       ? "text/html; charset=utf-8"
       : relative.endsWith(".css")
@@ -444,6 +531,14 @@ async function registerAppProtocol() {
       },
     });
   });
+  return {
+    appPath: app.getAppPath(),
+    appRoot,
+    settingsAssetAvailable: fsSync.existsSync(path.join(appRoot, "settings.html")),
+    get lastError() {
+      return lastProtocolError;
+    },
+  };
 }
 
 function resourceRoot() {
@@ -478,13 +573,14 @@ async function createSentenceAudioRuntime() {
   }
 }
 
-async function createDictionaryRuntime() {
-  const settingsStore = new SettingsStore(
-    SettingsStore.defaultPath(app.getPath("userData")),
-  );
+async function createDictionaryRuntime(storage) {
+  const settingsStore = new SettingsStore(storage.layout.configPath, {
+    backupPath: path.join(storage.layout.backups, "config.json"),
+    lockPath: path.join(storage.layout.root, "config.lock"),
+  });
   const catalog = new DictionaryCatalog({
     settingsStore,
-    installRoot: path.join(app.getPath("userData"), "dictionaries"),
+    installRoot: storage.layout.dictionaries,
   });
   await catalog.load();
   const document = settingsStore.current();
@@ -519,7 +615,7 @@ async function createDictionaryRuntime() {
       await fs.access(executable);
       worker = new HoshiWorker({
         executable,
-        root: path.join(app.getPath("userData"), "hoshi-worker"),
+        root: storage.layout.worker,
         timeoutMs: preferences.backendTimeoutMs,
         pollMs: preferences.directIpcPollMs,
         sleepMs: preferences.workerIdleSleepMs,
@@ -565,13 +661,14 @@ async function createDictionaryRuntime() {
     worker,
     anki,
     preferences,
+    storage,
     lastControllerState: null,
   };
   runtime.dictionaryFingerprint = runtimeDictionaryFingerprint(runtime);
   return runtime;
 }
 
-async function createNativeGeometryRuntime(geometryProvider) {
+async function createNativeGeometryRuntime(geometryProvider, storage) {
   const explicitExecutable =
     argumentValue("--native-geometry-executable") ||
     String(process.env.IINATAN_NATIVE_GEOMETRY || "").trim();
@@ -662,8 +759,11 @@ async function createNativeGeometryRuntime(geometryProvider) {
   const uniqueCandidates = [...new Set(candidates)];
   if (!uniqueCandidates.length) return null;
   const root =
-    argumentValue("--native-geometry-root") ||
-    path.join(app.getPath("userData"), "native-geometry");
+    configuredAbsolutePath(
+      "--native-geometry-root",
+      "IINATAN_NATIVE_GEOMETRY_ROOT",
+      "native geometry root",
+    ) || storage.layout.nativeGeometry;
   const profiles = [];
   for (const executable of uniqueCandidates) {
     try {
@@ -722,7 +822,7 @@ async function createNativeGeometryRuntime(geometryProvider) {
   return new NativeSubtitleGeometryService({ profiles, geometryProvider });
 }
 
-async function createBitmapOcrRuntime(preferences) {
+async function createBitmapOcrRuntime(preferences, storage) {
   if (process.platform !== "darwin") return null;
   const executable =
     argumentValue("--bitmap-ocr-executable") ||
@@ -732,7 +832,7 @@ async function createBitmapOcrRuntime(preferences) {
     await fs.access(executable);
     const worker = new NativeBitmapOcrWorker({
       executable,
-      root: path.join(app.getPath("userData"), "bitmap-ocr"),
+      root: storage.layout.bitmapOcr,
       timeoutMs: preferences?.backendTimeoutMs,
     });
     return new NativeBitmapOcrClient(worker);
@@ -745,18 +845,55 @@ async function createBitmapOcrRuntime(preferences) {
 async function main() {
   app.setName("iinatan for mpv");
   if (process.env.IINATAN_E2E_DISABLE_GPU === "1") app.disableHardwareAcceleration();
-  if (!app.requestSingleInstanceLock()) {
+  const storage = configureStoragePaths();
+  const companionMode = !!(storage.mpvRoot || storage.companionExecutable);
+  let releaseCompanionLock = null;
+  if (companionMode) {
+    try {
+      releaseCompanionLock = await acquireLock(
+        path.join(storage.layout.root, "companion.lock"),
+        { timeoutMs: 250 },
+      );
+    } catch (error) {
+      if (error.message === "timed out waiting for the storage file lock") {
+        if (hasArgument("--settings")) {
+          await requestCompanionCommand(storage.layout, "open-settings");
+          process.exit(0);
+          return;
+        }
+        process.exit(0);
+        return;
+      }
+      throw error;
+    }
+  } else if (!app.requestSingleInstanceLock()) {
     app.quit();
     return;
   }
+  if (releaseCompanionLock) app.once("will-quit", () => void releaseCompanionLock());
   if (process.platform === "darwin" && app.dock) app.dock.hide();
   await app.whenReady();
-  await registerAppProtocol();
+  const preparedStorage = await prepareStorageLayout(storage.layout.root, {
+    legacyRoot: storage.legacyRoot,
+  });
+  const activeStorage = Object.freeze({
+    ...storage,
+    layout: preparedStorage.layout,
+    migration: preparedStorage.migration,
+  });
+  app.setPath("userData", activeStorage.layout.root);
+  app.setPath("sessionData", activeStorage.layout.cache);
+  if (typeof app.setAppLogsPath === "function")
+    app.setAppLogsPath(activeStorage.layout.logs);
+  const protocolDiagnostics = await registerAppProtocol();
 
-  const runtime = await createDictionaryRuntime();
+  const runtime = await createDictionaryRuntime(activeStorage);
   const geometryProvider = new SubtitleGeometryProvider();
-  const nativeGeometry = await createNativeGeometryRuntime(geometryProvider);
-  const bitmapOcr = await createBitmapOcrRuntime(runtime.preferences);
+  const nativeGeometry = await createNativeGeometryRuntime(
+    geometryProvider,
+    activeStorage,
+  );
+  const bitmapOcr = await createBitmapOcrRuntime(runtime.preferences, activeStorage);
   runtime.nativeGeometry = nativeGeometry;
   runtime.bitmapOcr = bitmapOcr;
   const sentenceAudio = await createSentenceAudioRuntime();
@@ -765,9 +902,11 @@ async function main() {
   };
   runtime.controllerOverrides = controllerOverrides;
   const runtimeDir =
-    argumentValue("--runtime-dir") ||
-    process.env.IINATAN_SESSION_DIR ||
-    defaultSessionDirectory();
+    configuredAbsolutePath(
+      "--runtime-dir",
+      "IINATAN_SESSION_DIR",
+      "session directory",
+    ) || activeStorage.layout.sessions;
   const controllers = new Map();
   const syncControllerSource = () => {
     const source = runtime.worker?.nativeControllerAvailable
@@ -789,6 +928,8 @@ async function main() {
   let e2eStatusTimer = null;
   let settingsControlRegions = null;
   let settingsDialog = null;
+  let settingsError = null;
+  let settingsLoadDiagnostic = null;
 
   function windowStatus(window, visibleOverride) {
     if (!window || window.isDestroyed()) return null;
@@ -843,6 +984,12 @@ async function main() {
       settingsWindow: windowStatus(settingsWindow),
       settingsControlRegions,
       settingsDialog,
+      settingsError,
+      settingsLoadDiagnostic,
+      protocol: {
+        settingsAssetAvailable: protocolDiagnostics.settingsAssetAvailable,
+        lastError: protocolDiagnostics.lastError,
+      },
       settings: {
         activeProfileId: runtime.settingsStore.current().activeProfileId,
         profiles: Object.values(runtime.settingsStore.current().profiles).map(
@@ -892,6 +1039,7 @@ async function main() {
         browserScale: controller.snapshot?.browserScale ?? null,
         source: controller.snapshot?.source || null,
         nativeGeometryError: controller.nativeGeometryError || null,
+        surfaceBootstrapError: controller.surfaceBootstrapError || null,
         tracks: controller.snapshot?.tracks || null,
         popupVisible: !!controller.browserHost?.popupVisible,
         popupMeasuredSize: controller.popupMeasuredSize || null,
@@ -1051,6 +1199,10 @@ async function main() {
     controller.on("geometry", () => publishE2EStatus("geometry"));
     controller.on("window-unavailable", () => publishE2EStatus("window-unavailable"));
     controller.on("surface-ready", () => publishE2EStatus("surface-ready"));
+    controller.on("surface-bootstrap-error", (diagnostic) => {
+      console.error("[iinatan] overlay bootstrap failed", JSON.stringify(diagnostic));
+      publishE2EStatus("surface-bootstrap-error");
+    });
     controller.on("popup-size", () => publishE2EStatus("popup-size"));
     controller.on("popup-region", () => publishE2EStatus("popup-region"));
     controller.on("popup-style", () => publishE2EStatus("popup-style"));
@@ -1104,6 +1256,8 @@ async function main() {
 
   let settingsWindow = null;
   let tray = null;
+  let companionCommandTimer = null;
+  let companionCommandPoll = null;
   const launchedMpv = new Set();
 
   async function refreshSettingsControlRegions() {
@@ -1214,7 +1368,12 @@ async function main() {
 
   async function openSettings() {
     if (settingsWindow && !settingsWindow.isDestroyed()) {
-      settingsWindow.show();
+      if (
+        process.platform === "win32" &&
+        typeof settingsWindow.showInactive === "function"
+      )
+        settingsWindow.showInactive();
+      else settingsWindow.show();
       settingsWindow.focus();
       if (process.platform === "darwin") app.focus?.({ steal: true });
       return;
@@ -1239,20 +1398,78 @@ async function main() {
     settingsWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
     settingsWindow.webContents.on("will-navigate", (event) => event.preventDefault());
     settingsWindow.webContents.on("will-redirect", (event) => event.preventDefault());
+    settingsWindow.webContents.on(
+      "did-fail-load",
+      (_event, errorCode, errorDescription, _validatedURL, isMainFrame) => {
+        settingsLoadDiagnostic = {
+          event: "did-fail-load",
+          errorCode,
+          errorDescription,
+          isMainFrame: isMainFrame === true,
+        };
+        publishE2EStatus("settings-load-failed");
+      },
+    );
+    settingsWindow.webContents.on("render-process-gone", (_event, details) => {
+      settingsLoadDiagnostic = {
+        event: "render-process-gone",
+        reason: details?.reason || null,
+        exitCode: Number.isInteger(details?.exitCode) ? details.exitCode : null,
+      };
+      publishE2EStatus("settings-renderer-gone");
+    });
     settingsWindow.on("closed", () => {
       settingsWindow = null;
       settingsControlRegions = null;
       if (process.env.IINATAN_E2E_AUTOSTART_HIDE_AFTER_SETTINGS === "1") app.hide?.();
     });
     try {
-      await settingsWindow.loadURL("iinatan://app/settings.html");
-      settingsWindow.show();
+      settingsLoadDiagnostic = null;
+      await settingsWindow.loadFile(
+        path.join(app.getAppPath(), "app", "settings.html"),
+      );
+      if (
+        process.platform === "win32" &&
+        typeof settingsWindow.showInactive === "function"
+      )
+        settingsWindow.showInactive();
+      else settingsWindow.show();
       settingsWindow.focus();
       if (process.platform === "darwin") app.focus?.({ steal: true });
       await refreshSettingsControlRegions();
+      await publishE2EStatus("settings-open");
     } catch (error) {
+      if (!settingsLoadDiagnostic)
+        settingsLoadDiagnostic = {
+          event: "load-rejected",
+          errorCode: null,
+          errorDescription: String(error?.message || error),
+          isMainFrame: true,
+        };
       settingsWindow.close();
       throw error;
+    }
+  }
+
+  async function pollCompanionCommands() {
+    if (!companionMode || companionCommandPoll) return companionCommandPoll;
+    companionCommandPoll = (async () => {
+      const commands = await takeCompanionCommands(activeStorage.layout);
+      if (commands.some((command) => command.command === "open-settings")) {
+        try {
+          settingsError = null;
+          await openSettings();
+        } catch (error) {
+          settingsError = String(error?.message || error);
+          await publishE2EStatus("settings-error");
+          console.error("[iinatan] settings", error);
+        }
+      }
+    })();
+    try {
+      await companionCommandPoll;
+    } finally {
+      companionCommandPoll = null;
     }
   }
 
@@ -1480,6 +1697,14 @@ async function main() {
       ]),
     );
   }
+  if (companionMode) {
+    await pollCompanionCommands();
+    companionCommandTimer = setInterval(() => {
+      pollCompanionCommands().catch((error) =>
+        console.warn("[iinatan] companion command failed", error.message),
+      );
+    }, 250);
+  }
   const startupMediaPath = requestedMediaPath();
   if (startupMediaPath)
     openMediaInMpv(startupMediaPath).catch((error) =>
@@ -1601,6 +1826,7 @@ async function main() {
   app.on("before-quit", () => {
     clearInterval(discoveryTimer);
     clearInterval(e2eStatusTimer);
+    clearInterval(companionCommandTimer);
     for (const controller of controllers.values())
       controller.detach("shutdown").catch(() => {});
     runtime.worker?.stop().catch(() => {});

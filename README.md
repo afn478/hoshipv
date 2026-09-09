@@ -31,7 +31,8 @@ Read `docs/architecture-decision-record.md`, `docs/coordinate-geometry.md`,
 `docs/input-state-machine.md`, `docs/native-geometry.md`,
 `docs/platform-capability-matrix.md`, `docs/deinflection.md`,
 `docs/mpv-compatibility.md`, `docs/feature-matrix.json`,
-`docs/settings-migration.md`, `docs/security.md`, and `docs/validation.md`
+`docs/settings-migration.md`, `docs/iina-popup-parity.md`, `docs/security.md`,
+and `docs/validation.md`
 before treating a test as support evidence.
 
 “x86” means x86-64 / AMD64, not 32-bit IA-32. Declared targets are macOS arm64,
@@ -205,11 +206,67 @@ and dictionaries. On macOS it also checks the bundled full HoshiDicts helper
 and source archive; Windows/Linux package validation checks both the portable
 dictionary and instrumented geometry helpers. It does not claim
 signed-installer, notarization, or native GUI evidence.
-On Windows, `npm run package` also creates the NSIS installer and ZIP artifact;
-`npm run test:installer:windows` installs the NSIS artifact, validates the
-installed resources, and exercises uninstallation without removing the
-generated user-data sentinel. The current Windows artifact is an unsigned
-installable preview until production code-signing credentials are available.
+On Windows, `npm run package` also creates the NSIS installer, ZIP artifact, and
+portable executable. `npm run test:installer:windows` installs the NSIS artifact,
+validates the installed resources, and exercises uninstallation without
+removing the generated user-data sentinel. The current Windows artifact is an
+unsigned installable preview until production code-signing credentials are
+available.
+
+The user-facing mpv integration is the drop-in plugin bundle. Run
+`npm run package:plugin:windows` to assemble `dist/mpv-plugin` with exactly
+`iinatan.lua` and `iinatan-companion.exe`. Install them into the mpv config root
+as follows:
+
+```text
+%APPDATA%\mpv\
+├── iinatan-companion.exe
+├── scripts\
+│   └── iinatan.lua
+├── script-opts\
+│   └── iinatan.conf          (optional bootstrap overrides)
+└── iinatan\                  (created on first use)
+    ├── config.json
+    ├── dictionaries\
+    ├── backups\
+    ├── cache\
+    └── logs\
+```
+
+The Linux bundle uses the same layout under `~/.config/mpv`, with the companion
+named `iinatan-companion`. mpv loads the Lua script automatically and the script
+starts the adjacent companion when mpv starts. The executable stays outside
+`scripts` because mpv attempts to load every file in that directory as a
+script. No NSIS installation or separate companion launch is required. The
+portable executable keeps Electron's runtime and the native helpers inside its
+own payload, so the mpv configuration directory does not need a collection of
+DLLs. `--load-scripts=no`,
+`IINATAN_AUTO_START_COMPANION=0`, or
+`--script-opts=iinatan-auto-start=no` disables this automatic bootstrap.
+The companion creates the data directories on first use. `config.json` and the
+dictionary tree are persistent application data; `cache` and `logs` are bounded
+runtime storage, and ordinary backups exclude both. Updating the two installed
+files does not alter `iinatan/`, and uninstalling the desktop package leaves
+that data directory in place.
+
+`script-opts/iinatan.conf` is optional and contains bootstrap values only. The
+settings UI owns application settings and writes `iinatan/config.json`; do not
+duplicate those settings in the bootstrap file. For example:
+
+```ini
+companion-app=/absolute/path/to/iinatan-companion
+data-root=/absolute/path/to/iinatan
+auto-start-companion=yes
+```
+
+The script resolves the normal data root from mpv's `~~home/` value and passes
+absolute executable, mpv-root, data-root, and session paths to the companion.
+With `--no-config`, supply explicit absolute `iinatan-data-root` and
+`iinatan-companion` script options or the script fails with a bootstrap error;
+it never writes relative paths.
+
+On Linux, run `npm run package:plugin:linux` on the Linux build host to assemble
+the same two-file bundle.
 `test:e2e` is the stricter combined desktop harness; run it with
 `IINATAN_E2E=1` after `npm run build:native` in an isolated graphical session.
 The signed macOS path and the packaged Windows/Linux helpers can report
@@ -495,21 +552,31 @@ The packaged macOS companion selects the same bounded backend by default. Use
 `--disable-patched-native-geometry` or
 `IINATAN_DISABLE_NATIVE_GEOMETRY=1` for a diagnostic run without it.
 
-The ordinary attachment path uses the bundled `mpv/iinatan-session.lua`. On
+The ordinary attachment path uses the bundled `mpv/iinatan.lua`. On
 macOS, the packaged companion uses the bounded native geometry backend by
 default; the backend is still only considered exact when the content shim,
 validated player tuple, and response validation all succeed.
 Explicit `--input-ipc-server` and `IINATAN_SESSION_DIR` values remain useful
-for test harnesses and application-owned launches, but a direct macOS launch
-with only `--script=/absolute/path/to/iinatan-session.lua` now gets a private
-IPC endpoint and descriptor directory automatically. The script starts the
-installed `iinatan for mpv` companion as a menu-bar app when needed; set
+for test harnesses and application-owned launches. A direct launch with only
+`--script=/absolute/path/to/iinatan.lua` gets a private IPC endpoint
+and descriptor directory automatically. On Windows and Linux, the script
+starts the exact companion filename beside mpv's `~~home/` config root;
+`IINATAN_COMPANION_APP` or the `companion-app` bootstrap option selects an
+explicit absolute executable instead. Set
 `IINATAN_AUTO_START_COMPANION=0` or
-`--script-opts=iinatan-session-auto-start=no` to disable that bootstrap, and
-use `IINATAN_COMPANION_APP` when the installed application has a different
-name. The companion matches session id, PID, and IPC endpoint; native window
-attachment additionally verifies the real PID/window identity and uses a
-descriptor window id when mpv has published a usable platform-native value.
+`--script-opts=iinatan-auto-start=no` to disable that bootstrap. The
+companion matches session id, PID, and IPC endpoint; native window attachment
+additionally verifies the real PID/window identity and uses a descriptor window
+id when mpv has published a usable platform-native value.
+
+For ordinary mpv launches, copy the bundled session script into the per-user
+mpv script directory: `%APPDATA%\mpv\scripts` on Windows,
+`~/.config/mpv/scripts` on Linux, or
+`~/Library/Application Support/mpv/scripts` on macOS. On Windows and Linux,
+place the matching companion beside the script directory, as shown in the
+installation tree above. mpv auto-loads scripts from those directories, so
+launching mpv is enough to publish the session and start the private companion.
+`--load-scripts=no` disables this mpv behavior.
 On macOS, mpv's documented `window-id` may not be the CoreGraphics window
 number, so the PID-scoped probe establishes the authoritative window identity.
 Window titles are not identity.
@@ -548,7 +615,11 @@ isolated controller and browser-surface pair; settings and optional services
 are shared without sharing session identity or popup state.
 
 Open the profile/settings window from the native application menu or with
-`--settings`. It provides profile switching, the migrated preference inventory,
+`--settings`. In the Windows two-file mpv installation, use the companion
+executable with the explicit `%APPDATA%\mpv`-relative paths shown in
+`docs/mpv-compatibility.md`; an already-running companion receives the request
+and opens its existing settings window. `Ctrl+,` works while an iinatan window
+has focus. The window provides profile switching, the migrated preference inventory,
 popup/audio customization, AnkiConnect setup, host-controlled dictionary
 import/removal, bounded recommended dictionary downloads/updates, and a
 read-only Diagnostics card for platform/backend capability and current-session

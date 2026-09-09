@@ -225,8 +225,9 @@ async function main() {
   const executable = process.env.IINATAN_MPV || "mpv";
   const mediaStat = await fs.stat(mediaPath);
   assert.equal(mediaStat.isFile(), true, `media path is not a file: ${mediaPath}`);
-  const sessionDirectory = defaultSessionDirectory();
-  const scriptPath = path.join(root, "mpv", "iinatan-session.lua");
+  const dataRoot = await fs.mkdtemp(path.join(os.tmpdir(), "iinatan-autostart-data-"));
+  const sessionDirectory = defaultSessionDirectory({ dataRoot });
+  const scriptPath = path.join(root, "mpv", "iinatan.lua");
   await fs.access(scriptPath);
   const beforeDescriptors = new Set(
     (await listDescriptors(sessionDirectory)).map((value) => `${value.pid}.json`),
@@ -242,7 +243,13 @@ async function main() {
   if (process.env.IINATAN_E2E_AUTOSTART_COMPANION_APP)
     environment.IINATAN_COMPANION_APP = process.env.IINATAN_E2E_AUTOSTART_COMPANION_APP;
   const companionApplication =
-    process.env.IINATAN_E2E_AUTOSTART_COMPANION_APP || "iinatan for mpv";
+    process.env.IINATAN_E2E_AUTOSTART_COMPANION_APP ||
+    path.join(EXPECTED_COMPANION_ROOT, "iinatan for mpv.app");
+  assert.equal(
+    path.isAbsolute(companionApplication),
+    true,
+    "no-config autostart requires an absolute companion path",
+  );
   const nativeGeometryRequired =
     process.env.IINATAN_E2E_AUTOSTART_NATIVE_GEOMETRY_REQUIRED === "1" ||
     process.env.IINATAN_E2E_AUTOSTART_NATIVE_GEOMETRY_DEFAULT_REQUIRED === "1" ||
@@ -278,6 +285,8 @@ async function main() {
     "--force-window=yes",
     "--keep-open=no",
     `--script=${scriptPath}`,
+    `--script-opts=iinatan-data-root=${dataRoot}`,
+    `--script-opts=iinatan-companion=${companionApplication}`,
     ...(nativeGeometryRequired ? ["--start=19"] : []),
     "--",
     mediaPath,
@@ -881,6 +890,7 @@ async function main() {
     }
     await fs.rm(e2eStatusPath, { force: true });
     if (userDataPath) await fs.rm(userDataPath, { recursive: true, force: true });
+    await fs.rm(dataRoot, { recursive: true, force: true });
     const afterDescriptors = new Set(
       (await listDescriptors(sessionDirectory)).map((value) => `${value.pid}.json`),
     );

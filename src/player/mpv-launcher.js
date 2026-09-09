@@ -54,7 +54,7 @@ function createMpvLaunchPlan(options = {}) {
     options.executable || (platform === "win32" ? "mpv.exe" : "mpv"),
   );
   if (!executable) throw new Error("mpv executable is required");
-  const sessionScript = pathModule.join(resourceRoot, "mpv", "iinatan-session.lua");
+  const sessionScript = pathModule.join(resourceRoot, "mpv", "iinatan.lua");
   const nativeShimPath = options.nativeShimPath
     ? absolutePath(options.nativeShimPath, "native shim path", pathModule)
     : null;

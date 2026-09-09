@@ -19,6 +19,7 @@
     "test:settings:native": "node scripts/e2e/settings-native-window-smoke.js",
     "test:native:x11": "node scripts/e2e/x11-window-probe-smoke.js",
     "test:native:windows": "node scripts/e2e/windows-window-probe-smoke.js",
+    "test:native:plugin-autostart": "node scripts/e2e/windows-plugin-autostart-smoke.js",
     "test:installer:windows": "node scripts/e2e/windows-installer-smoke.js",
     "test:native:selection": "node scripts/e2e/native-selection-smoke.js",
     "test:native:controller": "node scripts/e2e/native-controller-smoke.js",
@@ -29,6 +30,7 @@
     "test:native:languages:live": "node scripts/e2e/native-language-matrix.js --live",
     "benchmark:phase-a": "node scripts/benchmarks/phase-a-performance.js",
     "validate:package": "node scripts/validate-package.js",
+    "validate:popup-parity": "node scripts/validate-popup-parity.js",
     "test:e2e": "node scripts/e2e/desktop-vertical-slice.js",
     "test:mpv": "node scripts/e2e/stock-mpv-ipc-smoke.js",
     "test:mpv:commands": "node scripts/e2e/stock-mpv-command-smoke.js",
@@ -57,6 +59,8 @@
     "prepare:runtime-tools": "node scripts/prepare-runtime-tools.js",
     "prepare:native-package": "node scripts/prepare-native-package.js",
     "package:dir": "npm run prepare:runtime-tools && npm run prepare:native-package && electron-builder --dir",
+    "package:plugin:windows": "npm run prepare:runtime-tools && npm run prepare:native-package && electron-builder --win portable && node scripts/assemble-mpv-plugin.js",
+    "package:plugin:linux": "npm run prepare:runtime-tools && npm run prepare:native-package && electron-builder --linux AppImage && node scripts/assemble-mpv-plugin.js",
     "package": "npm run prepare:runtime-tools && npm run prepare:native-package && electron-builder",
     "validate:release": "node scripts/validate-release.js"
   },
@@ -107,15 +111,16 @@
           "to": "vendor/iina-hoshi-dicts-native-source.tar.gz"
         },
         {
-          "from": "mpv/iinatan-session.lua",
-          "to": "mpv/iinatan-session.lua"
+          "from": "mpv/iinatan.lua",
+          "to": "mpv/iinatan.lua"
         }
       ]
     },
     "win": {
       "target": [
         "nsis",
-        "zip"
+        "zip",
+        "portable"
       ],
       "extraResources": [
         {
@@ -143,10 +148,13 @@
           "to": "vendor/iina-hoshi-dicts-native-source.tar.gz"
         },
         {
-          "from": "mpv/iinatan-session.lua",
-          "to": "mpv/iinatan-session.lua"
+          "from": "mpv/iinatan.lua",
+          "to": "mpv/iinatan.lua"
         }
       ]
+    },
+    "nsis": {
+      "deleteAppDataOnUninstall": false
     },
     "linux": {
       "target": [
@@ -176,8 +184,8 @@
           "to": "vendor/iina-hoshi-dicts-native-source.tar.gz"
         },
         {
-          "from": "mpv/iinatan-session.lua",
-          "to": "mpv/iinatan-session.lua"
+          "from": "mpv/iinatan.lua",
+          "to": "mpv/iinatan.lua"
         }
       ]
     }

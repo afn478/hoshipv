@@ -1,2 +1,13 @@
+* text=auto
+*.js text eol=lf
+*.json text eol=lf
+*.lua text eol=lf
+*.md text eol=lf
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.exe binary
+*.dll binary
+
 scripts/iinatan.js linguist-generated=true
 assets/fonts/*.otf binary

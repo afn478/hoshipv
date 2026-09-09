@@ -82,7 +82,7 @@ async function main() {
       "--idle=yes",
       "--keep-open=yes",
       `--input-ipc-server=${socketPath}`,
-      `--script=${path.join(root, "mpv", "iinatan-session.lua")}`,
+      `--script=${path.join(root, "mpv", "iinatan.lua")}`,
       "--title=iinatan-mpv-ipc-smoke",
     ],
     {

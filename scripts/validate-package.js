@@ -7,6 +7,11 @@ const fs = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
 const { listPackage } = require("@electron/asar");
+const {
+  ensureStorageLayout,
+  storageLayout,
+} = require("../src/services/storage-layout");
+const packageJson = require("../package.json");
 
 const root = path.resolve(__dirname, "..");
 const productName = "iinatan for mpv";
@@ -19,6 +24,12 @@ const LIBASS_VERSION = "0.17.5";
 const FFMPEG_VERSION = "9.0.1";
 const LIBASS_PATCH = "libass-0.17.5-iinatan-unit-ids-v2";
 const GEOMETRY_ARCHITECTURE = "x86-64";
+
+assert.equal(
+  packageJson.build?.nsis?.deleteAppDataOnUninstall,
+  false,
+  "NSIS uninstall must preserve application data by default",
+);
 
 function displayPath(filePath) {
   return path.relative(root, filePath) || ".";
@@ -68,7 +79,7 @@ function packageLayout(platform) {
             path.join(resources, "vendor", "iina-hoshi-dicts-native-source.tar.gz"),
             "corresponding source archive",
           ],
-          [path.join(resources, "mpv", "iinatan-session.lua"), "mpv session script"],
+          [path.join(resources, "mpv", "iinatan.lua"), "mpv session script"],
         ]
       : [
           [
@@ -116,7 +127,7 @@ function packageLayout(platform) {
             path.join(resources, "vendor", "iina-hoshi-dicts-native-source.tar.gz"),
             "portable HoshiDicts source archive",
           ],
-          [path.join(resources, "mpv", "iinatan-session.lua"), "mpv session script"],
+          [path.join(resources, "mpv", "iinatan.lua"), "mpv session script"],
         ];
   return {
     appPath,
@@ -305,6 +316,8 @@ async function main() {
     "/src/player/mpv-launcher.js",
     "/src/player/application-controller.js",
     "/src/services/dictionary-service.js",
+    "/src/services/storage-layout.js",
+    "/src/settings/settings-store.js",
     "/src/services/sentence-audio-service.js",
     "/package.json",
   ];
@@ -316,29 +329,37 @@ async function main() {
   );
   const installRoot = path.join(temporaryRoot, "Applications");
   const installedApp = path.join(installRoot, path.basename(layout.appPath));
-  const userData = path.join(temporaryRoot, "user-data");
+  const userData = path.join(temporaryRoot, "mpv");
+  const data = storageLayout(path.join(userData, "iinatan"));
   try {
     await fs.mkdir(installRoot, { recursive: true, mode: 0o700 });
     await fs.cp(layout.appPath, installedApp, { recursive: true, force: false });
-    await fs.mkdir(path.join(userData, "dictionaries"), {
-      recursive: true,
-      mode: 0o700,
-    });
-    await fs.writeFile(path.join(userData, "settings.json"), '{"sentinel":true}\n', {
+    await ensureStorageLayout(data);
+    for (const directory of [
+      data.dictionaries,
+      data.backups,
+      data.cache,
+      data.sessions,
+      data.logs,
+    ]) {
+      const stat = await fs.stat(directory);
+      assert.equal(stat.isDirectory(), true, `missing storage directory: ${directory}`);
+    }
+    await fs.writeFile(path.join(data.root, "config.json"), '{"sentinel":true}\n', {
       mode: 0o600,
     });
     await fs.writeFile(
-      path.join(userData, "dictionaries", "keep-me.txt"),
+      path.join(data.dictionaries, "keep-me.txt"),
       "user dictionary sentinel\n",
       { mode: 0o600 },
     );
     await fs.rm(installedApp, { recursive: true, force: false });
     assert.equal(
-      await fs.readFile(path.join(userData, "settings.json"), "utf8"),
+      await fs.readFile(path.join(data.root, "config.json"), "utf8"),
       '{"sentinel":true}\n',
     );
     assert.equal(
-      await fs.readFile(path.join(userData, "dictionaries", "keep-me.txt"), "utf8"),
+      await fs.readFile(path.join(data.dictionaries, "keep-me.txt"), "utf8"),
       "user dictionary sentinel\n",
     );
   } finally {

@@ -275,10 +275,24 @@ async function stopUnrelatedWindowsApplication(application) {
   await stopProcess(application.process);
   const before = new Set(application.beforePids || []);
   const cleanupPids = new Set(application.cleanupPids || []);
-  for (const pid of windowsProcessIds("Notepad.exe")) {
-    if (!before.has(pid)) cleanupPids.add(pid);
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    for (const pid of windowsProcessIds("Notepad.exe")) {
+      if (!before.has(pid)) cleanupPids.add(pid);
+    }
+    for (const pid of cleanupPids) {
+      if (!before.has(pid)) terminateWindowsProcessTree(pid);
+    }
+    const remaining = windowsProcessIds("Notepad.exe").filter(
+      (pid) => !before.has(pid),
+    );
+    if (!remaining.length) return;
+    await delay(100);
   }
-  for (const pid of cleanupPids) terminateWindowsProcessTree(pid);
+  const remaining = windowsProcessIds("Notepad.exe").filter((pid) => !before.has(pid));
+  if (remaining.length)
+    throw new Error(
+      `unrelated Windows application cleanup left Notepad processes: ${remaining.join(",")}`,
+    );
 }
 
 async function activateUnrelatedWindowsApplication(windowProbe) {
@@ -1371,6 +1385,7 @@ async function main() {
   const inputConf = path.join(temporaryRoot, "input.conf");
   const statusPath = path.join(temporaryRoot, "electron-status.json");
   const userDataPath = path.join(temporaryRoot, "electron-data");
+  const iinatanDataRoot = path.join(userDataPath, "iinatan");
   const syntheticControllerStatePath = path.join(userDataPath, "controller-e2e.json");
   const explicitCapture = process.env.IINATAN_E2E_CAPTURE_PATH
     ? path.resolve(process.env.IINATAN_E2E_CAPTURE_PATH)
@@ -1497,7 +1512,7 @@ async function main() {
           "live dictionary E2E requires the bundled HoshiDicts executable",
         );
       const dictionarySettings = new SettingsStore(
-        path.join(userDataPath, "settings.json"),
+        path.join(iinatanDataRoot, "config.json"),
       );
       liveDictionaryWorker = new HoshiWorker({
         executable: hoshiExecutable,
@@ -1507,7 +1522,7 @@ async function main() {
       });
       const dictionaryCatalog = new DictionaryCatalog({
         settingsStore: dictionarySettings,
-        installRoot: path.join(userDataPath, "dictionaries"),
+        installRoot: path.join(iinatanDataRoot, "dictionaries"),
         worker: liveDictionaryWorker,
       });
       await dictionaryCatalog.load();
@@ -1533,7 +1548,7 @@ async function main() {
         id: entry.id,
         title: entry.title,
         language: entry.language,
-        managedPath: path.relative(userDataPath, entry.path),
+        managedPath: path.relative(iinatanDataRoot, entry.path),
         downloadAndImportMs: Date.now() - downloadStarted,
       };
       await liveDictionaryWorker.stop();
@@ -1548,7 +1563,7 @@ async function main() {
       if (nativeFeatureParityRequested || nativeControllerParity)
         audioMock = await startAudioSourceMock();
       const featureSettings = new SettingsStore(
-        path.join(userDataPath, "settings.json"),
+        path.join(iinatanDataRoot, "config.json"),
       );
       await featureSettings.load();
       const activeProfileId = featureSettings.current().activeProfileId;
@@ -1668,7 +1683,7 @@ async function main() {
         `--input-conf=${inputConf}`,
         `--input-ipc-server=${socketPath}`,
         ...(nativeShim ? [`--script=${nativeShim}`] : []),
-        `--script=${path.join(root, "mpv", "iinatan-session.lua")}`,
+        `--script=${path.join(root, "mpv", "iinatan.lua")}`,
         `--script-opts=iinatan-session-dir=${sessionDirectory},iinatan-ipc-endpoint=${socketPath}`,
         ...subtitleArguments,
         "--title=iinatan-native-desktop-e2e",

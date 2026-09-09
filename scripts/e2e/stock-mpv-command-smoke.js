@@ -103,7 +103,7 @@ async function main() {
       "--start=19",
       "--sid=1",
       `--input-ipc-server=${socketPath}`,
-      `--script=${path.join(root, "mpv", "iinatan-session.lua")}`,
+      `--script=${path.join(root, "mpv", "iinatan.lua")}`,
       `--title=iinatan-mpv-command-smoke`,
       mediaPath,
     ],

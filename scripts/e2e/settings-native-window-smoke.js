@@ -195,13 +195,17 @@ async function main() {
   const backupDirectory = path.join(temporaryRoot, "backup");
   await fs.mkdir(backupDirectory, { recursive: true, mode: 0o700 });
   const backupPath = path.join(backupDirectory, "settings-export.json");
-  const settingsPath = path.join(userDataPath, "settings.json");
-  const settingsStore = new SettingsStore(settingsPath);
+  const iinatanDataRoot = path.join(userDataPath, "iinatan");
+  const settingsPath = path.join(iinatanDataRoot, "config.json");
+  const legacySettingsPath = path.join(userDataPath, "settings.json");
+  const settingsStore = new SettingsStore(settingsPath, {
+    backupPath: path.join(iinatanDataRoot, "backups", "config.json"),
+  });
   const legacyMigration = process.env.IINATAN_NATIVE_SETTINGS_MIGRATION === "1";
   if (legacyMigration) {
     await fs.mkdir(userDataPath, { recursive: true, mode: 0o700 });
     await fs.writeFile(
-      settingsPath,
+      legacySettingsPath,
       `${JSON.stringify(
         {
           activeProfileId: "default",
@@ -233,23 +237,20 @@ async function main() {
       )}\n`,
       { mode: 0o600 },
     );
-  }
-  await settingsStore.load();
-  if (legacyMigration) {
+    const legacyStore = new SettingsStore(legacySettingsPath);
+    await legacyStore.load();
     assert.equal(
-      settingsStore.current().profiles.default.preferences.lookupLanguage,
+      legacyStore.current().profiles.default.preferences.lookupLanguage,
       "de",
     );
+    assert.equal(legacyStore.current().profiles.study.preferences.lookupLanguage, "fr");
     assert.equal(
-      settingsStore.current().profiles.study.preferences.lookupLanguage,
-      "fr",
-    );
-    assert.equal(
-      settingsStore.current().profiles.default.preferences.popupMaxWidth,
+      legacyStore.current().profiles.default.preferences.popupMaxWidth,
       2200,
     );
-    assert.equal(settingsStore.current().global.importTimeoutMs, 7200000);
+    assert.equal(legacyStore.current().global.importTimeoutMs, 7200000);
   } else {
+    await settingsStore.load();
     await settingsStore.createProfile("study", "Study");
     await settingsStore.setActiveProfile("default");
   }

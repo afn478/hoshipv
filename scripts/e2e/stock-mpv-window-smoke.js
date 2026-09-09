@@ -160,7 +160,7 @@ async function main() {
       `--input-ipc-server=${socketPath}`,
       `--script-opts=iinatan-session-dir=${sessionDirectory},iinatan-ipc-endpoint=${socketPath}`,
       ...(nativeShim && !loadShimViaSession ? [`--script=${nativeShim}`] : []),
-      `--script=${path.join(root, "mpv", "iinatan-session.lua")}`,
+      `--script=${path.join(root, "mpv", "iinatan.lua")}`,
       "--title=iinatan-mpv-window-smoke",
     ],
     {
